@@ -697,6 +697,12 @@ def day_goto(session_id: str, req: DayGotoRequest) -> dict:
     return day.goto_day(session_id, req.date)
 
 
+@app.post("/api/day/sessions/{session_id}/next-ema-day")
+def day_next_ema_day(session_id: str) -> dict:
+    """Jump forward to 06:00 of the next trading day whose daily close is above the EMA 200 (no open trade)."""
+    return day.next_ema_day(session_id)
+
+
 @app.post("/api/day/sessions/{session_id}/continue")
 def day_continue(session_id: str) -> dict:
     """After an exit: jump to the next 06:00."""

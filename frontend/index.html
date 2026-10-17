@@ -136,6 +136,7 @@
             <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Day trading, New trade panel open: move the stop by 0.05 % of the price (<kbd>Shift</kbd>: 0.25 %)</dd>
             <dt><kbd>M</kbd></dt><dd>Day trading: Move the stop / target of the open trade (or drag the dotted lines on the chart); every move is saved with the trade</dd>
             <dt><kbd>K</kbd></dt><dd>Day trading: Skip to the next day at 06:00</dd>
+            <dt><kbd>J</kbd></dt><dd>Day trading: Jump to the next day whose daily close is above the EMA 200</dd>
             <dt><kbd>Z</kbd></dt><dd>Day trading: draw a support / resistance zone on the 1h or 4h chart (again to cancel)</dd>
             <dt><kbd>H</kbd></dt><dd>This list</dd>
             <dt><kbd>Esc</kbd></dt><dd>Cancel drawing, close panels</dd>
@@ -398,6 +399,7 @@
           <button type="button" id="btn-day-new" class="btn buy" title="Open the New trade panel (N)">New trade</button>
           <button type="button" id="btn-day-sell" class="btn sell" title="Early exit at the close of this candle, with a reason (X)">Sell</button>
           <span class="spacer"></span>
+          <button type="button" id="btn-day-ema" class="btn small" title="Jump to the next day whose daily close is above the EMA 200, at 06:00 (J)">Next day &gt; EMA</button>
           <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 06:00 (K)">Skip day &rarr; 06:00</button>
           <button type="button" id="btn-day-continue" class="btn small primary hidden" title="The trade has closed: jump to the next day at 06:00 (or buy again / step on instead)">Continue &rarr; 06:00</button>
         </div>

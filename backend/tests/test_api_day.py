@@ -238,6 +238,15 @@ def test_goto_route(client: TestClient, session: dict):
     client.post(f"{base}/reset")
 
 
+def test_next_ema_day_route(client: TestClient, session: dict):
+    base = f"/api/day/sessions/{session['id']}"
+    client.post(f"{base}/reset")
+    r = client.post(f"{base}/next-ema-day")
+    assert r.status_code == 200, r.text
+    assert r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["date"] == "2018-05-11"
+    client.post(f"{base}/reset")
+
+
 def test_conditions_routes(client: TestClient, session: dict):
     sid = session["id"]
     r = client.get(f"/api/day/sessions/{sid}/trades")

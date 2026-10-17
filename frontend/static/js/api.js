@@ -67,6 +67,7 @@ export const api = {
   dayMoveTrade: (id, body) => request('PATCH', `/api/day/sessions/${id}/trade`, body),
   dayStep: (id, body) => request('POST', `/api/day/sessions/${id}/step`, body),
   daySkip: (id) => request('POST', `/api/day/sessions/${id}/skip`),
+  dayNextEma: (id) => request('POST', `/api/day/sessions/${id}/next-ema-day`),
   dayGoto: (id, date) => request('POST', `/api/day/sessions/${id}/goto`, { date }),
   dayContinue: (id) => request('POST', `/api/day/sessions/${id}/continue`),
   dayReset: (id) => request('POST', `/api/day/sessions/${id}/reset`),

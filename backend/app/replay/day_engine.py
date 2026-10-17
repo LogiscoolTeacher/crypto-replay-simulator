@@ -902,6 +902,35 @@ class DayEngine:
         st["events"] = [ev]
         return st
 
+    def next_ema_day(self, session_id: str) -> dict:
+        """Jump forward to 06:00 of the next trading day whose trend check says "daily close above
+        EMA 200" (the button "Next day > EMA 200"). The rules of goto_day apply: never backwards,
+        not with an open trade; Conflict when no such day is left before the replay's end."""
+        with self._lock:
+            s = self._ready(session_id)
+            if s["cursor_ms"] >= s["data_end_ms"]:
+                raise Conflict("The replay has reached its end.")
+            with self.store.tx() as conn:
+                if self.store.open_trade(conn, session_id) is not None:
+                    raise Conflict("A trade is open: close it before jumping to another day.")
+            cur = trading_day(s["cursor_ms"] + self._base_ms)
+            target = self._next_ema_above_day(s, cur)
+            if target is None:
+                raise Conflict("No later day with a daily close above the EMA 200 before the end of the replay.")
+            return self.goto_day(session_id, target.isoformat())
+
+    def _next_ema_above_day(self, s: dict, after: date) -> date | None:
+        """The first trading day after `after` whose last completed daily candle closes above the
+        EMA 200, judged at that day's 06:00 exactly like the trend check (`_daily_ema`)."""
+        limit = s["data_end_ms"] + self._base_ms
+        d = after + timedelta(days=1)
+        while local_ms(d, DAY_START_HOUR) <= limit:
+            probe = dict(s, cursor_ms=self._cursor_at_day_start(s, d))
+            if self._daily_ema(probe)["ema_above"] == 1:
+                return d
+            d += timedelta(days=1)
+        return None
+
     def _advance(self, s: dict) -> dict | None:
         """One 15-minute candle forward. Returns an event (exit or jump) or None."""
         base = self._base_ms

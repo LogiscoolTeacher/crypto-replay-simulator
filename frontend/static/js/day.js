@@ -296,6 +296,7 @@ export class DayMode {
     $('btn-day-new').disabled = !ok || busy || !d.entries_allowed;
     $('btn-day-sell').disabled = !ok || busy || !d.can_sell;
     $('btn-day-skip').disabled = !ok || busy || !d.can_skip;
+    $('btn-day-ema').disabled = !ok || busy || !(d.can_skip || d.can_continue);   // any state without an open trade
     $('btn-day-continue').disabled = !ok || busy || !d.can_continue;
     $('btn-day-continue').classList.toggle('hidden', !(ok && d.can_continue));
     $('btn-day-skip').classList.toggle('hidden', !!(ok && d.can_continue));   // both jump to the next 06:00: one button at a time
@@ -818,6 +819,11 @@ export class DayMode {
     if (!this.ready() || this.busy || !this.day.can_skip) return;
     await this.jump(() => this.c.api.daySkip(this.session.id));
   }
+  // Jump to the next trading day whose daily close is above the EMA 200 (the trend check's first line).
+  async nextEmaDay() {
+    if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
+    await this.jump(() => this.c.api.dayNextEma(this.session.id));
+  }
   async continueDay() {
     if (!this.ready() || this.busy || !this.day.can_continue) return;
     await this.jump(() => this.c.api.dayContinue(this.session.id));
@@ -1225,6 +1231,7 @@ export class DayMode {
     if (k === 'n' || k === 'b') { e.preventDefault(); this.openNewTrade(); return true; }
     if (k === 'x') { e.preventDefault(); this.openExit(); return true; }
     if (k === 'k') { e.preventDefault(); this.skipDay(); return true; }
+    if (k === 'j') { e.preventDefault(); this.nextEmaDay(); return true; }
     if (k === 'z') { e.preventDefault(); this.drawing ? this.cancelDraw() : this.startDraw(); return true; }
     return false;
   }
@@ -1241,6 +1248,7 @@ export class DayMode {
     $('btn-day-new').addEventListener('click', () => this.openNewTrade());
     $('btn-day-sell').addEventListener('click', () => this.openExit());
     $('btn-day-skip').addEventListener('click', () => this.skipDay());
+    $('btn-day-ema').addEventListener('click', () => this.nextEmaDay());
     $('btn-day-continue').addEventListener('click', () => this.continueDay());
     $('btn-cal-prev').addEventListener('click', () => this.moveCal(-1));
     $('btn-cal-next').addEventListener('click', () => this.moveCal(1));

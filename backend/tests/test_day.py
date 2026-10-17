@@ -507,6 +507,25 @@ def test_goto_day_jumps_forward_only(day: DayEngine, session: dict):
         day.goto_day(sid, "2018-05-14")                          # a trade is open
 
 
+def test_next_ema_day(day: DayEngine, session: dict, monkeypatch):
+    sid = session["id"]
+    st = day.next_ema_day(sid)                      # the fake market is a slow uptrend: the very next day qualifies
+    assert st["events"][0]["kind"] == "jump" and st["day"]["date"] == "2018-05-11" and st["day"]["check"]["ema_above"] is True
+    real = day._daily_ema
+    monkeypatch.setattr(day, "_daily_ema", lambda s: {**real(s), "ema_above": int(trading_day(s["cursor_ms"] + Q) == date(2018, 5, 13))})
+    st = day.next_ema_day(sid)                      # the days in between are jumped over
+    assert st["day"]["date"] == "2018-05-13" and [r["date"] for r in day.days(sid)["days"]] == ["2018-05-10", "2018-05-11", "2018-05-13"]
+    monkeypatch.setattr(day, "_daily_ema", lambda s: {**real(s), "ema_above": 0})
+    with pytest.raises(Conflict):
+        day.next_ema_day(sid)                       # no such day before the end: nothing moves
+    assert day.state(sid)["day"]["date"] == "2018-05-13"
+    price = day.state(sid)["price"]
+    z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
+    day.buy(sid, z["id"], take_profit=price * 3.0, stop=price * 0.5, confidence=5)
+    with pytest.raises(Conflict):
+        day.next_ema_day(sid)                       # a trade is open
+
+
 def test_skip_day(day: DayEngine, session: dict):
     sid = session["id"]
     st = day.skip_day(sid)
