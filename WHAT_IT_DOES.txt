@@ -1,0 +1,1176 @@
+REPLAY TRADING - WHAT THE PROGRAM DOES, IN DETAIL
+==================================================
+
+Written 2026-10-15 for the state of the code on that day (127 automated tests passing).
+This file describes the whole program: what a trader can do with it and exactly which rules
+and formulas sit behind every number (Part 1), and how the program is built, file by file,
+table by table, endpoint by endpoint (Part 2). Everything in this file was taken from the
+source code, not from memory. Where a rule has a number in it (200 days, 1.5 %, 10 trades),
+that number is the one in the code.
+
+Short setup instructions are in SETUP.md. A shorter feature overview is in README.md.
+
+Contents
+--------
+PART 1 - FOR THE TRADER
+   1.  What the program is
+   2.  Starting it
+   3.  The screen
+   4.  Sessions
+   5.  The replay clock: what you see and when your orders fill
+   6.  Timeframes
+   7.  The chart and the zoom
+   8.  Indicators
+   9.  Strategies and the two lights
+  10.  The Readings card
+  11.  The Highs & lows card
+  12.  Support and resistance tubes, the 6-month lines, the two "peeks" (D and Y)
+  13.  Fibonacci retracements
+  14.  Fair value gaps
+  15.  The Account card
+  16.  Buying a bucket
+  17.  Target and stop, and the Auto switch
+  18.  The Open buckets table and the Now row
+  19.  Selling: all, half or a quarter
+  20.  The History tab
+  21.  The Journal tab and the CSV export
+  22.  Reason checklists and the Statistics tab
+  23.  The Performance tab
+  24.  Keyboard shortcuts (complete list)
+  25.  What is stored where, and what never leaks from the future
+  26.  Limits of the simulation
+PART 2 - FOR THE DEVELOPER
+  27.  Technology and how to run it
+  28.  Folder layout
+  29.  Data layer: Binance client, candle store, downloader
+  30.  Indicators, strategies and the payload builder
+  31.  The replay engine
+  32.  Database schema
+  33.  HTTP API
+  34.  Frontend
+  35.  Tests
+  36.  Formulas collected in one place
+  37.  How to extend it
+
+
+========================================================================================
+PART 1 - FOR THE TRADER
+========================================================================================
+
+1. What the program is
+----------------------
+Replay Trading is a practice simulator for crypto trading that runs on your own computer.
+It takes real historical candles from Binance, hides everything after a chosen moment, and
+lets you move forward candle by candle as if the future were unknown. You watch the chart
+and the indicators, you decide, you buy and sell with play money, and the program records
+every trade with a picture of the chart, the readings of that moment and the reasons you
+ticked. Afterwards it evaluates how you did.
+
+The decisions the program is built on:
+  - Market: the ten largest coins by market capitalisation on 2026-10-10 (stablecoins and
+    tokenised assets excluded), traded against USDT on Binance spot:
+    BTC (Bitcoin), ETH (Ethereum), BNB, XRP, SOL (Solana), TRX (TRON), ZEC (Zcash),
+    HYPE (Hyperliquid), DOGE (Dogecoin), LINK (Chainlink).
+  - Long only. You can only buy a coin and sell it later. No shorting, no leverage.
+  - One account per session, 10,000 USDT by default (you can change it when you create the
+    session). Every buy creates its own "bucket" with its own amount and entry price. A sell
+    closes a whole bucket or a part of it (25 %, 50 % or all of what is left).
+  - A fee of 0.1 % per side by default (editable per session), charged on the buy and on the
+    sell.
+  - Strategy lights are advice only. The program never trades for you, with one exception
+    you must switch on yourself per bucket: the Auto sell at a target or stop (section 17).
+  - Everything is stored locally in one SQLite database file plus a folder of PNG pictures.
+    Nothing is sent anywhere except the candle downloads from Binance's public API, which
+    need no account and no key.
+  - All times in the program are UTC.
+
+2. Starting it
+--------------
+You need Python 3.12. Install the dependencies once from the backend folder
+(python -m pip install -r requirements.txt), then start the server from the project folder:
+
+    python run.py                 opens on http://127.0.0.1:8000
+    python run.py --port 9000     if port 8000 is taken
+
+Open the address in a browser (Chrome, Edge or Firefox). Keep the terminal open while you
+work; Ctrl+C stops the server. The interactive API documentation is at /docs.
+SETUP.md has the step-by-step version of this with troubleshooting.
+
+3. The screen
+-------------
+Top bar (left to right):
+  - Session selector, "New session" and a bin icon to delete the selected session.
+  - Timeframe buttons (only the session's base timeframe and coarser ones are enabled).
+  - "Indicators" (with a count), "Fib" (count), "FVG" (count), "1Y" (hold to peek at the
+    last year of daily candles), "BTC 2Y" (hold to peek at two years of Bitcoin), "?" (the
+    keyboard shortcut list).
+  - On the right the replay time and the current price.
+
+Centre:
+  - A yellow notice line above the chart when the session start was moved or the coin is
+    young (section 4).
+  - The chart with a legend in its top-left corner. Pop-up panels (Indicators, Fib, FVG,
+    shortcuts) open over the chart.
+  - The bottom panel with five tabs: Open buckets, History, Journal, Statistics,
+    Performance.
+
+Right side panel, top to bottom: Strategy (with the ENTER and EXIT lights), Readings,
+Highs & lows, Account, Buy a bucket.
+
+Footer: Back to start, Play/Pause, Step, zoom out, zoom in, default zoom, the step size,
+the speed slider (1 to 10 candles per second), a progress bar through the session, and a
+status badge while data is downloading.
+
+A small toast message at the bottom confirms every action ("Bought bucket #3: ...") or
+shows the error that stopped it.
+
+4. Sessions
+-----------
+A session replays one coin from one start date. Click "New session" and fill in:
+  - Coin: one of the ten.
+  - Base timeframe: 1m, 5m, 15m, 1h, 4h or 1D. This is the finest timeframe you will be
+    able to look at in this session; you can always switch to a coarser one. The step size
+    and the fill price are defined by the base timeframe (section 5). Finer base timeframes
+    mean much more data to download (a year of 1-minute candles is about 525,000 candles).
+  - Start date (required; it may not be before 2010-01-01).
+  - End date (optional). Without one the session runs up to the latest closed candle at the
+    time you create it. An end date in the future is cut back to that.
+  - Start balance in USDT (default 10,000; must be above 0 and at most 1,000,000,000,000).
+  - Fee per side in percent (default 0.1; from 0 up to below 10).
+  - Name (optional, up to 80 characters). Without one the session is called like
+    "XRPUSDT 1h from 2021-07-10".
+
+After "Create" the session is in the state "preparing": the server downloads, for the base
+timeframe and every coarser timeframe, the candles from 1,000 candles before the start date
+up to the end date (the 1,000 extra candles are the warm-up for the indicators). An overlay
+on the chart shows the progress. Candles already downloaded for an earlier session are not
+downloaded again, so the second session on the same coin and period is quick. If the
+download fails (no internet, Binance unreachable) the session shows the error and a Retry.
+
+The warm-up rule for the moving averages: the replay never starts earlier than 200 daily
+candles after the coin's first candle on Binance, so the 200-day EMA and SMA (section 10)
+exist from the first bar. If your start date is earlier than that, the start is moved
+forward to the first base candle on or after that 200th day, the yellow notice above the
+chart says from where to where it was moved, and an automatic session name follows the
+new date (a name you typed yourself stays). If the coin is younger than 200 days at your
+start date (no later start is possible within the session), the session starts where you
+asked, and the notice tells you how many daily candles exist before the start and from
+which date the 200-day averages will appear.
+
+The session selector lists every session, newest first, and the browser remembers the last
+one you had open. Each session keeps its own replay position, cash, buckets, trades,
+journal and drawn fibs; you can switch between sessions at any time.
+
+"Back to start" (the first footer button, or the R key) resets the session: the replay
+position goes back to the first candle, cash back to the start balance, and all buckets,
+trades, journal rows, pictures and fibs of the session are deleted. The downloaded candles
+stay. Deleting a session (the bin icon) removes everything about it, pictures included,
+but again not the candles.
+
+5. The replay clock: what you see and when your orders fill
+------------------------------------------------------------
+The session has a cursor: the open time of the latest base candle you are allowed to see.
+Everything with an open time at or before the cursor is "known". The chart, every
+indicator, every reading, every level and every statistic uses only known candles, so
+nothing from the future can leak in (section 25 lists the guards).
+
+Moving forward:
+  - Step (the footer button or the Right arrow key) advances by one candle of the
+    timeframe you are looking at. On the base timeframe that is one base candle. On a
+    coarser timeframe the cursor jumps to the base candle that completes the current
+    coarser candle (or the next one, if the current one is already complete), so one step
+    on the 4h view of a 1h session moves the clock to the end of the 4-hour block.
+  - Play (P, or the footer button) repeats Step at the speed on the slider, 1 to 10 steps
+    per second (default 2; the speed is remembered in the browser). Pause stops it. Play
+    also stops by itself when a request fails or the session has reached its end.
+  - The progress bar shows how far through the session's date range you are. When the
+    cursor reaches the last candle the session is "finished"; you can still trade at that
+    last price, or press R to start over.
+
+Fills: every buy and every sell is filled at the close of the current base candle, which is
+the price shown at the top right. There is no slippage and no order book; you always get
+exactly that price for any amount. The one exception is the automatic sell at a target or
+stop (section 17), which fills at the level price or the candle's open on a gap.
+
+While you look at a coarser timeframe, the last candle on the chart is the one still
+forming out of base candles up to the cursor. It is drawn translucent and the legend says
+"forming". Indicators are computed on it as well, so what you see is what a live trader
+would see mid-candle.
+
+6. Timeframes
+-------------
+Six timeframes exist: 1m, 5m, 15m, 1h, 4h, 1D. You can switch to the base timeframe or any
+coarser one at any time with the top-bar buttons; finer ones are disabled. Switching
+changes the step size, the chart, all indicators and strategy lights, the RSI and Bollinger
+readings (they follow the timeframe on screen), the Fibonacci auto-retracement and the fair
+value gaps. It does not change the fill price (always the base candle's close) or the
+daily-candle readings (EMA/SMA 200, highs and lows, support and resistance).
+
+7. The chart and the zoom
+-------------------------
+The chart is TradingView's Lightweight Charts library (version 5.2.1). The price pane shows
+candles (green up, red down) with the volume as a histogram underneath. Overlay indicators
+(EMA, SMA, Bollinger) draw on the price pane; oscillators (RSI, MACD) get their own pane
+below, with reference lines (RSI 30 and 70, MACD zero). You can drag the separator between
+panes. The legend in the top-left corner shows the values of the candle under the mouse
+(or of the last candle): open, high, low, close, volume and every indicator.
+
+Marks on the chart:
+  - Your buys: a green arrow below the candle with "B" and the bucket number; your sells: a
+    red arrow above the candle with "S" and the number (parts show "#5.1" etc.).
+  - Strategy signals: small green dots below the bar where the ENTER signal fired, small
+    red dots above where EXIT fired (section 9). Signals on the forming candle are not
+    drawn because they are not final.
+  - Entry lines: every open bucket has a horizontal line at its entry price, green when the
+    current price is above it, red when below, labelled with the bucket number and its
+    P&L. Click a row in the Open buckets table to make its line solid (selected); the
+    others stay dashed. The selected bucket also shows its target and stop as dotted lines
+    (section 17).
+  - Daily SMA 200 (S key): a pink dashed line (section 8).
+  - Support/resistance tubes and the 6-month high/low lines (L key, section 12).
+  - Fibonacci levels (section 13), fair value gap boxes (section 14), and the hatched
+    target/stop preview while the mouse is over the Buy button (section 17).
+
+Zoom: the default view shows the last 160 candles with the newest at the right edge. Up
+arrow or the "+" button zooms in and Down arrow or "-" zooms out, each step by a factor of
+1.25, between 10 and 3,000 visible candles; hold the key to keep zooming. Space or the
+"default zoom" button returns to the last 160 candles. Zooming keeps the newest candle at
+the right edge. Mouse wheel and dragging the chart work as usual. Opening a session or
+switching the timeframe resets the view to the default zoom.
+
+8. Indicators
+-------------
+Open "Indicators" in the top bar, pick a type, set the parameters and click Add. You can add
+as many instances as you like (for example EMA 20 and EMA 50 and EMA 200). Each instance is
+listed in the panel with a remove button. The parameters are validated; a bad value shows
+an error and is not added. Eight series colours are used in a fixed order; a ninth line
+reuses the last colour and is flagged in the legend.
+
+The five indicator types, their parameters and allowed ranges:
+  - SMA, Simple Moving Average of the close. Period (default 20, 1 to 1000). Overlay.
+  - EMA, Exponential Moving Average of the close. Period (default 20, 1 to 1000). Overlay.
+  - RSI, Relative Strength Index of the close. Period (default 14, 2 to 500). Own pane,
+    fixed scale 0 to 100, reference lines at 30 and 70.
+  - MACD. Fast period (default 12, 1 to 500), slow period (default 26, 2 to 1000; must be
+    larger than fast), signal period (default 9, 1 to 500). Own pane with the MACD line, the
+    signal line and the histogram, reference line at 0.
+  - Bollinger Bands on the close. Period (default 20, 2 to 1000), standard deviation
+    multiplier (default 2.0, 0.1 to 10). Overlay: upper, middle (dashed) and lower band.
+
+The maths follows TradingView's conventions, so the values agree with what you see there:
+the EMA (and Wilder's smoothing inside the RSI) is seeded with the simple average of the
+first "period" values and then recursed; the RSI uses Wilder smoothing and reads 100 when
+the average loss is zero; Bollinger Bands use the population standard deviation. The RSI
+was verified against the published StockCharts reference series and the chart bars were
+verified against Binance (see README).
+
+Indicators are computed over the last 3,000 candles before the visible window, which is far
+beyond where an EMA or RSI still remembers its seed, so the values equal a full-history
+computation and do not change as the replay moves on.
+
+Three indicator shortcuts:
+  - O puts Bollinger Bands 20/2 on the chart and takes them off again.
+  - S draws the SMA 200 of DAILY candles on whatever timeframe you are looking at (also a
+    checkbox at the bottom of the Indicators panel). On intraday charts every bar carries
+    the SMA value of the last completed day before it, so the line never uses a close from
+    the bar's future. It is not drawn on timeframes coarser than daily (none exist here).
+  - The strategy you pick (section 9) draws its own indicators automatically.
+
+9. Strategies and the two lights
+--------------------------------
+Pick one of the four strategies in the Strategy card; the gear button opens its parameters.
+Its indicators are added to the chart automatically. The strategy is evaluated on the
+timeframe you are looking at, on closed candles only: the light you see for a bar uses that
+bar's close and nothing later. The lights are advice; nothing is traded for you.
+
+  - ENTER light (green) is on while the strategy sees an "entry bias", EXIT light (red) while
+    it sees an "exit bias". Both off is neutral.
+  - A light flashes on the candle where its state flips on (the "event"). Small dots on the
+    chart mark past events (green below the bar for ENTER, red above for EXIT).
+  - During the warm-up of the indicators (not enough candles yet) the state is neutral.
+
+The four strategies:
+  - RSI Reversal. Parameters: RSI period (14), oversold level (30), overbought level (70);
+    oversold must be below overbought. Green while RSI is below the oversold level, red while
+    it is above the overbought level.
+  - EMA Crossover. Fast EMA (20), slow EMA (50); fast must be smaller. Green while the fast
+    EMA is above the slow one, red while below. Events fire on the cross. Differences smaller
+    than one billionth of the price count as equal, so a flat market does not produce fake
+    crosses.
+  - MACD Cross. Fast (12), slow (26), signal (9). Green while the MACD line is above its
+    signal line, red while below; events on the cross.
+  - Bollinger Bounce. Period (20), multiplier (2.0), exit level "upper" or "middle". Green
+    while the close is below the lower band; red while the close is above the upper band
+    (or at/above the middle band if "middle" is chosen).
+
+The ENTER/EXIT state and the strategy name at the moment of every trade are saved in the
+journal (section 21).
+
+10. The Readings card
+---------------------
+Live values at the replay time, updated after every step and every trade:
+  - RSI 14: the RSI(14) of the timeframe on screen, on the latest candle (the forming one
+    included). Green at or below 30, red above 30.
+  - EMA 200 (1D) and Price vs EMA: the 200-day EMA of daily candles including the forming
+    day, and how far the current price is above (green) or below (red) it in percent.
+  - SMA 200 (1D) and Price vs SMA: the same with the simple average.
+  - Resistance / Support: the next zone above and the next at or below the price, from the
+    closed daily candles of the last 365 days (section 12). Each row shows the distance from
+    the price to the zone's nearer edge in percent ("inside" when the price is in the zone),
+    the number of touches, and how many days ago (on the replay clock) the last touch was.
+    Hover for the zone's edges and the dates of every touch, break and stay. A dash means no
+    qualifying zone on that side.
+  - %B (BB 20/2) and Band width: where the price sits between the Bollinger Bands 20/2 of
+    the timeframe on screen: %B = (price - lower) / (upper - lower), so 0 is the lower band
+    and 1 the upper; green below 0 (under the lower band), red above 1. Band width is
+    (upper - lower) / middle in percent.
+  - vs last buy / vs last sell (appear once you have traded): how far the current price is
+    from your last buy and your last sell in percent, with the same "high since" switch as
+    the Now row (section 18).
+
+All of these are saved with every buy and sell in the journal.
+
+11. The Highs & lows card
+-------------------------
+Four range bars, one per window: All-time, 1 year, 6 months, 3 months. Each bar runs from
+the window's lowest low (left end) to its highest high (right end), measured on DAILY
+candles with their wicks, and the marker is the current price. The number on the left is
+how far the price is above the window's low, the number on the right how far below the
+high, both in percent. Hover a row for the prices and dates of the high and the low.
+
+Windows: "1 year" is the replay day plus the 365 days before it, "6 months" the replay day
+plus 182 days, "3 months" plus 90 days. "All-time" starts at the coin's first candle on
+Binance (for BTC that is August 2017). The daily candles since the listing are downloaded
+once per coin the first time a session of that coin is shown; while that download is
+missing (no internet) the card uses what is stored. Only candles known at the replay time
+count, the forming day included, so the price always lies between the low and the high.
+Ties go to the earliest day. The price of, the date of and the distance to all eight
+extremes are saved with every trade.
+
+12. Support and resistance tubes, the 6-month lines, the two "peeks" (D and Y)
+------------------------------------------------------------------------------
+How a level is found (used by the tubes, the Readings rows and the BTC peek):
+  - A swing high is a daily candle whose high beats the 5 candles before it and is not
+    beaten by the 5 after it; a swing low mirrors this.
+  - Swings are sorted by price and grouped while each stays within the tolerance (1.5 % by
+    default, adjustable in the Indicators panel from 0.1 to 10 %) of the group's mean. Each
+    group is one level at that mean.
+  - A level scores one point per swing plus up to half a point extra for recent swings, and
+    one more point when it holds the window's highest high or lowest low.
+
+How a zone ("tube") qualifies (Readings rows and the L overlay): each level of the closed
+daily candles of the last 365 days becomes a band of plus/minus the tolerance around its
+centre. Its visits are counted: a visit starts when a daily candle reaches into the band
+while the candle before closed outside it (that side is where the price came from) and ends
+with the first candle that stays out of the band again. Leaving on the side the price came
+from within 5 daily candles is a TOUCH, leaving on the other side within 5 candles is a
+BREAK, lingering longer is a STAY. A visit still open at the last candle, or starting on
+the first candle (origin unknown), is not counted. Only zones with at least 3 touches
+qualify. The nearest qualifying zone whose centre is above the price is the resistance,
+the nearest at or below is the support.
+
+The L overlay (on by default; L key or the checkbox in the Indicators panel): the next
+resistance zone is drawn as a translucent red tube and the next support as a green one
+across the whole chart, each labelled with its touches, breaks and the distance from the
+current price to its edge. Two dashed lines mark the 6-month high and low with the
+distance in percent.
+
+The D peek (hold the D key or hold the "1Y" button with the mouse): while held, the chart
+shows the daily candles of the last 365 days up to the replay day, the forming day
+included. Release, and the chart returns to the timeframe and zoom you had. While a peek is
+held the labels of all price lines (bucket entries with their P&L, 6-month high and low,
+target and stop of the selected bucket, the SMA 200 name) are hidden so the newest candles
+at the right edge stay readable; they come back on release. A peek button activated from
+the keyboard toggles instead of holding.
+
+The Y peek (hold Y or the "BTC 2Y" button): the same with Bitcoin's daily candles of the
+last 2 years, whatever coin the session trades, plus the 3 strongest resistance levels
+above the current Bitcoin price and the 3 strongest supports below it, from the closed days
+of that window, labelled R1-R3 and S1-S3 nearest-first with their number of touches. The
+Bitcoin candles are downloaded on demand and end with the replay day, still forming out of
+finer Bitcoin candles up to the cursor. Only candles known at the replay day are used.
+
+13. Fibonacci retracements
+--------------------------
+Press F (or Fib, then "Draw retracement"). Click the swing start, then the swing end; each
+click snaps to the candle's high or low, whichever is nearer. Levels 0, 23.6, 38.2, 50,
+61.8, 78.6 and 100 % are drawn from the swing to the right edge with their prices; 0 % sits
+at the second click, 100 % at the first. The two clicks need different prices and must lie
+in the past of the replay cursor. Click a level to select the fib, Delete (or Backspace)
+removes the selected one, Esc cancels a half-drawn one, F again cancels drawing. Fibs are
+stored per session, survive a reload, and are cleared by "Back to start".
+
+The Fib panel can also switch on an automatic retracement from the lowest low to the
+highest high of the last N candles (default 100, 2 to 2000) of the timeframe on screen,
+drawn dashed. The later extreme is the 0 % anchor: after an up-swing the levels measure the
+pullback down from the high, after a down-swing the bounce up from the low. The count of
+drawn fibs is saved with every trade.
+
+14. Fair value gaps
+-------------------
+Press G (or FVG and the checkbox). A fair value gap is a three-candle imbalance: bullish
+when the low of candle 3 is above the high of candle 1, bearish when the high of candle 3
+is below the low of candle 1. The box spans the gap, starts at the middle candle and runs
+to the right edge; green for bullish, red for bearish. Once a later candle trades through
+the whole gap (bullish: a low at or below the gap bottom; bearish: a high at or above the
+top) the box ends at that candle and turns grey. The panel sets the minimum gap size in
+percent of the middle candle's close (default 0.1 %, 0 to 10 %) and can hide filled gaps.
+Gaps are computed on the timeframe on screen. The number of open gaps on screen is saved
+with every trade.
+
+15. The Account card
+--------------------
+  - Cash: USDT not invested.
+  - Invested: the sum of the cost (fee included) of the open buckets.
+  - Market value: the coins in the open buckets at the current price.
+  - Unrealized: market value minus invested.
+  - Realized: the sum of the realized P&L of all closed buckets and parts (after fees).
+  - Fees paid: all buy fees plus the sell fees of the closed rows.
+  - Equity: cash plus market value.
+  - Return: equity minus the start balance, and in percent of the start balance.
+
+16. Buying a bucket
+-------------------
+In the "Buy a bucket" card type an amount in USDT, or click a preset: 10 %, 15 %, 20 % or
+25 % of your current cash. The B key jumps to the amount field; Enter in the field buys.
+The minimum order is 1 USDT; you cannot spend more than your cash. Below the field an
+estimate shows the coins you would get.
+
+Whole coins mode (the "Whole coins" button): a Coins field appears and only whole coins are
+bought. A preset or typed USDT amount is rounded DOWN to the whole coins it buys, and the
+USDT field is rewritten to the cost of those coins, fee included, so a 15 % preset never
+spends more than 15 %. Typing a coin count rewrites the USDT field the same way (cost =
+coins x price / (1 - fee rate)). Fewer than one affordable coin is refused with a message
+saying what one coin costs.
+
+Target and Stop fields (section 17) sit under the presets: a take profit and a stop loss in
+percent of the buy price, remembered in the browser (defaults 20 and 10; leave one empty to
+set none). While the mouse is over the Buy button the chart shows them as hatched areas
+from the current candle to the right edge: green up to the target, red down to the stop,
+each labelled with the percent and the resulting price.
+
+Click Buy. First a checklist dialog opens (section 22): tick every buy reason that is true,
+add a note if you like, and Confirm. Esc or Cancel aborts the buy. Nothing ticked is
+allowed. The dialog title repeats what you are about to do: amount, coin, price, and the
+target and stop percentages.
+
+What happens on Confirm, at the close of the current base candle (price P):
+  - fee = amount x fee rate
+  - coins = (amount - fee) / P (or exactly the whole coins chosen)
+  - cash = cash - amount
+  - A new bucket is created with the next number (#1, #2, ...), its entry price P, its coins,
+    its cost (the amount), its buy fee, the RSI(14) of the timeframe on screen, the daily
+    EMA/SMA 200 and the price's distance to them, and the target/stop percentages and prices.
+  - A journal row is written with all readings of that moment, and the browser sends a PNG
+    picture of the chart as it is on screen (all panes, indicators, fibs, gaps) plus the
+    strategy, the lights, the open gaps, the fib count and the indicator list.
+  - A toast confirms "Bought bucket #n: coins @ price".
+
+17. Target and stop, and the Auto switch
+----------------------------------------
+Every bucket carries the plan you set at the buy: the target in percent above the entry
+(up to 1000 %) and the stop in percent below it (above 0 and below 100 %), and the two
+resulting prices. They cannot be changed later (so the plan you had at the buy is what gets
+analysed). The Open buckets table shows them in the Target and Stop columns (hover for the
+price and the distance from the current price), the History and Journal keep them for every
+sold row, and the selected bucket draws them as dotted lines on the chart ("#30 target
++20%", "#30 stop -10%").
+
+Nothing sells by itself unless you switch Auto on. The Auto button in a bucket's row is Off
+at the buy and is disabled when the bucket has neither target nor stop. Switched On (the
+replay time of switching is kept), the replay watches the base candles: on the first base
+candle whose HIGH reaches the target price or whose LOW reaches the stop price, everything
+left in the bucket is sold:
+  - at the level price (target or stop), or at the candle's OPEN when the candle already
+    opened beyond the level (a gap), which is what a real stop or limit order would get;
+  - a candle that reaches both target and stop in the same candle counts as the stop;
+  - the sell is dated at that candle, inside the step that passed over it (a 1D step on a
+    1h session fires at the right hour), gets its own journal row and chart picture, and a
+    toast says "Auto: Target reached, sold bucket #n @ price: P&L";
+  - the History Exit column shows "target" or "stop" instead of "by hand", with the time
+    Auto was switched on in the hover text;
+  - the automatic sell has an empty reason checklist.
+You can switch Auto off again at any time while the bucket is open.
+
+Independently of Auto, every sell row records whether the target and the stop were reached
+at any time while the bucket was held (from the buy candle to the sell candle) and when
+first, so the journal and the CSV let you check what the plan would have done had Auto been
+on.
+
+18. The Open buckets table and the Now row
+------------------------------------------
+Columns, one row per open bucket:
+  #              bucket number; "#5 .2" after two parts have been sold from it
+  Buy date (UTC)
+  Age            time held on the replay clock, e.g. "3d 5h"
+  Amount         coins left in the bucket
+  Price          entry price
+  RSI            RSI(14) of the timeframe on screen at the buy; green below 30, red above
+  Fee            buy fee (of what is left)
+  Total cost     cost of what is left, fee included
+  Now            market value at the current price
+  P&L, %         unrealized P&L in USDT and in percent of the cost
+  High, Low      highest high and lowest low of the base candles since the buy, in percent
+                 of the buy price (hover for the price and the time): what the trade has had
+                 on the table, and how far it went against you
+  Target, Stop   the plan in percent (hover for price and distance from here)
+  Auto           the Off/On switch of section 17
+  Sell           three buttons: 25 %, 50 %, All (section 19)
+
+Click a column header to sort (again to flip). The chips above the table filter by the RSI
+at the buy: all, below 30, above 30. Click a row to select the bucket: its entry line turns
+solid and its target/stop lines appear. An empty table says so.
+
+The Now row at the bottom is a template for a buy at this moment: the current time and
+price, and how far the price is in percent from your last buy and from your last sell
+(green when above, red when below). Once the market has CLOSED above that trade price since
+the trade, the comparison switches to the highest close since the trade ("vs high since
+sell #7 @ price"), so you see how far below the last height you are rather than how far
+above the old trade; hover for the dates. When nothing is open, the last sold bucket stays
+visible as a greyed reference row.
+
+19. Selling: all, half or a quarter
+-----------------------------------
+Each open row has 25 %, 50 % and All. The percentages always refer to what is LEFT in the
+bucket, so 50 % twice leaves a quarter. Every sell button first opens the sell checklist
+(section 22); Esc or Cancel aborts.
+
+At the close of the current base candle (price P), for the coins sold:
+  - proceeds = coins x P
+  - fee = proceeds x fee rate
+  - cash = cash + proceeds - fee
+  - realized P&L = proceeds - fee - cost of the coins sold (their share of the bucket's
+    cost, fee included)
+  - P&L % = realized P&L / cost of the coins sold x 100
+
+A part smaller than the whole bucket becomes its own closed row in History with the bucket's
+number and a part number (#5.1, #5.2, ...), carrying its share of the coins, cost and buy
+fee, its own journal row with picture and readings, and its own S marker on the chart. The
+bucket stays open with the remainder (its row shows "#5 .2"). Selling All closes the bucket
+itself as the last part (#5.3). Each sold row also stores the RSI at the sell, the daily
+EMA/SMA 200 at the sell, the highest high and lowest low while held, and the Exit kind.
+With Whole coins on, a part is rounded down to whole coins and the button is disabled when
+that leaves none.
+
+20. The History tab
+-------------------
+One row per closed bucket and per part sold (hover the number for the part's share):
+  #, Buy date, Sell date, Held (time between buy and sell), Amount (coins), Buy price,
+  Sell price, RSI buy, RSI sell,
+  EMA200 delta   how the daily EMA 200 moved between the buy and the sell, in percent of its
+                 value at the buy (did the 200-day trend rise while you held?)
+  vs EMA delta   the price's distance to the EMA 200 at the sell minus at the buy, in
+                 percentage points (did you move further above the line?)
+  SMA200 delta, vs SMA delta   the same for the SMA 200
+  Fees (buy plus sell), Total cost, Proceeds, P&L, %
+  Target, Stop   the plan in percent
+  Exit           "by hand", "target" or "stop" (hover: when Auto was switched on)
+  High, High %   highest high while held, and in percent of the buy price
+  Low, Low %     lowest low while held, and in percent of the buy price
+Positive deltas are green, negative red; hover a delta cell for the values at the buy and
+at the sell. Sorting and the RSI chips work as in the Open table.
+
+21. The Journal tab and the CSV export
+--------------------------------------
+Every buy and every sell is one journal row with a thumbnail of the chart as it was on
+screen at that moment. Click the thumbnail (or the row) to open the full picture with the
+complete readings table. Columns: Chart, Side, #, Date, TF (the timeframe on screen),
+Price, Amount, RSI, %B, EMA200 (price vs), SMA200 (price vs), ATH and ATL (price vs the
+all-time high and low; hover for 1 year, 6 months, 3 months), vs buy, vs sell, Strategy,
+Lights, Reasons (hover for the note), P&L, %, Held. Chips show all, only buys or only
+sells; headers sort.
+
+The readings stored with every row: price, quantity, amount, fee, timeframe, RSI 14,
+Bollinger %B, band width, upper and lower band, EMA 200 and SMA 200 with the price's
+distance, the eight highs and lows with prices, dates and distances, the next resistance
+and support zones (centre, bottom, top, distance, touches, breaks, first and last touch),
+distance to the last buy and the last sell and on which basis (price or high since), cash,
+equity and open buckets after the trade, the ticked reasons, the note and the checklist
+version, the target and stop percentages and prices, plus from the browser: strategy,
+ENTER/EXIT light, open fair value gaps, fibs drawn, indicators on the chart. A sell row
+adds the result (realized P&L, percent, holding time), the highest high and lowest low
+while held with their times and percentages, the four EMA/SMA 200 changes, the Exit kind,
+when Auto was switched on, whether and when the target and the stop were reached, and a
+full copy of the readings at the buy.
+
+"Export CSV" downloads every journal row of the session as one CSV file; the readings at
+the buy inside a sell row are flattened to columns named at_buy_... . Lists (the reasons)
+are joined with " | ". The pictures live in data/snapshots/<session id>/<bucket id>_buy.png
+and _sell.png.
+
+22. Reason checklists and the Statistics tab
+--------------------------------------------
+Buy reasons (checklist version v1): At support; RSI low (<30); Above EMA 200; Lower
+Bollinger band; Fibonacci level (38.2/50/61.8 %); High volume at support; Bounce candle
+(long lower wick); RSI divergence up; Breakout above resistance; Big drop from recent high
+(>=15 %); Other.
+Sell reasons: At resistance; RSI high (>70); Upper Bollinger band; Profit target reached;
+Trim; Weak volume on the rise; RSI divergence down; Rejection candle (long upper wick);
+Support broken (loss); Below EMA 200 (loss); Other.
+
+The dialog opens before every buy and every sell. Tick every reason that is true, write a
+note if you like (up to 500 characters, also meant for "Other"), Confirm. Nothing ticked is
+fine. The ticked reasons, the note and the version "v1" are stored with the journal row and
+shown in its Reasons column and the CSV. A sell row also carries the reasons of its buy.
+The version is stored so that a later, different checklist can be told apart from this one.
+
+The Statistics tab evaluates the reasons over ALL sessions (or one coin, with the selector).
+  - A "trade" here is one buy with all its sells. It counts once its bucket is fully closed.
+    Its result is the sum of the realized P&L of all its parts over the whole cost, in
+    percent.
+  - Buy reasons table: per reason, the trades that ticked it (count and average P&L %) and
+    the trades that did not (count and average).
+  - Sell reasons table: per reason, the sells that ticked it (a part counts on its own;
+    P&L % of the cost of what was sold), count and average.
+  - A group smaller than 10 is flagged "too few to judge" so you do not read meaning into
+    two trades.
+  - Journal rows from before the checklist existed are left out; the summary line counts
+    them ("46 older rows without a checklist left out").
+  - Automatic sells (target/stop) have an empty checklist and so count only in the
+    "not ticked" side of the buy table.
+
+23. The Performance tab
+-----------------------
+An evaluation in the style of TradingView's Strategy Tester. Two chips at the top:
+"This session" or "All sessions". It refreshes by itself after every trade and after every
+step while the tab is open, and the bottom panel grows while this tab is open so the
+diagrams have room (the panel scrolls for the rest).
+
+What counts as a trade: every closed History row, so a bucket sold in three parts is three
+trades. Open buckets are reported separately at market. "Won" is a trade with positive
+P&L, "lost" negative, "flat" exactly zero. Percentages of trades are of their cost;
+"net profit %" is of the start balance.
+
+The twelve tiles (hover a tile for the full explanation):
+  - Net profit: sum of the realized P&L of all closed trades, fees included, and in percent
+    of the start balance.
+  - Trades: the count, with won, lost, flat and how many were automatic (target/stop).
+  - Win rate: winners divided by all closed trades, with the longest run of winners and of
+    losers in time order.
+  - Profit factor: gross profit (sum of the winners) divided by gross loss (sum of the
+    losers, as a positive number). Above 1 means the winners paid for the losers. Infinite
+    ("inf") when there are winners and no losers; a dash with no winners and no losers.
+  - Max drawdown: the deepest fall of the curve from its running peak, in percent of that
+    peak and in USDT, with the dates of the peak and of the low.
+  - Average trade: the average P&L % per closed trade, with the average in USDT and the
+    averages of the winners and of the losers.
+  - Best trade and Worst trade: by P&L %, with the bucket number, the P&L in USDT and the
+    coin (all sessions).
+  - Average hold: the mean time between buy and sell on the replay clock, and the longest.
+  - Open buckets: how many are still held and their P&L at market.
+  - Equity (or "Equity, all sessions"): cash plus open buckets at market, in percent vs the
+    start, with the curve's high and low.
+  - Fees paid.
+
+The four diagrams (hover any of them for the numbers at the mouse):
+  - Equity curve. For a session: the account value at EVERY base candle from the session
+    start, cash plus the coins held valued at that candle's close, starting with the start
+    balance. The area between the running peak and the curve is shaded red (the drawdown),
+    the start balance is a dashed baseline, and the peak and the low of the maximum
+    drawdown are marked. Long sessions are thinned to about 1,500 points for drawing; the
+    peak and the low are always kept. For all sessions: since the sessions replay different
+    years there is no common time axis, so the curve is the realized P&L added up trade by
+    trade (x = trade number), and the drawdown is measured against the sum of the start
+    balances.
+  - P&L per trade: one green or red bar per closed trade in percent, in time order, with the
+    average as a dashed line.
+  - Winners and losers: a donut with the win rate in the centre and the counts.
+  - Monthly returns: a year-by-month grid. For a session each cell is the change of the
+    equity curve from the end of the previous month to the end of this month in percent (the
+    first month starts from the first point); the Year column compounds the months. For all
+    sessions each cell is the realized P&L of the trades closed in that month in percent of
+    the total start balance, and the Year column adds them. Hover a cell for the USDT value.
+
+24. Keyboard shortcuts (complete list)
+--------------------------------------
+Shortcuts are ignored while you type in a field (click on the chart first).
+  P            Play / pause
+  Right arrow  Step one candle of the timeframe on screen
+  R            Back to start (resets the session: trades and journal are deleted)
+  Up / Down    Zoom in / out (hold to keep going)
+  Space        Default zoom (last 160 candles)
+  B            Jump to the buy amount field (Enter there buys)
+  F            Draw a Fibonacci retracement (F again cancels)
+  Delete       Remove the selected retracement (Backspace too)
+  G            Fair value gaps on / off
+  O            Bollinger Bands 20/2 on / off
+  S            Daily SMA 200 line on / off
+  L            Support / resistance tubes and the 6-month high and low on / off
+  D (hold)     Daily candles of the last year; release to return (also the 1Y button)
+  Y (hold)     Bitcoin daily candles of the last 2 years with R1-R3 / S1-S3 (also BTC 2Y)
+  H            This list (also the ? button)
+  Esc          Cancel drawing, close panels and dialogs
+
+25. What is stored where, and what never leaks from the future
+--------------------------------------------------------------
+Storage: everything is in the data folder next to run.py:
+  - data/replay.db: one SQLite database with the candles, the download coverage, the
+    sessions, buckets, trades, fibs and journal rows. Deleting the file starts from scratch
+    (candles will be downloaded again).
+  - data/snapshots/<session id>/: the PNG chart pictures of the journal.
+The browser remembers a few conveniences in its own storage (not in the database): the last
+session you had open and the target/stop percentages globally, and per session the
+timeframe, the speed, the strategy with its parameters, Whole coins, the auto fib settings,
+the gap settings, the level tolerance, and the L and S toggles.
+
+Guards against future knowledge:
+  - The server only ever returns candles with an open time at or before the cursor; a
+    coarser candle still forming is aggregated from base candles up to the cursor.
+  - Indicators and strategy signals are computed on those candles only.
+  - The daily EMA/SMA 200 on intraday charts uses the value of the last COMPLETED day for
+    each bar; the Readings card's value includes the forming day (that is "now").
+  - Highs & lows, the support/resistance zones, the 1Y and BTC peeks, the auto fib and the
+    gaps use only candles known at the cursor.
+  - The journal readings are taken at the moment of the trade and never recomputed later;
+    only the "reached while held" facts of a sell look at the candles between the buy and
+    the sell, which are all in the past at the time of the sell.
+  - Only CLOSED Binance candles are ever stored; the candle still forming at download time
+    is dropped.
+
+26. Limits of the simulation
+----------------------------
+  - Long only, spot only, one coin per session, no leverage, no shorting.
+  - Fills at the close of the current base candle for any size, no spread, no slippage, no
+    partial fills. The automatic sell fills at the level or the open, also without slippage.
+  - The fee is a flat percentage per side.
+  - Candles come from Binance spot only; coins listed later (HYPE) have little history.
+  - The first use of a coin and period needs an internet connection; Binance's public API
+    limits are respected automatically, so a big 1-minute download can take minutes.
+  - The Open buckets table has 17 columns and scrolls sideways on narrow windows.
+  - Signals on the forming candle are not shown as dots because they are not final.
+
+
+========================================================================================
+PART 2 - FOR THE DEVELOPER
+========================================================================================
+
+27. Technology and how to run it
+--------------------------------
+  - Backend: Python 3.12, FastAPI (>=0.115) on uvicorn, pandas (>=2.2), numpy (>=2.0),
+    requests (>=2.32), pydantic (>=2.7). One SQLite file for everything.
+  - Frontend: plain JavaScript ES modules, no build step, no framework. TradingView
+    Lightweight Charts 5.2.1 (Apache 2.0) is vendored as a single file. Canvas-drawn
+    Performance diagrams.
+  - Run: python run.py [--host H] [--port N] [--reload]. run.py puts backend/ on sys.path
+    and starts app.main:app with uvicorn. The server serves the API under /api, the page at
+    / and the static files under /static with Cache-Control: no-cache (so an update of the
+    JavaScript is picked up on reload).
+  - Environment variable REPLAY_DATA_DIR overrides the data folder (used by the tests and
+    by scripts that must not touch the real database).
+  - Tests: cd backend; python -m pytest. The browser test needs pip install playwright and
+    playwright install chromium; --deselect tests/test_ui.py runs the backend only.
+
+28. Folder layout
+-----------------
+  run.py                              server launcher
+  README.md, SETUP.md, WHAT_IT_DOES.txt   documentation
+  backend/requirements.txt
+  backend/app/config.py               coins, intervals, defaults, DATA_DIR / DB_PATH
+  backend/app/main.py                 FastAPI app: schemas, endpoints, error mapping, static
+  backend/app/data/binance_client.py  Binance public REST client (retries, rate limits)
+  backend/app/data/candle_store.py    SQLite candle store with coverage tracking and reads
+  backend/app/data/download.py        command-line downloader
+  backend/app/indicators/core.py      SMA, EMA, RMA, RSI, MACD, Bollinger maths
+  backend/app/indicators/registry.py  ParamSpec/IndicatorSpec catalogue and validation
+  backend/app/strategies/base.py      StrategySpec, events_from_state, sign_state
+  backend/app/strategies/builtin.py   the four strategies
+  backend/app/replay/engine.py        ReplayEngine: sessions, cursor, trading, gauges,
+                                      levels, gaps, fibs, journal, performance, reasons
+  backend/app/replay/session_store.py SQLite persistence: sessions, buckets, trades, fibs,
+                                      snapshots; schema and migrations
+  backend/app/replay/payload.py       candles + indicators + signals -> JSON payload
+  backend/app/replay/reasons.py       checklists, validation, reason statistics
+  backend/app/replay/performance.py   trade rows, summary, equity curve, drawdown, months
+  backend/tests/                      pytest suite (see section 35)
+  frontend/index.html                 the page: top bar, chart, tabs, side cards, dialogs
+  frontend/static/css/app.css         styles (dark theme)
+  frontend/static/js/app.js           application: state, sessions, replay, tables, trading,
+                                      journal, statistics, performance, hotkeys
+  frontend/static/js/api.js           fetch wrappers for every endpoint
+  frontend/static/js/chart.js         ChartView: candles, panes, markers, price lines,
+                                      zoom, legend, quiet mode
+  frontend/static/js/indicators.js    Indicators popover; params.js builds parameter inputs
+  frontend/static/js/fib.js           FibPrimitive (fib levels drawn on the chart)
+  frontend/static/js/fvg.js           FvgPrimitive (gap boxes)
+  frontend/static/js/zones.js         ZonePrimitive (support/resistance tubes)
+  frontend/static/js/plan.js          PlanPrimitive (hatched target/stop preview)
+  frontend/static/js/perf.js          PerfCharts (equity, bars, donut) and renderMonths
+  frontend/static/vendor/             lightweight-charts.standalone.production.js
+  data/replay.db, data/snapshots/     created on first run
+
+29. Data layer: Binance client, candle store, downloader
+--------------------------------------------------------
+binance_client.py
+  - Unauthenticated GET requests to https://api.binance.com (/api/v3/time and
+    /api/v3/klines, at most 1,000 klines per request). A Kline is (open_time, open, high,
+    low, close, volume, close_time), times in ms UTC.
+  - Transient failures (network errors, 5xx) are retried up to 6 times with exponential
+    backoff (1 s doubling, capped at 30 s). HTTP 429/418 honour Retry-After (backoff capped
+    at 60 s). Other 4xx raise BinanceError immediately.
+  - Requests are spaced at least 50 ms apart; the X-MBX-USED-WEIGHT-1M header is watched
+    and the client pauses until the next UTC minute when the used weight reaches 4,800 of
+    the 6,000 per minute limit.
+
+candle_store.py (CandleStore)
+  - Table candles(symbol, interval, open_time, open, high, low, close, volume), primary key
+    (symbol, interval, open_time), WITHOUT ROWID. Table coverage(symbol, interval,
+    start_ms, end_ms) records which slot-aligned ranges were already requested, merged when
+    they overlap or touch, so genuine gaps in Binance history (downtime, pre-listing) are
+    never requested again.
+  - Only closed candles are stored: close_time < now (Binance server time, or the local
+    clock minus 2 s as a fallback). WAL journal mode, synchronous=NORMAL.
+  - ensure_range(symbol, interval, start_ms, end_ms, progress) downloads the missing
+    sub-ranges; downloads of the same (symbol, interval) are serialised by a per-series
+    lock; coverage is written atomically (BEGIN IMMEDIATE).
+  - Reads: get_candles(symbol, interval, start_ms, end_ms, limit) returns a DataFrame with
+    time in SECONDS plus open/high/low/close/volume, oldest first (limit = the most recent
+    N of the window); first_at_or_after, nth_at_or_after, last_at_or_before (open times);
+    peak_close(after, until) = (open_time, close) of the highest close, ties to the
+    earliest; extremes_between(from, to) = highest high and lowest low with their open
+    times; first_cross(from, to, above, below) = open time of the first candle whose high
+    >= above and of the first whose low <= below; stats() per series.
+  - Interval names: 1m, 5m, 15m, 1h, 4h, 1D (Binance spells the daily one "1d").
+
+download.py: python -m app.data.download --symbol BTCUSDT --interval 1h --days 365, or
+--start/--end ISO dates, or --all for every coin; prints progress and the store contents.
+
+30. Indicators, strategies and the payload builder
+--------------------------------------------------
+indicators/core.py: sma (rolling mean, NaN until the period is full); ema (alpha =
+2/(period+1)) and rma (Wilder, alpha = 1/period) are both the recursion y_t = (1-a) y_{t-1}
++ a x_t seeded with the mean of the first "period" valid values; rsi = 100 - 100/(1 +
+rma(gains)/rma(losses)), 100 when the average loss is 0; macd = ema(fast) - ema(slow),
+signal = ema(macd, signal), hist = macd - signal; bollinger: middle = sma, sd = rolling
+population std (ddof=0), upper/lower = middle +/- mult x sd. A series may start with NaNs
+but must be contiguous afterwards.
+
+indicators/registry.py: ParamSpec(name, label, type int|float|choice, default, min, max,
+step, choices) with coerce(); validate_params fills defaults, coerces, rejects unknown keys
+and out-of-range values; IndicatorSpec(key, name, overlay, params, outputs, compute, levels,
+range, check) with describe() for the UI and run(df, params). Registered: sma, ema, rsi,
+macd, bbands (parameters and ranges as in section 8).
+
+strategies/base.py: a strategy returns per bar state (+1/0/-1), enter (state became +1),
+exit (state became -1), plus extra value columns. sign_state(diff, ref) treats |diff| <=
+1e-9 x |ref| as zero. StrategySpec also lists the indicator instances to draw
+(IndicatorTemplate maps indicator parameters to strategy parameters) and an optional
+cross-parameter check. strategies/builtin.py registers rsi_reversal, ema_cross,
+macd_cross, bb_bounce (section 9).
+
+replay/payload.py build_payload(df, indicators, strategy, limit): validates all keys and
+parameters first, computes over the whole df, returns the last "limit" bars column-
+oriented: count, time, open, high, low, close, volume, indicators [{key, params,
+outputs{name: values}}], strategy {key, params, state, enter, exit, values}. NaN becomes
+null.
+
+31. The replay engine
+---------------------
+Constants (engine.py):
+  WARMUP_BARS 1000             candles downloaded before the start per interval >= base
+  COMPUTE_WARMUP_BARS 3000     candles before the visible window fed to the indicators
+  MIN_ORDER_QUOTE 1.0          smallest buy in USDT
+  RSI_PERIOD 14, RSI_WARMUP_BARS 600       the RSI recorded with every trade
+  EMA_LONG_PERIOD / SMA_LONG_PERIOD 200, EMA_LONG_INTERVAL "1D", EMA_LONG_WARMUP_BARS 1200
+  MIN_WARMUP_DAYS 200          the start-placement rule
+  TP_MAX_PCT 1000, SL_MAX_PCT 100
+  EXTREME_WINDOWS all/None, 1y/365, 6m/182, 3m/90 days
+  HISTORY_START_MS 2017-01-01  daily history download start (before any Binance listing)
+  HISTORY_RETRY_SECONDS 60     wait after a failed history download
+  BB_PERIOD 20, BB_MULT 2.0    the Bollinger reading
+  FIB_LEVELS 0, .236, .382, .5, .618, .786, 1;  AUTO_FIB_MAX_LOOKBACK 2000
+  FVG_MAX_MIN_PCT 10
+  CONTEXT_SYMBOL BTCUSDT, CONTEXT_INTERVAL 1D, CONTEXT_YEARS_MAX 5, CONTEXT_WARMUP_DAYS 300
+  SR_PIVOT_BARS 5, SR_TOL_PCT 1.5, SR_TOL_MAX_PCT 10, SR_LEVELS 3
+  NEAR_LEVEL_DAYS 365, NEAR_LEVEL_MIN_TOUCHES 3, ZONE_MAX_VISIT_BARS 5
+  SNAPSHOT_MAX_BYTES 8,000,000, SNAPSHOT_EXTRA_MAX_CHARS 20,000
+  EARLIEST_START_MS 2010-01-01, MAX_BALANCE 1e12
+
+Errors: NotFound -> 404, Invalid -> 422, Conflict -> 409 (mapped in main.py).
+
+Session lifecycle
+  create_session validates symbol, interval, balance (0 < b <= 1e12), fee (0 <= f < 0.1),
+  start (>= 2010-01-01), end (clamped to the latest closed base candle; must be after
+  start); inserts the row with status "preparing", cash = start balance, 12-hex id.
+  prepare (run as a FastAPI background task, one at a time per session) calls
+  ensure_range for every interval >= base from start - 1000 x interval to end, finds the
+  first base candle at or after the start and the last at or before the end, applies
+  _place_start (section 4: listing = first daily candle at or after start - 1000 days;
+  earliest = listing + 200 days; move the start forward when possible, else a warning
+  note), and sets status "ready", data_start_ms, data_end_ms, start_note, cursor_ms (if
+  unset or outside the range). Any exception sets status "error" with the message.
+  POST .../prepare retries. state() adds price (close at the cursor), finished (cursor >=
+  data_end_ms), the open buckets with market values and excursions, the account block
+  (section 15) and the reference block for the Now row.
+
+Time model
+  cursor_ms = open time of the latest visible base candle. Fill price = that candle's
+  close (_price). step(interval, n): on the base interval the cursor goes to the n-th
+  stored base candle after it (gaps skipped by construction); on a coarser interval to
+  the base candle that completes the n-th coarser boundary ((cur_close // iv_ms + n) x
+  iv_ms - base_ms, or the first stored candle after it on a gap); never beyond
+  data_end_ms. Before the cursor is written, _auto_sells runs over the candles in
+  (old cursor, new cursor]. The response carries auto_sells.
+
+view(interval, limit, indicators, strategy, auto_fib, fvg_min_pct, daily_sma, sr_tol)
+  reads the last limit + 3000 candles of the view interval with close <= cursor close
+  (never before the download anchor), appends the partial coarser candle aggregated from
+  base candles (open of the first, max high, min low, close of the last, sum of volume),
+  builds the payload and adds symbol, interval, cursor, partial_last, gauges, auto_fib,
+  fvg (over the last limit + 2 candles) and daily_sma (values per bar: the SMA 200 of the
+  day before the bar's day on intraday views, of the same day on the daily view).
+
+Trading
+  buy(amount, interval, whole, coins, sr_tol, reasons, note, tp_pct, sl_pct): validates
+  the checklist and the plan, requires amount >= 1 and <= cash; with coins, amount = coins
+  x price / (1 - fee); with whole, whole_coin_order rounds the quantity down so the cost
+  (fee included) stays within the amount and the cash and refuses zero coins. fee = amount
+  x fee_rate; qty = (amount - fee) / price (or the whole coins). Inserts the bucket (seq =
+  max + 1, status open, opened_ms = cursor, entry_price, qty, cost = amount, buy_fee,
+  buy_rsi + interval, buy_ema200/sma200 and their pct, tp/sl pct and prices), a trade row
+  (side buy, cash_after) and the cash; then _record_snapshot writes the journal row.
+  sell(bucket_id, interval, sr_tol, part, whole, reasons, note): part in (0, 1]; qty_sold
+  = qty x part (all when part >= 1; floor to whole coins with whole, refused below 1);
+  then _execute_sell.
+  _execute_sell(s, bucket, qty_sold, price, rsi_iv, sr_tol, checklist, trigger): share =
+  qty_sold / qty; cost and buy fee of the share; proceeds = qty_sold x price; fee =
+  proceeds x fee_rate; realized = proceeds - fee - cost; cash += proceeds - fee. A full
+  sell updates the bucket itself to closed (with part = n+1 and part_pct 100 when parts
+  were sold before); a partial sell inserts a new closed row with the same seq, part n+1,
+  part_pct, parent_id and the copied plan fields, and reduces the open bucket's qty, cost
+  and buy_fee. Both store sell_rsi, sell EMA/SMA 200 fields, held_high/low (+ times) from
+  extremes_between(opened, cursor), trigger. A trade row (side sell) is added. The journal
+  extras get trigger, armed_at, target_hit(_at), stop_hit(_at) from first_cross(opened_ms,
+  cursor, tp_price, sl_price).
+  arm(bucket_id, armed): bucket must be open and, to arm, have a target or a stop;
+  armed_ms = cursor (or NULL when switching off).
+  _auto_sells(from, to): for every open armed bucket, first_cross over the candles in
+  (from, to]; the earliest hit wins, "stop" before "target" on the same candle; events are
+  processed in candle order, the cursor is set to the event candle, the fill is max(level,
+  open) for a target and min(level, open) for a stop, and _execute_sell sells all that is
+  left with an empty v1 checklist and trigger = kind.
+
+Gauges and levels (_gauges(s, interval, sr_tol), used by view and by every trade)
+  price; rsi (RSI 14 over the last 600 candles of the interval at the cursor, forming
+  candle included); bb (Bollinger 20/2 on the same candles: upper, middle, lower, pctb,
+  width_pct); ema_long and sma_long (200 on the daily candles at the cursor, forming day
+  included, with price_pct); extremes (the four windows over the daily history since the
+  listing, _daily_history downloads it once per coin and retries after 60 s on failure);
+  levels (nearest_levels over the closed daily candles of the last 365 days with the
+  tolerance). swing_levels, support_resistance, zone_visits, nearest_levels and
+  fair_value_gaps are module-level pure functions (rules in sections 12 and 14).
+  btc_context(years, tol_pct, indicators) downloads and returns Bitcoin's daily candles of
+  the window plus 300 warm-up days, the forming day aggregated from the session's own
+  candles (BTC session) or hourly BTC candles, and support_resistance over the closed
+  days of the window.
+
+Journal
+  _record_snapshot writes one snapshots row per (bucket, side) with the readings JSON of
+  section 21 (a sell row also embeds at_buy = the buy row's readings and the four
+  long_avg_changes). attach_snapshot_image validates a PNG data URL (signature, base64,
+  <= 8 MB), writes data/snapshots/<session>/<bucket>_<side>.png and merges the browser's
+  extra readings (simple values only, <= 20,000 chars of JSON). snapshots_csv flattens
+  every row (at_buy_* columns, lists joined with " | ").
+  trades(session) back-fills held_high/low for buckets closed before those columns
+  existed.
+
+Performance (performance.py, called by engine.performance / performance_all)
+  trade_rows: one row per closed bucket row with cost > 0, sorted by closed_ms then id.
+  summarize: the numbers of section 23 (profit_factor inf -> the string "inf" via
+  json_safe). equity_curve: trades sorted by time; at every base candle from data_start
+  to the cursor, apply the trades with time_ms <= the candle's open time (cash =
+  cash_after, qty +/- qty), equity = cash + qty x close; first point = start balance at
+  data_start. drawdown: running peak, percent below it per point, deepest absolute fall
+  with its peak and trough indexes. thin: every k-th point plus first, last, peak and
+  trough so at most about 1,500 points go to the browser. monthly_from_curve (session)
+  and monthly_from_trades (all sessions). combined_report: all trade rows together,
+  start_total = sum of start balances, curve = cumulative realized P&L by trade number,
+  drawdown of start_total + cumulative, accounts summed for open/equity/fees.
+
+Reasons (reasons.py + engine.reason_stats)
+  clean(side, reasons, note) drops duplicates, refuses unknown keys, more than 32 reasons,
+  non-text notes and notes over 500 chars; blank note -> None. reason_stats(symbol) walks
+  every session's buckets and snapshots: a closed row with a checklist sell reading is a
+  "sell" (pnl_pct of its own cost); a closed bucket (not a part) with a checklist buy
+  reading is a "trade" with pnl = sum over itself and its parts over the summed cost;
+  rows without a checklist are counted as unlisted. stats() builds the per-reason groups
+  with few = count < 10.
+
+Concurrency: one re-entrant engine lock around every state-changing operation; each SQLite
+operation is a short transaction (tx()), WAL mode, foreign keys on.
+
+32. Database schema
+-------------------
+sessions(id TEXT PK, name, symbol, base_interval, start_ms, end_ms, data_start_ms,
+  data_end_ms, cursor_ms, start_balance, cash, fee_rate, status preparing|ready|error,
+  error, start_note, created_at, updated_at)
+buckets(id INTEGER PK AUTOINCREMENT, session_id -> sessions ON DELETE CASCADE, seq,
+  status open|closed, opened_ms, entry_price, qty, cost, buy_fee, closed_ms, exit_price,
+  proceeds, sell_fee, realized_pnl, buy_rsi, buy_rsi_interval, sell_rsi,
+  sell_rsi_interval, buy_ema200, buy_sma200, buy_ema200_pct, buy_sma200_pct, sell_ema200,
+  sell_sma200, sell_ema200_pct, sell_sma200_pct, held_high, held_high_ms, held_low,
+  held_low_ms, part, part_pct, parent_id, tp_pct, sl_pct, tp_price, sl_price, armed_ms,
+  trigger)   index (session_id, status)
+trades(id PK, session_id, bucket_id, side buy|sell, time_ms, price, qty, quote, fee,
+  cash_after)   index (session_id, id)
+fibs(id PK, session_id, interval, t1_ms, p1, t2_ms, p2, created_at)
+snapshots(id PK, session_id, bucket_id, side, time_ms, interval, image_path, readings
+  JSON text, created_at, UNIQUE(bucket_id, side))
+candles and coverage: section 29.
+Migrations are additive: on open, SessionStore adds any missing column of sessions
+(start_note) and buckets (RSI, EMA/SMA, excursion, part, plan columns) with ALTER TABLE
+and, when the EMA/SMA columns were just added, back-fills them from the journal readings.
+Semantics of a sold part: a closed buckets row with the parent's seq, part = n, part_pct =
+percent of what was left, parent_id = the open bucket; the parent itself closes as the
+last part with part_pct 100.
+
+33. HTTP API
+------------
+Catalogues and data
+  GET  /api/health                      {ok, time}
+  GET  /api/coins                       the ten coins (base, name, symbol)
+  GET  /api/intervals                   [{name, ms}]
+  GET  /api/indicators                  indicator specs with parameters
+  GET  /api/strategies                  strategy specs with parameters and indicators
+  GET  /api/reasons                     {version, buy[], sell[], min_group, note_max_chars}
+  GET  /api/data/status                 stored series with counts and first/last times
+  POST /api/data/download  202          {symbol, interval, start, end?} -> job
+  GET  /api/data/jobs/{job_id}          job status (queued|running|done|error, candles)
+  GET  /api/candles?symbol&interval&start&end&limit   raw stored candles (no replay guard)
+  POST /api/compute                     {symbol, interval, start?, end?, limit<=20000,
+                                        indicators[], strategy?} -> payload (no guard)
+Sessions
+  GET  /api/sessions                    list, newest first
+  POST /api/sessions       201          {symbol, start, end?, base_interval=1h,
+                                        start_balance, fee_rate, name?}; starts prepare
+  GET  /api/sessions/{id}               state (+ prepare_progress while preparing)
+  POST /api/sessions/{id}/prepare       retry a failed download
+  DELETE /api/sessions/{id}  204
+  POST /api/sessions/{id}/step          {interval?, n=1 (<=100000), view?} -> state
+                                        (+ view, + auto_sells[])
+  POST /api/sessions/{id}/reset         back to start, fresh account, trades/fibs/journal
+                                        deleted
+  POST /api/sessions/{id}/view          ViewRequest {interval?, limit<=20000, indicators[],
+                                        strategy?, auto_fib?, fvg_min_pct?, daily_sma,
+                                        sr_tol?} -> payload + gauges
+  POST /api/sessions/{id}/buy           {amount, interval?, whole, coins?, sr_tol?,
+                                        reasons[], note?, tp_pct?, sl_pct?} -> {bucket,
+                                        state}
+  POST /api/sessions/{id}/sell          {bucket_id, interval?, sr_tol?, part=1, whole,
+                                        reasons[], note?} -> {bucket, state}
+  POST /api/sessions/{id}/buckets/{bid}/arm   {armed: strict bool} -> {bucket, state}
+  GET  /api/sessions/{id}/trades        {trades[], buckets[]} (all buckets incl. closed)
+  GET  /api/sessions/{id}/performance   the Performance report of the session
+  GET  /api/stats/performance           the report over all sessions
+  GET  /api/stats/reasons?symbol=       the Reasons statistics (all sessions or one coin)
+  GET  /api/sessions/{id}/snapshots     journal rows with readings and has_image
+  GET  /api/sessions/{id}/snapshots.csv the CSV export (attachment)
+  POST /api/sessions/{id}/snapshots/{bucket_id}/{side}/image   {image: PNG data URL,
+                                        extra?} attaches the chart picture
+  GET  /api/sessions/{id}/snapshots/{snap_id}/image   the PNG
+  POST /api/sessions/{id}/context       {years=2 (1..5), tol_pct=1.5, indicators[]} ->
+                                        Bitcoin daily payload with levels
+  GET  /api/sessions/{id}/fibs,  POST (201) {interval?, t1_ms, p1, t2_ms, p2},
+  DELETE /api/sessions/{id}/fibs/{fib_id} 204
+Validation errors return 422 with a list of {loc, msg, type} (the input is not echoed, so
+inf/NaN inputs cannot break the response). A step with a bad view is rejected before the
+cursor moves.
+
+34. Frontend
+------------
+app.js holds one state object (sessions, session, interval, strategy, indicators, fibs,
+fvg, peek, playing, speed, sort/filter settings, perf, ...). Every server response is
+checked against a token (session id, timeframe, indicator list, view sequence) before it is
+applied, so a late response for an older state never renders or trades. Key functions:
+loadSession, step/play/pause/reset, setInterval_, refreshView (POST view with the current
+indicator and strategy request), applyView, refreshTrades (History, Journal, Open table,
+then schedulePerf), buy/doBuy/sellBucket/arm/handleAutoSells, openReasons/confirmReasons,
+captureSnapshot (chart.takeScreenshot -> PNG data URL -> image endpoint with the UI
+extras), startPeek/endPeek (D/Y, chart.setQuiet), fib drawing, toggleFvg, toggleBollinger,
+setDailySma, setNearLevels, loadStats/renderStats, initPerf/loadPerf/schedulePerf (600 ms
+debounce)/setPerfScope/renderPerf, selectTab, onKeydown (section 24). Table column keys:
+OPEN_KEYS (17), HISTORY_KEYS (25), JOURNAL_KEYS; READING_LABELS maps every reading key to
+its label in the snapshot dialog. localStorage keys are prefixed "replay." (lastSession,
+speed, plan.tp, plan.sl and others).
+
+chart.js (ChartView) wraps Lightweight Charts: candlestick + volume in pane 0, overlay
+series on pane 0, oscillators in new panes (140 px) with their level lines, strategy
+markers and B/S trade markers, bucket entry price lines (line()/drop() helpers keep the
+titles so setQuiet(on) can blank and restore them), 6-month high/low lines, the daily
+SMA 200 series, the selected bucket's plan lines, and the primitives FibPrimitive,
+FvgPrimitive, ZonePrimitive and PlanPrimitive. Zoom: INITIAL_BARS 160, ZOOM_STEP 1.25,
+MIN 10, MAX 3000, newest bar kept at the right edge. Partial candle drawn translucent.
+
+perf.js: PerfCharts({equity, bars, donut}) draws on canvases at device pixel ratio with
+hover tooltips (.perf-tip): drawEquity (curve, drawdown shading between running peak and
+curve, dashed baseline, peak/low markers, crosshair; for the "cumulative" kind the x axis
+is the trade number), drawBars (per-trade percent bars with the average line), drawDonut
+(win rate centre, legend); renderMonths builds the year x month table (session: months
+compound into the Year column; all sessions: they add). money() normalises values below
+0.005 to 0 so no "-0.00" appears.
+
+api.js: thin fetch wrappers; errors carry the server's detail text, which app.js shows as
+a red toast.
+
+35. Tests
+---------
+127 tests: 126 backend tests plus one Playwright browser test (tests/test_ui.py, a long
+smoke test through the whole UI: sessions, stepping, timeframes, indicators, strategy
+lights, buying with the checklist, parts, target/stop/Auto, quiet peek, journal, statistics
+and the Performance tab). Backend files: test_candle_store.py (coverage, closed-only,
+reads), test_indicators.py (maths against references), test_strategies.py, test_api.py
+(catalogues, download jobs, compute), test_api_sessions.py (session endpoints incl.
+reasons, target/stop/arm, performance), test_replay.py (engine: time model, fills, parts,
+whole coins, warm-up rule, gauges, levels, gaps, fibs, journal, reasons, target and stop,
+auto sells, performance report), test_review_fixes.py (regressions from the review pass).
+tests/fakes.py is a fake exchange: hourly price = 100 + (hour mod 50), close = price + 0.5,
+high = price + 1, low = price - 1, so the price climbs from 100 to 149 and drops back every
+50 hours; data exists only up to "now". conftest.py points REPLAY_DATA_DIR at a temporary
+folder so the real database is never touched.
+
+36. Formulas collected in one place
+-----------------------------------
+Buy:        fee = amount x f;  qty = (amount - fee) / P;  cost = amount;  cash -= amount
+Whole coins: cost = coins x P / (1 - f); coins = floor(min(amount, cash) x (1 - f) / P)
+Sell:       proceeds = qty_sold x P;  fee = proceeds x f;  cash += proceeds - fee
+            realized = proceeds - fee - cost_share;  P&L % = realized / cost_share x 100
+Part:       share = qty_sold / qty_left;  cost_share = cost_left x share (buy fee likewise)
+Open row:   market value = qty x P;  unrealized = mv - cost;  % = (mv / cost - 1) x 100
+Account:    invested = sum cost (open); mv = sum qty x P; unrealized = mv - invested;
+            realized = sum realized (closed); fees = sum buy fees + sum sell fees (closed);
+            equity = cash + mv; return = equity - start; return % = (equity/start - 1) x 100
+Target/stop prices: tp = P_entry x (1 + tp%/100);  sl = P_entry x (1 - sl%/100)
+Auto fill:  target: max(tp, open of the trigger candle);  stop: min(sl, open)
+Distance %: (price / level - 1) x 100  (EMA/SMA 200, highs/lows, targets, Now row)
+Now row basis: the trade price, or the highest base close since the trade when that close
+            is above the trade price ("high since")
+Zone:       band = centre x (1 -/+ tol/100); distance = (nearer edge / price - 1) x 100,
+            0 and "inside" when price is within the band
+%B:         (price - lower) / (upper - lower);  band width % = (upper - lower) / middle x 100
+Excursion:  held high % = (highest high / entry - 1) x 100; held low % likewise
+EMA/SMA delta:  change % = (value at sell / value at buy - 1) x 100;
+            distance change (pp) = price-vs-line % at sell - price-vs-line % at buy
+Statistics: trade P&L % = sum realized of the bucket and its parts / sum of their costs x 100
+Performance: win rate = winners / trades x 100; profit factor = gross profit / gross loss;
+            net % = net / start balance x 100; average trade % = mean of P&L %;
+            equity_t = cash_t + qty_t x close_t; drawdown_t = (peak_t - equity_t)/peak_t x 100
+            month % (session) = equity at month end / equity at previous month end - 1;
+            month % (all) = realized P&L closed in the month / sum of start balances
+Level score: 1 per swing + 0.5 x (bar index / last index) per swing + 1 if it holds the
+            window's extreme
+
+37. How to extend it
+--------------------
+  - New indicator: add the maths to indicators/core.py, register an IndicatorSpec in
+    registry.py (overlay or pane, parameters, outputs, levels); the UI lists it from
+    GET /api/indicators automatically.
+  - New strategy: add a compute function returning state/enter/exit (use events_from_state
+    and sign_state) and register a StrategySpec in strategies/builtin.py with the indicator
+    templates to draw; the UI picks it up from GET /api/strategies.
+  - New checklist reason: add a (key, label) to BUY_REASONS or SELL_REASONS in reasons.py
+    and bump CHECKLIST_VERSION so old rows can be told apart in the statistics.
+  - New journal reading: add it to the readings dict in engine._record_snapshot (server-
+    side) or to captureSnapshot's extra (browser-side) and a label in READING_LABELS.
+  - New bucket column: add it to BUCKET_FIELDS and BUCKET_MIGRATIONS in session_store.py
+    (additive ALTER TABLE on open), write it in buy/_execute_sell, expose it in
+    _public_bucket, add the key to OPEN_KEYS/HISTORY_KEYS and the header in index.html.
+  - New coin: add it to COINS in config.py (it must be a trading USDT spot pair on Binance).

@@ -1,0 +1,274 @@
+"""SQLite persistence for the day-trading mode: per-session settings, the daily trend checks, the
+user-drawn support/resistance zones and the trades.
+
+The rows hang off the shared `sessions` table (see session_store.py) and are deleted with it.
+Like SessionStore, every method takes an open connection from `tx()` so one user action commits
+atomically; the day-trading engine opens the transaction.
+"""
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+SCHEMA = """
+-- One row per day-trading session: the fixed risk per trade and where the replay stands.
+-- phase: "trading" (stepping through candles) or "exited" (a trade has just closed; the next step
+-- or "continue" jumps to the next 06:00). start_cursor_ms: the first 06:00 candle (set once).
+CREATE TABLE IF NOT EXISTS day_sessions (
+    session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    timezone         TEXT    NOT NULL,
+    risk_pct         REAL    NOT NULL,
+    risk_amount      REAL    NOT NULL,
+    phase            TEXT    NOT NULL,
+    start_cursor_ms  INTEGER,
+    last_exit_id     INTEGER,
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL
+);
+
+-- The trend check of one trading day (06:00 to 06:00, local date of its start).
+-- ema_above is computed (1/0, NULL = EMA 200 not available), hh_hl is the user's answer (NULL = not yet).
+CREATE TABLE IF NOT EXISTS day_checks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    day_date      TEXT    NOT NULL,
+    day_start_ms  INTEGER NOT NULL,
+    day_end_ms    INTEGER NOT NULL,
+    daily_close   REAL,
+    daily_close_ms INTEGER,
+    ema200        REAL,
+    ema_above     INTEGER,
+    hh_hl         INTEGER,
+    notes         TEXT,
+    image_path    TEXT,
+    image_ms      INTEGER,
+    left_ms       INTEGER,
+    left_how      TEXT,
+    updated_at    TEXT    NOT NULL,
+    UNIQUE(session_id, day_date)
+);
+
+-- Support/resistance zones drawn by the user: a horizontal band between two prices.
+CREATE TABLE IF NOT EXISTS day_zones (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    interval    TEXT    NOT NULL,
+    upper       REAL    NOT NULL,
+    lower       REAL    NOT NULL,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS day_zones_session ON day_zones(session_id, id);
+
+-- One row per trade (open or closed); see the spec's "Saved per trade" table.
+CREATE TABLE IF NOT EXISTS day_trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    status          TEXT    NOT NULL,
+    day_date        TEXT    NOT NULL,
+    ema_above       INTEGER,
+    hh_hl           INTEGER,
+    entry_ms        INTEGER NOT NULL,
+    entry_price     REAL    NOT NULL,
+    entry_rsi       REAL,
+    entry_atr       REAL,
+    zone_id         INTEGER,
+    zone_upper      REAL,
+    zone_lower      REAL,
+    stop_suggested  REAL,
+    stop_atr        REAL,
+    stop_used       REAL    NOT NULL,
+    take_profit     REAL    NOT NULL,
+    rr              REAL,
+    coins           REAL    NOT NULL,
+    position_value  REAL    NOT NULL,
+    risk_usdt       REAL    NOT NULL,
+    risk_amount     REAL    NOT NULL,
+    capped          INTEGER NOT NULL,
+    buy_fee         REAL    NOT NULL,
+    cash_after_entry REAL   NOT NULL,
+    exit_ms         INTEGER,
+    exit_price      REAL,
+    exit_type       TEXT,
+    exit_reason     TEXT,
+    exit_note       TEXT,
+    overnight       INTEGER NOT NULL DEFAULT 0,
+    sell_fee        REAL,
+    fees            REAL,
+    pnl             REAL,
+    pnl_pct         REAL,
+    r_multiple      REAL,
+    cash_after_exit REAL,
+    whatif_n        INTEGER,
+    whatif_high     REAL,
+    whatif_low      REAL,
+    whatif_above_exit_pct    REAL,
+    whatif_below_exit_pct    REAL,
+    whatif_high_vs_entry_pct REAL,
+    whatif_low_vs_entry_pct  REAL,
+    image_path      TEXT,
+    notes           TEXT,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS day_trades_session ON day_trades(session_id, seq);
+"""
+
+TABLES = ("day_sessions", "day_checks", "day_zones", "day_trades")
+# Columns added after the first release, created on databases that predate them (additive only).
+MIGRATIONS = {
+    "day_trades": {
+        "stop_atr": "REAL",
+        # the entry conditions at the buy, for the later evaluation (None = unknown at the time)
+        "uptrend": "INTEGER", "price_in_zone": "INTEGER", "rsi_dipped": "INTEGER", "rsi_day_min": "REAL",
+        "prev_high": "REAL", "close_above_prev_high": "INTEGER", "zone_interval": "TEXT",
+        # the stop / take-profit at the buy and every later move (JSON list), see DayEngine.move_trade
+        "stop_initial": "REAL", "tp_initial": "REAL", "changes": "TEXT",
+        # how confident the trader was at the buy, 0 (not at all) to 10 (certain); set once, never changed
+        "confidence": "INTEGER",
+    },
+    # the daily journal: notes, the end-of-day picture and how / when the day was left
+    "day_checks": {"notes": "TEXT", "image_path": "TEXT", "image_ms": "INTEGER", "left_ms": "INTEGER", "left_how": "TEXT"},
+}
+
+
+def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
+    return None if r is None else dict(r)
+
+
+class DayStore:
+    def __init__(self, db_path: Path | str) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.tx() as conn:
+            conn.executescript(SCHEMA)
+            for table, cols in MIGRATIONS.items():
+                have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                for col, typ in cols.items():
+                    if col not in have:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            self._columns = {t: [r[1] for r in conn.execute(f"PRAGMA table_info({t})")] for t in TABLES}
+
+    @contextmanager
+    def tx(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------- generic
+    def _insert(self, conn: sqlite3.Connection, table: str, f: dict[str, Any]) -> int:
+        bad = set(f) - set(self._columns[table])
+        if bad:
+            raise ValueError(f"unknown {table} fields {sorted(bad)}")
+        cols = ", ".join(f)
+        marks = ", ".join("?" for _ in f)
+        cur = conn.execute(f"INSERT INTO {table}({cols}) VALUES ({marks})", list(f.values()))
+        return int(cur.lastrowid)
+
+    def _update(self, conn: sqlite3.Connection, table: str, key: str, key_value: Any, f: dict[str, Any]) -> None:
+        bad = set(f) - set(self._columns[table])
+        if bad or not f:
+            raise ValueError(f"cannot update {table} fields {sorted(bad)}")
+        sets = ", ".join(f"{k}=?" for k in f)
+        cur = conn.execute(f"UPDATE {table} SET {sets} WHERE {key}=?", [*f.values(), key_value])
+        if cur.rowcount != 1:
+            raise KeyError(key_value)
+
+    # ----------------------------------------------------------- day sessions
+    def create_day_session(self, conn: sqlite3.Connection, **f: Any) -> dict:
+        self._insert(conn, "day_sessions", f)
+        return self.get_day_session(conn, f["session_id"])  # type: ignore[return-value]
+
+    def get_day_session(self, conn: sqlite3.Connection, session_id: str) -> dict | None:
+        return _row(conn.execute("SELECT * FROM day_sessions WHERE session_id=?", (session_id,)).fetchone())
+
+    def update_day_session(self, conn: sqlite3.Connection, session_id: str, **f: Any) -> None:
+        self._update(conn, "day_sessions", "session_id", session_id, f)
+
+    # ------------------------------------------------------------------ checks
+    def add_check(self, conn: sqlite3.Connection, **f: Any) -> dict:
+        cid = self._insert(conn, "day_checks", f)
+        return _row(conn.execute("SELECT * FROM day_checks WHERE id=?", (cid,)).fetchone())  # type: ignore[return-value]
+
+    def get_check(self, conn: sqlite3.Connection, session_id: str, day_date: str) -> dict | None:
+        return _row(conn.execute(
+            "SELECT * FROM day_checks WHERE session_id=? AND day_date=?", (session_id, day_date)
+        ).fetchone())
+
+    def list_checks(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        return [dict(r) for r in conn.execute("SELECT * FROM day_checks WHERE session_id=? ORDER BY day_date", (session_id,)).fetchall()]
+
+    def update_check(self, conn: sqlite3.Connection, check_id: int, **f: Any) -> None:
+        self._update(conn, "day_checks", "id", check_id, f)
+
+    def delete_checks(self, conn: sqlite3.Connection, session_id: str) -> None:
+        conn.execute("DELETE FROM day_checks WHERE session_id=?", (session_id,))
+
+    # ------------------------------------------------------------------- zones
+    def add_zone(self, conn: sqlite3.Connection, **f: Any) -> dict:
+        zid = self._insert(conn, "day_zones", f)
+        return self.get_zone(conn, f["session_id"], zid)  # type: ignore[return-value]
+
+    def get_zone(self, conn: sqlite3.Connection, session_id: str, zone_id: int) -> dict | None:
+        return _row(conn.execute("SELECT * FROM day_zones WHERE session_id=? AND id=?", (session_id, zone_id)).fetchone())
+
+    def list_zones(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        return [dict(r) for r in conn.execute("SELECT * FROM day_zones WHERE session_id=? ORDER BY id", (session_id,)).fetchall()]
+
+    def update_zone(self, conn: sqlite3.Connection, zone_id: int, **f: Any) -> None:
+        self._update(conn, "day_zones", "id", zone_id, f)
+
+    def delete_zone(self, conn: sqlite3.Connection, session_id: str, zone_id: int) -> bool:
+        return conn.execute("DELETE FROM day_zones WHERE session_id=? AND id=?", (session_id, zone_id)).rowcount == 1
+
+    def delete_zones(self, conn: sqlite3.Connection, session_id: str) -> None:
+        conn.execute("DELETE FROM day_zones WHERE session_id=?", (session_id,))
+
+    # ------------------------------------------------------------------ trades
+    def add_trade(self, conn: sqlite3.Connection, **f: Any) -> dict:
+        n = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM day_trades WHERE session_id=?", (f["session_id"],)).fetchone()[0]
+        tid = self._insert(conn, "day_trades", {**f, "seq": int(n) + 1})
+        return self.get_trade(conn, f["session_id"], tid)  # type: ignore[return-value]
+
+    def get_trade(self, conn: sqlite3.Connection, session_id: str, trade_id: int) -> dict | None:
+        return _row(conn.execute("SELECT * FROM day_trades WHERE session_id=? AND id=?", (session_id, trade_id)).fetchone())
+
+    def open_trade(self, conn: sqlite3.Connection, session_id: str) -> dict | None:
+        return _row(conn.execute(
+            "SELECT * FROM day_trades WHERE session_id=? AND status='open' ORDER BY id DESC LIMIT 1", (session_id,)
+        ).fetchone())
+
+    def list_trades(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        return [dict(r) for r in conn.execute("SELECT * FROM day_trades WHERE session_id=? ORDER BY seq", (session_id,)).fetchall()]
+
+    def closed_trades(self, conn: sqlite3.Connection, session_id: str | None = None) -> list[dict]:
+        """Closed trades of one session, or of every day session (`session_id` None), oldest first."""
+        if session_id is None:
+            return [dict(r) for r in conn.execute("SELECT * FROM day_trades WHERE status='closed' ORDER BY exit_ms, id").fetchall()]
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM day_trades WHERE session_id=? AND status='closed' ORDER BY exit_ms, id", (session_id,)
+        ).fetchall()]
+
+    def trades_on_day(self, conn: sqlite3.Connection, session_id: str, day_date: str) -> int:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM day_trades WHERE session_id=? AND day_date=?", (session_id, day_date)
+        ).fetchone()[0])
+
+    def update_trade(self, conn: sqlite3.Connection, trade_id: int, **f: Any) -> None:
+        self._update(conn, "day_trades", "id", trade_id, f)
+
+    def delete_trades(self, conn: sqlite3.Connection, session_id: str) -> None:
+        conn.execute("DELETE FROM day_trades WHERE session_id=?", (session_id,))

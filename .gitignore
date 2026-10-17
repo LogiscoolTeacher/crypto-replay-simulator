@@ -1,0 +1,5 @@
+# local data: the candle database, replay sessions and your screenshots (never pushed)
+/data/
+__pycache__/
+*.pyc
+.pytest_cache/
