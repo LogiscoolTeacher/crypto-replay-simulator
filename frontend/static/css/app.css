@@ -380,6 +380,20 @@ body:not(.day-mode) .day-only { display: none !important; }
 .nt-conf-chips { display: flex; flex-wrap: wrap; gap: 2px; flex: 1; min-width: 0; }
 .nt-conf-chip { padding: 2px 0; width: 23px; box-sizing: border-box; text-align: center; border-radius: 6px; font-size: 11px; }
 .nt-conf-chip.on { background: #2563b8; border-color: #2563b8; color: #fff; }
+.review-dialog { width: min(560px, 94vw); }
+.review-inline { margin-top: 10px; padding: 8px 10px; border: 1px solid #2563b8; border-radius: 8px; background: rgba(37, 99, 184, 0.12); }
+.review-inline p { margin: 4px 0; }
+.review-inline .review-list { gap: 6px; margin: 8px 0 6px; }
+.review-inline .review-row { font-size: 13px; }
+.review-inline .rv-toggle { width: 54px; padding: 2px 0; }
+.review-inline .row-flex { margin-top: 6px; flex-wrap: wrap; }
+.review-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+.review-row { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+.review-row kbd { margin-left: 6px; }
+.rv-toggle { width: 64px; text-align: center; font-family: var(--mono); font-size: 12px; }
+.rv-toggle.on { background: #2563b8; border-color: #2563b8; color: #fff; }
+.rtag { display: inline-block; margin-right: 3px; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 700; background: rgba(37, 99, 184, 0.3); color: #8ab4f8; white-space: nowrap; }
+.rtag.none { background: transparent; color: var(--muted); font-weight: 400; text-transform: none; }
 .conf { display: inline-block; min-width: 18px; padding: 0 4px; border-radius: 4px; font-size: 11px; font-weight: 700; text-align: center; background: rgba(37, 99, 184, 0.3); color: #8ab4f8; }
 .nt-panel .btn.small { padding: 2px 9px; font-size: 12px; line-height: 1.4; }
 .nt-stop .btn.small { flex: 0 0 auto; font-weight: 700; }

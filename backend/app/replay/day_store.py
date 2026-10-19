@@ -116,9 +116,38 @@ CREATE TABLE IF NOT EXISTS day_trades (
     updated_at      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS day_trades_session ON day_trades(session_id, seq);
+-- the automatic-exit twin of every manual trade: same entry and size, the ORIGINAL stop and
+-- target, closed only when one of them is hit (overnight and across days); never touches the cash
+CREATE TABLE IF NOT EXISTS day_auto_trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    trade_id        INTEGER NOT NULL REFERENCES day_trades(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    status          TEXT    NOT NULL,
+    day_date        TEXT    NOT NULL,
+    entry_ms        INTEGER NOT NULL,
+    entry_price     REAL    NOT NULL,
+    stop            REAL    NOT NULL,
+    take_profit     REAL    NOT NULL,
+    coins           REAL    NOT NULL,
+    position_value  REAL    NOT NULL,
+    buy_fee         REAL    NOT NULL,
+    risk_amount     REAL    NOT NULL,
+    exit_ms         INTEGER,
+    exit_price      REAL,
+    exit_type       TEXT,
+    sell_fee        REAL,
+    fees            REAL,
+    pnl             REAL,
+    pnl_pct         REAL,
+    r_multiple      REAL,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS day_auto_trades_session ON day_auto_trades(session_id, seq);
 """
 
-TABLES = ("day_sessions", "day_checks", "day_zones", "day_trades")
+TABLES = ("day_sessions", "day_checks", "day_zones", "day_trades", "day_auto_trades")
 # Columns added after the first release, created on databases that predate them (additive only).
 MIGRATIONS = {
     "day_trades": {
@@ -130,9 +159,13 @@ MIGRATIONS = {
         "stop_initial": "REAL", "tp_initial": "REAL", "changes": "TEXT",
         # how confident the trader was at the buy, 0 (not at all) to 10 (certain); set once, never changed
         "confidence": "INTEGER",
+        # the three review marks answered at 24:00 of the exit day (0 / 1) and when they were answered
+        "review_stop_tight": "INTEGER", "review_over_target": "INTEGER", "review_stop_saved": "INTEGER", "reviewed_at": "TEXT",
     },
     # the daily journal: notes, the end-of-day picture and how / when the day was left
     "day_checks": {"notes": "TEXT", "image_path": "TEXT", "image_ms": "INTEGER", "left_ms": "INTEGER", "left_how": "TEXT"},
+    # the open time of the last candle a twin was checked against (the settlement only reads newer ones)
+    "day_auto_trades": {"checked_ms": "INTEGER"},
 }
 
 
@@ -272,3 +305,24 @@ class DayStore:
 
     def delete_trades(self, conn: sqlite3.Connection, session_id: str) -> None:
         conn.execute("DELETE FROM day_trades WHERE session_id=?", (session_id,))
+
+    # ------------------------------------------------------- automatic twins
+    def add_auto_trade(self, conn: sqlite3.Connection, **f: Any) -> dict:
+        aid = self._insert(conn, "day_auto_trades", f)
+        return _row(conn.execute("SELECT * FROM day_auto_trades WHERE id=?", (aid,)).fetchone())  # type: ignore[return-value]
+
+    def auto_trade_of(self, conn: sqlite3.Connection, session_id: str, trade_id: int) -> dict | None:
+        return _row(conn.execute("SELECT * FROM day_auto_trades WHERE session_id=? AND trade_id=?", (session_id, trade_id)).fetchone())
+
+    def open_auto_trades(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM day_auto_trades WHERE session_id=? AND status='open' ORDER BY seq", (session_id,)).fetchall()]
+
+    def list_auto_trades(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        return [dict(r) for r in conn.execute("SELECT * FROM day_auto_trades WHERE session_id=? ORDER BY seq", (session_id,)).fetchall()]
+
+    def update_auto_trade(self, conn: sqlite3.Connection, auto_id: int, **f: Any) -> None:
+        self._update(conn, "day_auto_trades", "id", auto_id, f)
+
+    def delete_auto_trades(self, conn: sqlite3.Connection, session_id: str) -> None:
+        conn.execute("DELETE FROM day_auto_trades WHERE session_id=?", (session_id,))

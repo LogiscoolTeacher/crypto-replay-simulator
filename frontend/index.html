@@ -187,6 +187,7 @@
           <button class="tab swing-only" role="tab" id="tab-stats" aria-selected="false" aria-controls="panel-stats" title="Which reasons paid off, over all sessions">Statistics</button>
           <button class="tab swing-only" role="tab" id="tab-perf" aria-selected="false" aria-controls="panel-perf" title="How the trading went: numbers, equity curve, drawdown, trades, months">Performance</button>
           <button class="tab day-only" role="tab" id="tab-day" aria-selected="false" aria-controls="panel-day" title="Every trade of this day-trading session with its picture at the exit">Trades <span id="day-trade-count" class="pill">0</span></button>
+          <button class="tab day-only" role="tab" id="tab-auto" aria-selected="false" aria-controls="panel-auto" title="The automatic-exit twin of every trade: same entry and size, the original stop and target, closed only when one of them is hit, overnight and across days. What your trade would have done hands-off.">Auto exits <span id="day-auto-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-days" aria-selected="false" aria-controls="panel-days" title="The daily journal: one row per trading day with the trend check, how the day ended, its picture and your notes">Days <span id="day-days-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-cal" aria-selected="false" aria-controls="panel-cal" title="One month, a week per row (Monday to Sunday): P&amp;L and trades per day; click a past day for its journal, a later day to jump there">Calendar</button>
           <button class="tab day-only" role="tab" id="tab-cond" aria-selected="false" aria-controls="panel-cond" title="How the closed trades did with and without each entry condition">Conditions</button>
@@ -204,10 +205,11 @@
           <table class="buckets" id="day-trade-table">
             <thead><tr>
               <th>Chart</th><th class="sortable" data-key="seq">#</th><th class="sortable" data-key="day_date">Day</th><th class="sortable" data-key="entry_ms">Entry</th><th class="sortable" data-key="exit_ms">Exit</th>
-              <th class="sortable" data-key="exit_type" title="stop, take-profit or early exit">Type</th><th title="Reason of an early exit (hover for the note)">Reason</th>
+              <th class="sortable" data-key="exit_type" title="stop, take-profit or early exit">Type</th><th class="num sortable" data-key="hold_hours" title="Hours between the buy and the exit (an open trade counts up to now)">Held</th><th title="Reason of an early exit (hover for the note)">Reason</th>
               <th title="Trend check: daily close above EMA 200 / higher highs and higher lows">Trend</th>
               <th title="The entry conditions at the buy (hover for the full list); evaluated in the Conditions tab">Conditions</th>
               <th class="num sortable" data-key="confidence" title="Your confidence at the buy, 0 to 10">Conf.</th>
+              <th class="sortable" data-key="review_n" title="Your review at 24:00 of the exit day: stop too tight, price later over the target, stop saved me">Review</th>
               <th class="num sortable" data-key="entry_price">Entry price</th><th class="num" title="RSI 14 of the 15-minute chart at the entry">RSI</th><th class="num" title="ATR 14 of the 15-minute chart at the entry">ATR</th>
               <th class="num" title="Support zone the entry was based on">Zone</th><th class="num" title="Stop used (hover for the suggested one)">Stop</th><th class="num">Target</th><th class="num sortable" data-key="rr" title="Reward-to-risk at the entry">R/R</th>
               <th class="num">Coins</th><th class="num" title="Position value in USDT">Value</th><th class="num" title="Risk in USDT (1 % of the start, or less when capped)">Risk</th><th title="Size capped by the cash">Capped</th><th title="Still open when the replay passed 24:00">Overnight</th>
@@ -218,6 +220,22 @@
             <tbody id="day-trade-list"></tbody>
           </table>
           <p id="day-trade-empty" class="muted small">No trades yet. Draw a support zone on the 1h or 4h chart, then New trade. You can buy whenever no trade is open.</p>
+        </div>
+        <div class="tab-panel hidden" id="panel-auto" role="tabpanel" aria-labelledby="tab-auto">
+          <div class="table-tools">
+            <span id="auto-summary" class="small mono"></span>
+            <span class="spacer"></span>
+            <span class="small muted">Every buy opens a hidden twin with the original stop and target. It exits only when one of them is hit, however long that takes. P&amp;L after fees, no effect on your cash.</span>
+          </div>
+          <table class="buckets" id="day-auto-table" aria-label="Automatic exits">
+            <thead><tr>
+              <th>#</th><th>Day</th><th>Entry</th><th class="num">Entry price</th><th class="num" title="The original stop of the trade">Stop</th><th class="num" title="The original target of the trade">Target</th>
+              <th>Exit</th><th title="stop or take-profit">Type</th><th class="num">Exit price</th><th class="num" title="Hours between the buy and the exit (an open twin counts up to now)">Held</th><th class="num" title="P&amp;L of the twin after fees">P&amp;L</th><th class="num">%</th><th class="num" title="P&amp;L divided by the risk amount">R</th>
+              <th title="How your manual trade ended">Manual exit</th><th class="num" title="Hours your manual trade was held">Manual held</th><th class="num" title="P&amp;L of your manual trade after fees">Manual P&amp;L</th><th class="num" title="Twin minus manual: positive = hands-off would have done better">Difference</th>
+            </tr></thead>
+            <tbody id="day-auto-list"></tbody>
+          </table>
+          <p id="day-auto-empty" class="muted small hidden">No automatic twins yet: they appear with the next buy.</p>
         </div>
         <div class="tab-panel hidden" id="panel-cal" role="tabpanel" aria-labelledby="tab-cal">
           <div class="table-tools">
@@ -403,6 +421,18 @@
           <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 06:00 (K)">Skip day &rarr; 06:00</button>
           <button type="button" id="btn-day-continue" class="btn small primary hidden" title="The trade has closed: jump to the next day at 06:00 (or buy again / step on instead)">Continue &rarr; 06:00</button>
         </div>
+        <form class="review-inline hidden" id="day-review" autocomplete="off" aria-labelledby="dr-title">
+          <b id="dr-title" class="small">Review trade</b>
+          <p id="dr-sub" class="small muted"></p>
+          <p id="dr-window" class="small"></p>
+          <div class="review-list" id="dr-list">
+            <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_tight" aria-pressed="false">false</button><span class="review-label">The stop was too tight <kbd>1</kbd></span></div>
+            <div class="review-row"><button type="button" class="btn rv-toggle" data-key="over_target" aria-pressed="false">false</button><span class="review-label">The price later went over the target (out too early) <kbd>2</kbd></span></div>
+            <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_saved" aria-pressed="false">false</button><span class="review-label">The stop saved me <kbd>3</kbd></span></div>
+          </div>
+          <p id="dr-error" class="error small" role="alert"></p>
+          <div class="row-flex"><button type="submit" id="btn-dr-save" class="btn small primary">Save review <kbd>Enter</kbd></button><span class="small muted">Continue, step and Buy wait for the answers.</span></div>
+        </form>
         <label class="day-notes-label small muted" for="day-notes">Notes for this day <span id="day-notes-state" class="mono"></span></label>
         <textarea id="day-notes" rows="3" maxlength="4000" placeholder="What you saw, why you traded or did not&hellip; (saved by itself)"></textarea>
         <dl class="kv mtf hidden" id="day-trade">
@@ -413,6 +443,7 @@
           <dt title="Target price and its distance from the entry price in percent (hover for the distance from the price now)">Target</dt><dd id="dt-tp" class="mono">&ndash;</dd>
           <dt>Size</dt><dd id="dt-size" class="mono small">&ndash;</dd>
           <dt title="Risk of the trade in USDT and the reward-to-risk with the current stop and target">Risk · R/R</dt><dd id="dt-risk" class="mono">&ndash;</dd>
+          <dt title="The automatic-exit twin of this trade: original stop and target, closed only when one of them is hit (see the Auto exits tab)">Auto twin</dt><dd id="dt-auto" class="mono small">&ndash;</dd>
           <dt>P&amp;L now</dt><dd id="dt-pnl" class="mono gauge">&ndash;</dd>
         </dl>
         <div class="row-flex hidden" id="dt-move-row">
@@ -545,6 +576,7 @@
   <dialog id="dlg-snapshot" class="dialog snap-dialog" aria-labelledby="snap-title">
     <div class="popover-head">
       <h2 id="snap-title">Snapshot</h2>
+      <button type="button" id="btn-snap-review" class="btn small hidden">Edit review</button>
       <button id="btn-close-snapshot" class="btn icon" aria-label="Close">&times;</button>
     </div>
     <div class="snap-layout">
@@ -589,6 +621,25 @@
       <button type="button" class="btn" id="btn-trend-no">No</button>
       <button type="button" class="btn primary" id="btn-trend-yes">Yes</button>
     </div>
+  </dialog>
+
+  <dialog id="dlg-review" class="dialog review-dialog" aria-labelledby="review-title">
+    <form id="form-review">
+      <h2 id="review-title">Review</h2>
+      <p id="review-sub" class="muted small"></p>
+      <p id="review-window" class="small"></p>
+      <div class="review-list" id="review-list">
+        <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_tight" aria-pressed="false">false</button><span class="review-label">The stop was too tight <kbd>1</kbd></span></div>
+        <div class="review-row"><button type="button" class="btn rv-toggle" data-key="over_target" aria-pressed="false">false</button><span class="review-label">The price later went over the target (out too early) <kbd>2</kbd></span></div>
+        <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_saved" aria-pressed="false">false</button><span class="review-label">The stop saved me <kbd>3</kbd></span></div>
+      </div>
+      <p class="muted small" id="review-help">Change the marks (click, or keys 1, 2, 3) and save, or cancel.</p>
+      <p id="review-error" class="error small" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="btn-review-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="btn-review-save">Save review</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="dlg-exit" class="dialog reasons-dialog sell" aria-labelledby="exit-title">

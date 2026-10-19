@@ -160,6 +160,7 @@ def trade_changes(t: dict) -> list[dict]:
     return data if isinstance(data, list) else []
 MAX_PRICE = 1e12
 EXIT_STOP, EXIT_TP, EXIT_EARLY = "stop", "take-profit", "early exit"
+HOUR_MS = 3_600_000
 EXIT_REASONS: tuple[tuple[str, str], ...] = (
     ("stalls", "Price stalls at resistance"),
     ("setup_broken", "Setup broken (a 15-min candle closed below the support zone)"),
@@ -169,6 +170,13 @@ EXIT_REASONS: tuple[tuple[str, str], ...] = (
     ("other", "Other"),
 )
 EXIT_REASON_LABELS = dict(EXIT_REASONS)
+# The review of a closed trade, asked at 24:00 of the exit day: (key, column, label). Every mark
+# starts as False; "over_target" is suggested from the candles after the exit (see _public_trade).
+REVIEW_QUESTIONS: tuple[tuple[str, str, str], ...] = (
+    ("stop_tight", "review_stop_tight", "The stop was too tight"),
+    ("over_target", "review_over_target", "The price later went over the target (out too early)"),
+    ("stop_saved", "review_stop_saved", "The stop saved me"),
+)
 WHATIF_FIELDS = ("whatif_n", "whatif_high", "whatif_low", "whatif_above_exit_pct", "whatif_below_exit_pct",
                  "whatif_high_vs_entry_pct", "whatif_low_vs_entry_pct")
 
@@ -231,6 +239,11 @@ def position_size(risk_amount: float, entry: float, stop: float, fee_rate: float
 
 def reward_to_risk(entry: float, stop: float, take_profit: float) -> float:
     return (take_profit - entry) / (entry - stop)
+
+
+def hold_hours(entry_ms: int, exit_ms: int | None) -> float | None:
+    """Hours between the fill (close of the entry candle) and the exit candle's close; None while open."""
+    return None if exit_ms is None else (exit_ms - entry_ms) / HOUR_MS
 
 
 def trade_result(entry: float, exit_price: float, coins: float, position_value: float, buy_fee: float,
@@ -324,6 +337,7 @@ class DayEngine:
             s["cash"] = s["start_balance"]
             now = _now_iso()
             with self.store.tx() as conn:
+                self.store.delete_auto_trades(conn, session_id)
                 self.store.delete_trades(conn, session_id)
                 self.store.delete_checks(conn, session_id)
                 self.store.delete_zones(conn, session_id)
@@ -338,6 +352,8 @@ class DayEngine:
     def state(self, session_id: str) -> dict:
         ds = self._day_row(session_id)
         st = self.replay.state(session_id)
+        if st["status"] == "ready":
+            self._settle_auto(st)   # the twins catch up with the candles up to the cursor
         st["day"] = self._day_block(st, ds)
         st["account"] = self._account(st, st["day"])
         return st
@@ -361,8 +377,9 @@ class DayEngine:
             trade = self.store.open_trade(conn, sid)
             traded = self.store.trades_on_day(conn, sid, d.isoformat())
             last_exit = self.store.get_trade(conn, sid, ds["last_exit_id"]) if ds["phase"] == "exited" and ds["last_exit_id"] else None
+        pending = last_exit if last_exit and self._needs_review(last_exit) else None
         uptrend = None if check["hh_hl"] is None or check["ema_above"] is None else bool(check["ema_above"] == 1 and check["hh_hl"] == 1)
-        allowed, reason = self._entry_gate(st, ds, close, end, trade, traded)
+        allowed, reason = self._entry_gate(st, ds, close, end, trade, traded, pending)
         loc = to_local(close)
         out.update({
             "date": d.isoformat(),
@@ -374,12 +391,16 @@ class DayEngine:
             "check": self._public_check(check), "uptrend": uptrend,
             "entries_allowed": allowed, "block_reason": reason,
             "trade": self._public_trade(trade, st["fee_rate"], st["price"]) if trade else None,
+            "auto": self._auto_of(sid, trade["id"], trade) if trade else None,   # the open trade's automatic twin
             "traded_today": traded,
             "last_exit": self._public_trade(last_exit, st["fee_rate"]) if last_exit else None,
+            # the trade whose review is still open: nothing moves on until it is answered
+            "review_pending": self._public_trade(pending, st["fee_rate"]) if pending else None,
+            "review_questions": [{"key": k, "label": label} for k, _, label in REVIEW_QUESTIONS],
             "leaving_next": self._leaving_next(st, ds, trade),
             "can_skip": ds["phase"] == "trading" and trade is None and not st["finished"],
             "can_sell": ds["phase"] == "trading" and trade is not None,
-            "can_continue": ds["phase"] == "exited",
+            "can_continue": ds["phase"] == "exited" and pending is None,
         })
         return out
 
@@ -399,9 +420,12 @@ class DayEngine:
         return not in_entry_window(close, trading_day(close))
 
     @staticmethod
-    def _entry_gate(st: dict, ds: dict, close: int, end: int, trade: dict | None, traded: int) -> tuple[bool, str | None]:
+    def _entry_gate(st: dict, ds: dict, close: int, end: int, trade: dict | None, traded: int,
+                    pending: dict | None = None) -> tuple[bool, str | None]:
         if st["finished"]:
             return False, "The replay has reached its end."
+        if pending is not None:
+            return False, f"Answer the review questions for trade #{pending['seq']} first."
         if trade is not None:
             return False, "A trade is open."
         # Nothing else blocks: not the night, not a trade already made today, not a trade just closed,
@@ -701,6 +725,13 @@ class DayEngine:
                     capped=int(bool(p["capped"])), buy_fee=p["buy_fee"], cash_after_entry=cash_after, overnight=0,
                     notes=notes, confidence=confidence, created_at=now, updated_at=now,
                 )
+                # the automatic-exit twin: same entry and size, the original stop and target, hands off
+                self.store.add_auto_trade(
+                    conn, session_id=session_id, trade_id=t["id"], seq=t["seq"], status="open", day_date=day["date"],
+                    entry_ms=s["cursor_ms"], entry_price=p["entry_price"], stop=p["stop_used"], take_profit=p["take_profit"],
+                    coins=p["coins"], position_value=p["position_value"], buy_fee=p["buy_fee"], risk_amount=p["risk_amount"],
+                    created_at=now, updated_at=now,
+                )
                 if self.store.get_day_session(conn, session_id)["phase"] == "exited":
                     # a new trade right after an exit: the day goes on, no jump to the next 06:00
                     self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=now)
@@ -799,17 +830,127 @@ class DayEngine:
             self.sessions.update_session(conn, s["id"], cash=cash_after, updated_at=now)
         s["cash"] = cash_after
         trade.update(fields)
-        return {"kind": "exit", "exit_type": exit_type, "trade": self._public_trade(trade, s["fee_rate"])}
+        jumped = self._jump_to_day_end(s, exit_ms)
+        return {"kind": "exit", "exit_type": exit_type, "trade": self._public_trade(trade, s["fee_rate"]),
+                "jumped_to_ms": jumped, "jumped_to_local": local_str(jumped + self._base_ms) if jumped is not None else None}
+
+    def _jump_to_day_end(self, s: dict, exit_ms: int) -> int | None:
+        """After an exit the replay jumps to the candle closing at 24:00 of the exit's trading day, so
+        the whole day is on the chart for the review. Nothing happens when the exit is already at or
+        past 24:00 (a night exit) or at the end of the data. Returns the new cursor or None."""
+        base = self._base_ms
+        _, end = day_bounds(trading_day(exit_ms + base))
+        if exit_ms + base >= end:
+            return None
+        nxt = self.candles.first_at_or_after(s["symbol"], BASE_INTERVAL, end - base)
+        target = s["data_end_ms"] if nxt is None or nxt > s["data_end_ms"] else nxt
+        if target <= s["cursor_ms"]:
+            return None
+        self._set_cursor(s, target)
+        return target
 
     def _what_if(self, s: dict, trade: dict, exit_ms: int, exit_price: float) -> dict:
         """Highest high and lowest low of the 15-minute candles after the exit candle until 24:00 of
-        the exit day (local date of the exit candle's open); all None when there are none."""
-        end = local_ms(to_local(exit_ms).date() + timedelta(days=1), 0)
+        the exit's trading day (the window the review shows); all None when there are none, e.g.
+        after a night exit."""
+        _, end = day_bounds(trading_day(exit_ms + self._base_ms))
         df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, exit_ms + self._base_ms, end - self._base_ms)
         if len(df) == 0:
             return {k: (0 if k == "whatif_n" else None) for k in WHATIF_FIELDS}
         hi, lo = float(df["high"].max()), float(df["low"].min())
         return {"whatif_n": int(len(df)), "whatif_high": hi, "whatif_low": lo, **what_if(trade["entry_price"], exit_price, hi, lo)}
+
+    # ------------------------------------------------------- automatic twins
+    def _settle_auto(self, s: dict) -> None:
+        """Close every open automatic twin whose exit the candles up to the cursor already show: the
+        original stop (a candle low at or below it; the stop wins when both levels are hit in one
+        candle) or the original target (a high at or above it). The twin runs through the night and
+        across days until one of them is hit. Only the candles after the last checked one are read,
+        and nothing beyond the cursor, so a twin never knows the future."""
+        with self._lock:
+            with self.store.tx() as conn:
+                opens = self.store.open_auto_trades(conn, s["id"])
+            if not opens:
+                return
+            base = self._base_ms
+            for a in opens:
+                start = (a.get("checked_ms") or a["entry_ms"]) + base
+                if start > s["cursor_ms"]:
+                    continue                                       # nothing new since the last check
+                df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, start, s["cursor_ms"])
+                if not len(df):
+                    continue
+                hit = None
+                for t_open, high, low in zip(df["time"].astype("int64"), df["high"], df["low"]):
+                    if float(low) <= a["stop"]:
+                        hit = (int(t_open) * 1000, a["stop"], EXIT_STOP)
+                        break
+                    if float(high) >= a["take_profit"]:
+                        hit = (int(t_open) * 1000, a["take_profit"], EXIT_TP)
+                        break
+                if hit is not None:
+                    self._close_auto(a, s["fee_rate"], *hit)
+                else:
+                    with self.store.tx() as conn:
+                        self.store.update_auto_trade(conn, a["id"], checked_ms=int(df["time"].iloc[-1]) * 1000, updated_at=_now_iso())
+
+    def _close_auto(self, a: dict, fee_rate: float, exit_ms: int, exit_price: float, exit_type: str) -> None:
+        res = trade_result(a["entry_price"], exit_price, a["coins"], a["position_value"], a["buy_fee"], fee_rate, a["risk_amount"])
+        fields = {"status": "closed", "exit_ms": exit_ms, "exit_price": exit_price, "exit_type": exit_type,
+                  "sell_fee": res["sell_fee"], "fees": res["fees"], "pnl": res["pnl"], "pnl_pct": res["pnl_pct"],
+                  "r_multiple": res["r_multiple"], "updated_at": _now_iso()}
+        with self.store.tx() as conn:
+            self.store.update_auto_trade(conn, a["id"], **fields)
+        a.update(fields)
+
+    def _auto_of(self, session_id: str, trade_id: int, manual: dict | None) -> dict | None:
+        with self.store.tx() as conn:
+            a = self.store.auto_trade_of(conn, session_id, trade_id)
+        return self._public_auto(a, manual) if a else None
+
+    def auto_trades(self, session_id: str) -> dict:
+        """The automatic-exit twins of this session with the comparison to the manual trades."""
+        st = self.state(session_id)   # settles the twins first
+        with self.store.tx() as conn:
+            rows = self.store.list_auto_trades(conn, session_id)
+            manual = {t["id"]: t for t in self.store.list_trades(conn, session_id)}
+        out = [self._public_auto(a, manual.get(a["trade_id"])) for a in rows]
+        closed = [a for a in out if a["status"] == "closed"]
+        both = [a for a in closed if a["manual"] and a["manual"]["status"] == "closed"]
+        avg = lambda xs: (sum(xs) / len(xs)) if xs else None  # noqa: E731
+        summary = {
+            "count": len(out), "open": len(out) - len(closed), "closed": len(closed),
+            "wins": sum(1 for a in closed if a["pnl"] > 0),
+            "pnl": sum(a["pnl"] for a in closed), "avg_r": avg([a["r_multiple"] for a in closed if a["r_multiple"] is not None]),
+            "by_type": {k: sum(1 for a in closed if a["exit_type"] == k) for k in (EXIT_STOP, EXIT_TP)},
+            "avg_hold_hours": avg([a["hold_hours"] for a in closed]),
+            "compared": len(both),
+            "manual_pnl": sum(a["manual"]["pnl"] for a in both), "auto_pnl": sum(a["pnl"] for a in both),
+            "manual_avg_r": avg([a["manual"]["r_multiple"] for a in both if a["manual"]["r_multiple"] is not None]),
+            "auto_avg_r": avg([a["r_multiple"] for a in both if a["r_multiple"] is not None]),
+            "manual_avg_hold_hours": avg([a["manual"]["hold_hours"] for a in both]),
+            "auto_avg_hold_hours": avg([a["hold_hours"] for a in both]),
+        }
+        summary["diff"] = summary["auto_pnl"] - summary["manual_pnl"]
+        return {"trades": out, "summary": summary, "price": st["price"]}
+
+    @staticmethod
+    def _public_auto(a: dict, manual: dict | None) -> dict:
+        out = dict(a)
+        out["entry_local"] = local_str(a["entry_ms"] + config.interval_ms(BASE_INTERVAL))
+        out["exit_local"] = local_str(a["exit_ms"] + config.interval_ms(BASE_INTERVAL)) if a["exit_ms"] is not None else None
+        out["stop_pct"] = (a["stop"] / a["entry_price"] - 1.0) * 100.0
+        out["tp_pct"] = (a["take_profit"] / a["entry_price"] - 1.0) * 100.0
+        out["hold_hours"] = hold_hours(a["entry_ms"], a["exit_ms"])   # None while open (the UI counts from the entry)
+        m = None
+        if manual is not None:
+            m = {"id": manual["id"], "status": manual["status"], "exit_type": manual["exit_type"], "exit_price": manual["exit_price"],
+                 "exit_local": local_str(manual["exit_ms"] + config.interval_ms(BASE_INTERVAL)) if manual["exit_ms"] is not None else None,
+                 "pnl": manual["pnl"], "r_multiple": manual["r_multiple"], "moved": bool(trade_changes(manual)),
+                 "hold_hours": hold_hours(manual["entry_ms"], manual["exit_ms"])}
+        out["manual"] = m
+        out["diff"] = (a["pnl"] - manual["pnl"]) if (m and a["status"] == "closed" and manual["status"] == "closed") else None
+        return out
 
     # ------------------------------------------------------------------ clock
     def step(self, session_id: str, n: int = 1) -> dict:
@@ -822,6 +963,7 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
+            self._review_gate(session_id, ds)
             if ds["phase"] == "exited":   # stepping on after an exit: the day goes on
                 with self.store.tx() as conn:
                     self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=_now_iso())
@@ -844,6 +986,7 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
+            self._review_gate(session_id, ds)
             if ds["phase"] == "exited":
                 events.append(self._resume(s, ds))
         st = self.state(session_id)
@@ -855,6 +998,7 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
+            self._review_gate(session_id, ds)
             if ds["phase"] == "exited":
                 ev = self._resume(s, ds)
             else:
@@ -879,6 +1023,7 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
+            self._review_gate(session_id, ds)
             if s["cursor_ms"] >= s["data_end_ms"]:
                 raise Conflict("The replay has reached its end.")
             with self.store.tx() as conn:
@@ -908,6 +1053,7 @@ class DayEngine:
         not with an open trade; Conflict when no such day is left before the replay's end."""
         with self._lock:
             s = self._ready(session_id)
+            self._review_gate(session_id, self._day_row(session_id))
             if s["cursor_ms"] >= s["data_end_ms"]:
                 raise Conflict("The replay has reached its end.")
             with self.store.tx() as conn:
@@ -1002,6 +1148,44 @@ class DayEngine:
         with self.sessions.tx() as conn:
             self.sessions.update_session(conn, s["id"], cursor_ms=ms, updated_at=_now_iso())
         s["cursor_ms"] = ms
+
+    # ------------------------------------------------------------------ review
+    @staticmethod
+    def _needs_review(t: dict) -> bool:
+        return t["status"] == "closed" and not t.get("reviewed_at")
+
+    def _review_gate(self, session_id: str, ds: dict) -> None:
+        """Conflict while the trade that just closed has no review yet: no step, no Continue, no skip,
+        no jump (and no buy, see _entry_gate) until the three questions are answered."""
+        if ds["phase"] != "exited" or not ds["last_exit_id"]:
+            return
+        with self.store.tx() as conn:
+            t = self.store.get_trade(conn, session_id, ds["last_exit_id"])
+        if t is not None and self._needs_review(t):
+            raise Conflict(f"Answer the review questions for trade #{t['seq']} first.")
+
+    def review(self, session_id: str, trade_id: int, answers: dict) -> dict:
+        """Save the three review marks of a closed trade (all three required, True / False). The
+        answers can be changed later; a trade still open cannot be reviewed."""
+        fields: dict = {}
+        for key, col, _ in REVIEW_QUESTIONS:
+            v = answers.get(key) if isinstance(answers, dict) else None
+            if not isinstance(v, bool):
+                raise Invalid(f"{key} must be true or false.")
+            fields[col] = int(v)
+        with self._lock:
+            s = self._get_day(session_id)
+            with self.store.tx() as conn:
+                t = self.store.get_trade(conn, session_id, trade_id)
+                if t is None:
+                    raise NotFound(f"trade {trade_id} not found")
+                if t["status"] != "closed":
+                    raise Conflict("The trade is still open: review it after the exit.")
+                now = _now_iso()
+                self.store.update_trade(conn, trade_id, **fields, reviewed_at=now, updated_at=now)
+                t = self.store.get_trade(conn, session_id, trade_id)
+        st = self.state(session_id)
+        return {"trade": self._public_trade(t, s["fee_rate"], st["price"]), "state": st}
 
     # ------------------------------------------------------------------ trades
     def trades(self, session_id: str) -> dict:
@@ -1206,6 +1390,14 @@ class DayEngine:
         out["exit_iso"] = _iso(t["exit_ms"]) if t["exit_ms"] is not None else None
         out["exit_local"] = local_str(t["exit_ms"] + config.interval_ms(BASE_INTERVAL)) if t["exit_ms"] is not None else None
         out["exit_reason_label"] = EXIT_REASON_LABELS.get(t["exit_reason"]) if t["exit_reason"] else None
+        out["hold_hours"] = hold_hours(t["entry_ms"], t["exit_ms"])   # None while open (the UI counts from the entry)
+        tp0 = out["tp_initial"]
+        out["review"] = {
+            **{key: flag(t.get(col)) for key, col, _ in REVIEW_QUESTIONS},
+            "reviewed": bool(t.get("reviewed_at")), "reviewed_at": t.get("reviewed_at"),
+            # the suggestion for "over the target": a high after the exit (until 24:00) at or above the original target
+            "over_target_suggested": bool(t.get("whatif_high") is not None and tp0 is not None and t["whatif_high"] >= tp0),
+        }
         out["has_image"] = bool(t["image_path"])
         out["whatif"] = None if not t["whatif_n"] else {
             "n": t["whatif_n"], "high": t["whatif_high"], "low": t["whatif_low"],

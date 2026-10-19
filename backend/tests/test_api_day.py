@@ -139,7 +139,19 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert ev["kind"] == "exit" and ev["exit_type"] == "early exit" and r.json()["day"]["phase"] == "exited"
     tid = ev["trade"]["id"]
     assert ev["trade"]["exit_ms"] == st["cursor_ms"] and ev["trade"]["whatif_n"] > 0
+    assert r.json()["cursor_ms"] == ev["jumped_to_ms"] and r.json()["day"]["local_time"] == "2018-05-11 00:00"   # the jump to 24:00
+    assert r.json()["day"]["review_pending"]["id"] == tid and r.json()["day"]["can_continue"] is False
     assert client.post(f"{base}/sell", json={"reason": "stalls"}).status_code == 409
+    # the review: required before anything moves, all three marks, true / false only
+    assert client.post(f"{base}/continue").status_code == 409
+    assert client.post(f"{base}/step", json={"n": 1}).status_code == 409
+    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": True}).status_code == 422
+    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": 1, "over_target": False, "stop_saved": False}).status_code == 422
+    assert client.post(f"{base}/trades/424242/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 404
+    r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["trade"]["review"]["over_target"] is True and r.json()["trade"]["review"]["reviewed"] is True
+    assert r.json()["state"]["day"]["review_pending"] is None and r.json()["state"]["day"]["can_continue"] is True
     assert client.patch(f"{base}/trade", json={"stop": 1.0}).status_code == 409                    # closed: nothing to move
 
     # the picture at the exit
@@ -235,6 +247,21 @@ def test_goto_route(client: TestClient, session: dict):
     r = client.post(f"{base}/goto", json={"date": "2018-05-12"})
     assert r.status_code == 200, r.text
     assert r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["date"] == "2018-05-12"
+    client.post(f"{base}/reset")
+
+
+def test_auto_trades_route(client: TestClient, session: dict):
+    base = f"/api/day/sessions/{session['id']}"
+    client.post(f"{base}/reset")
+    a0 = client.get(f"{base}/auto-trades").json()
+    assert a0["trades"] == [] and a0["summary"]["count"] == 0
+    price = client.get(base).json()["price"]
+    z = client.post(f"{base}/zones", json={"interval": "1h", "p1": price + 0.5, "p2": price - 0.5}).json()
+    r = client.post(f"{base}/buy", json={"zone_id": z["id"], "take_profit": price + 50.0, "stop": price - 50.0, "confidence": 5})
+    assert r.status_code == 200, r.text
+    a = client.get(f"{base}/auto-trades").json()
+    assert a["summary"]["count"] == 1 and a["trades"][0]["status"] == "open" and a["trades"][0]["manual"]["status"] == "open"
+    assert r.json()["state"]["day"]["auto"]["seq"] == a["trades"][0]["seq"]
     client.post(f"{base}/reset")
 
 

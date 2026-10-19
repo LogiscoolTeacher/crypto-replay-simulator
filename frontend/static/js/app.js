@@ -1731,6 +1731,7 @@ function selectTab(id, { open } = {}) {
   if (id === 'tab-stats') loadStats();
   if (id === 'tab-day') day.renderTrades();
   if (id === 'tab-days') day.renderDays();
+  if (id === 'tab-auto') day.renderAuto();
   if (id === 'tab-cal') day.renderCal();
   if (id === 'tab-cond') day.loadConditions();
   renderBottom();

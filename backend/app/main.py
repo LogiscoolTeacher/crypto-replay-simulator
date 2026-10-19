@@ -284,6 +284,12 @@ class DaySellRequest(BaseModel):
     note: str | None = Field(default=None, max_length=day_rules.NOTE_MAX_CHARS, description="Free text; required for the reason 'other'")
 
 
+class DayReviewRequest(BaseModel):
+    stop_tight: bool = Field(strict=True, description="The stop was too tight")
+    over_target: bool = Field(strict=True, description="The price later went over the target (out too early)")
+    stop_saved: bool = Field(strict=True, description="The stop saved me")
+
+
 class DayMoveRequest(BaseModel):
     stop: float | None = Field(default=None, gt=0, allow_inf_nan=False, description="New stop-loss price (below the current price)")
     take_profit: float | None = Field(default=None, gt=0, allow_inf_nan=False, description="New take-profit price (above the current price)")
@@ -727,6 +733,19 @@ def day_trade_image_upload(session_id: str, trade_id: int, req: DayImage) -> dic
 @app.get("/api/day/sessions/{session_id}/trades/{trade_id}/image")
 def day_trade_image(session_id: str, trade_id: int) -> FileResponse:
     return FileResponse(day.image_path(session_id, trade_id), media_type="image/png")
+
+
+@app.post("/api/day/sessions/{session_id}/trades/{trade_id}/review")
+def day_trade_review(session_id: str, trade_id: int, req: DayReviewRequest) -> dict:
+    """Answer (or change) the three review marks of a closed trade; the replay waits for them after every exit."""
+    return day.review(session_id, trade_id, req.model_dump())
+
+
+@app.get("/api/day/sessions/{session_id}/auto-trades")
+def day_auto_trades(session_id: str) -> dict:
+    """The automatic-exit twins: every manual trade's copy with the original stop and target, closed
+    only when one of them is hit (overnight and across days), compared to the manual trade."""
+    return day.auto_trades(session_id)
 
 
 @app.get("/api/day/sessions/{session_id}/days")
