@@ -859,3 +859,32 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     day.reset(sid)
     assert day.days(sid)["days"][0]["date"] == "2018-05-10" and day.days(sid)["days"][0]["notes"] is None
     assert len(day.days(sid)["days"]) == 1 and not pic.exists()
+
+
+def test_mae_mfe_and_the_1h_rsi_are_saved_with_the_trade(db: Path):
+    """MAE / MFE: the lowest low and the highest high between the entry and the exit against the entry
+    price, in percent and in R; the 1-hour RSI at the buy sits next to the 15-minute one. Trades closed
+    before the columns existed get MAE / MFE on the next listing."""
+    c1, c2, c3 = FIRST_CURSOR + Q, FIRST_CURSOR + 2 * Q, FIRST_CURSOR + 3 * Q
+    price = quarter_candle(FIRST_CURSOR)[3]
+    day = make(db, {c1: (price, price + 1.0, price - 2.5, price),          # the deepest dip
+                    c2: (price, price + 3.0, price - 1.0, price + 1.0),    # the highest high
+                    c3: (price + 1.0, price + 1.5, price + 0.5, price + 1.0)})
+    sid = day.create_session("BTCUSDT", START, END)["id"]
+    day.prepare(sid)
+    z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
+    plan = day.plan(sid, z["id"], stop=price - 5.0, take_profit=price + 10.0)
+    assert plan["signals"]["rsi"] is not None and plan["signals"]["rsi_1h"] is not None
+    t = day.buy(sid, z["id"], take_profit=price + 10.0, stop=price - 5.0, confidence=5)["trade"]
+    assert t["entry_rsi_1h"] == pytest.approx(plan["signals"]["rsi_1h"]) and t["excursion"] is None
+    day.step(sid, 3)
+    tr = day.sell(sid, "stalls")["events"][0]["trade"]
+    x = tr["excursion"]
+    assert x["mae_pct"] == pytest.approx((price - 2.5) / price * 100 - 100) and x["mfe_pct"] == pytest.approx((price + 3.0) / price * 100 - 100)
+    assert x["mae_r"] == pytest.approx(-2.5 * tr["coins"] / tr["risk_usdt"]) and x["mfe_r"] == pytest.approx(3.0 * tr["coins"] / tr["risk_usdt"])
+    assert x["mae_r"] < 0 < x["mfe_r"]
+    # an old trade without the numbers gets them from the candles when the trades are listed
+    with day.store.tx() as conn:
+        day.store.update_trade(conn, tr["id"], mae_pct=None, mfe_pct=None, mae_r=None, mfe_r=None)
+    again = day.trades(sid)["trades"][-1]
+    assert again["id"] == tr["id"] and again["excursion"] == pytest.approx(x)

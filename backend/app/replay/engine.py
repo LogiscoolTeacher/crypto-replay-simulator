@@ -61,7 +61,6 @@ RSI_PANES_MAX = 4        # extra RSI panes (other timeframes) a view may ask for
 EMA_LONG_PERIOD = 200    # side-panel gauge: EMA 200 on daily candles
 EMA_LONG_INTERVAL = "1D"
 EMA_LONG_WARMUP_BARS = 1200
-SMA_LONG_PERIOD = 200    # side-panel gauge and optional chart overlay: SMA 200 on daily candles
 # A new session starts no earlier than this many daily candles after the coin's first Binance candle,
 # so the daily EMA/SMA 200 (and the chart averages on every timeframe) exist from the first bar.
 TP_MAX_PCT = 1000.0   # a target may be at most ten times the entry price above it
@@ -747,19 +746,17 @@ class ReplayEngine:
 
     @staticmethod
     def _long_avg_fields(side: str, gauges: dict) -> dict:
-        """Bucket columns with the daily EMA/SMA 200 and the price's distance to them at a trade."""
-        e, m = gauges["ema_long"], gauges["sma_long"]
-        return {f"{side}_ema200": e["value"], f"{side}_sma200": m["value"],
-                f"{side}_ema200_pct": e["price_pct"], f"{side}_sma200_pct": m["price_pct"]}
+        """Bucket columns with the daily EMA 200 and the price's distance to it at a trade."""
+        e = gauges["ema_long"]
+        return {f"{side}_ema200": e["value"], f"{side}_ema200_pct": e["price_pct"]}
 
     @staticmethod
     def long_avg_changes(buy: dict, sell: dict) -> dict:
-        """How the daily EMA/SMA 200 moved between a buy and a sell (percent of the value at the buy)
-        and how the price's distance to each changed (percentage points: distance at the sell minus
-        distance at the buy). `buy`/`sell` map ema200, sma200, ema200_pct, sma200_pct; None when a
-        side lacks a value."""
+        """How the daily EMA 200 moved between a buy and a sell (percent of the value at the buy)
+        and how the price's distance to it changed (percentage points: distance at the sell minus
+        distance at the buy). `buy`/`sell` map ema200 and ema200_pct; None when a side lacks a value."""
         out: dict[str, Any] = {}
-        for name in ("ema200", "sma200"):
+        for name in ("ema200",):
             b, s = buy.get(name), sell.get(name)
             out[f"{name}_change_pct"] = (s / b - 1.0) * 100.0 if b and s is not None else None
             bp, sp = buy.get(f"{name}_pct"), sell.get(f"{name}_pct")
@@ -864,7 +861,7 @@ class ReplayEngine:
                     conn, session_id=session_id, seq=bucket["seq"], opened_ms=bucket["opened_ms"],
                     entry_price=bucket["entry_price"], qty=qty_sold, cost=cost, buy_fee=buy_fee,
                     buy_rsi=bucket["buy_rsi"], buy_rsi_interval=bucket["buy_rsi_interval"],
-                    **{f"buy_{k}": bucket.get(f"buy_{k}") for k in ("ema200", "sma200", "ema200_pct", "sma200_pct")},
+                    **{f"buy_{k}": bucket.get(f"buy_{k}") for k in ("ema200", "ema200_pct")},
                     part=parts_before + 1, part_pct=share * 100.0, parent_id=bucket_id, **plan, **closing,
                 )
                 self.sessions.update_bucket(
@@ -936,7 +933,7 @@ class ReplayEngine:
         strategy: tuple[str, dict[str, Any]] | None = None,
         auto_fib: int | None = None,
         fvg_min_pct: float | None = None,
-        daily_sma: bool = False,
+        daily_ema: bool = False,
         sr_tol: float | None = None,
         rsi_panes: list[str] | None = None,
     ) -> dict:
@@ -989,7 +986,7 @@ class ReplayEngine:
                 "gauges": self._gauges(s, iv, sr_tol),
                 "auto_fib": self._auto_fib(df, iv, auto_fib) if auto_fib else None,
                 "fvg": fair_value_gaps(df.tail(limit + 2), fvg_min_pct) if fvg_min_pct is not None else None,
-                "daily_sma": self._daily_sma_overlay(s, iv, payload["time"]) if daily_sma else None,
+                "daily_ema": self._daily_ema_overlay(s, iv, payload["time"]) if daily_ema else None,
                 "rsi_panes": [self._rsi_pane(s, pane_iv, iv_ms, payload["time"], cur_close) for pane_iv in panes],
             }
         )
@@ -1048,22 +1045,21 @@ class ReplayEngine:
             "direction": "up" if up else "down", "levels": fib_levels(p1, p2),
         }
 
-    def _daily_sma_overlay(self, s: dict, interval: str, times: list[int]) -> dict:
-        """SMA 200 of daily candles, one value per bar on screen.
+    def _daily_ema_overlay(self, s: dict, interval: str, times: list[int]) -> dict:
+        """EMA 200 of daily candles, one value per bar on screen (the same series as the gauge).
 
-        On the daily view it is the ordinary SMA. On finer views each bar shows the value of the
+        On the daily view it is the ordinary EMA. On finer views each bar shows the value of the
         last COMPLETED day before it, so the line never uses a close that lies in the bar's future.
         """
         day_ms = config.interval_ms(EMA_LONG_INTERVAL)
-        out = {"period": SMA_LONG_PERIOD, "interval": EMA_LONG_INTERVAL, "values": [None] * len(times)}
+        out = {"period": EMA_LONG_PERIOD, "interval": EMA_LONG_INTERVAL, "values": [None] * len(times)}
         if not times or config.interval_ms(interval) > day_ms:
             return out
-        span_days = (times[-1] - times[0]) * 1000 // day_ms + 2
-        daily = self._candles_at_cursor(s, EMA_LONG_INTERVAL, int(span_days) + SMA_LONG_PERIOD + 5)
-        if len(daily) < SMA_LONG_PERIOD:
+        daily = self._candles_at_cursor(s, EMA_LONG_INTERVAL, EMA_LONG_WARMUP_BARS)
+        if len(daily) < EMA_LONG_PERIOD:
             return out
-        sma = core.sma(daily["close"], SMA_LONG_PERIOD)
-        by_day = {int(t) * 1000: (float(v) if math.isfinite(v) else None) for t, v in zip(daily["time"], sma)}
+        ema = core.ema(daily["close"], EMA_LONG_PERIOD)
+        by_day = {int(t) * 1000: (float(v) if math.isfinite(v) else None) for t, v in zip(daily["time"], ema)}
         same_day = config.interval_ms(interval) == day_ms
         values = []
         for t in times:
@@ -1187,15 +1183,12 @@ class ReplayEngine:
         df = self._candles_at_cursor(s, interval, RSI_WARMUP_BARS)
         rsi = self._rsi_from_df(df)
         bb = self._bollinger_from_df(df, price)
-        ema = sma = None
+        ema = None
         if config.interval_ms(EMA_LONG_INTERVAL) >= config.interval_ms(s["base_interval"]):
             daily = self._candles_at_cursor(s, EMA_LONG_INTERVAL, EMA_LONG_WARMUP_BARS)
             if len(daily) >= EMA_LONG_PERIOD:
                 value = float(core.ema(daily["close"], EMA_LONG_PERIOD).iloc[-1])
                 ema = value if math.isfinite(value) else None
-            if len(daily) >= SMA_LONG_PERIOD:
-                value = float(core.sma(daily["close"], SMA_LONG_PERIOD).iloc[-1])
-                sma = value if math.isfinite(value) else None
         return {
             "price": price,
             "rsi": {"value": rsi, "period": RSI_PERIOD, "interval": interval},
@@ -1203,10 +1196,6 @@ class ReplayEngine:
             "ema_long": {
                 "value": ema, "period": EMA_LONG_PERIOD, "interval": EMA_LONG_INTERVAL,
                 "price_pct": (price / ema - 1.0) * 100.0 if ema else None,
-            },
-            "sma_long": {
-                "value": sma, "period": SMA_LONG_PERIOD, "interval": EMA_LONG_INTERVAL,
-                "price_pct": (price / sma - 1.0) * 100.0 if sma else None,
             },
             "extremes": self._extremes_gauge(s, price, history, complete),
             "levels": self._levels_gauge(s, price, history, sr_tol),
@@ -1326,8 +1315,6 @@ class ReplayEngine:
             "bb_lower": bb["lower"],
             "ema200": ema["value"],
             "ema200_pct": ema["price_pct"],
-            "sma200": gauges["sma_long"]["value"],
-            "sma200_pct": gauges["sma_long"]["price_pct"],
             **self._extremes_readings(gauges["extremes"]),
             **self._levels_readings(gauges["levels"]),
             "vs_last_buy_pct": ref_before["last_buy"]["pct"] if ref_before["last_buy"] else None,

@@ -601,6 +601,7 @@ class DayEngine:
         rsi_series = core.rsi(df["close"], 14) if len(df) > 14 else None
         rsi = None
         rsi_day_min = None
+        rsi_1h = self.replay._rsi_at_cursor(s, "1h")   # the 1-hour chart's RSI 14, forming candle included
         if rsi_series is not None:
             v = float(rsi_series.iloc[-1])
             rsi = v if math.isfinite(v) else None
@@ -659,6 +660,7 @@ class DayEngine:
             "uptrend": day["uptrend"],
             "price_in_zone": zone["lower"] <= price <= zone["upper"],
             "rsi": rsi,
+            "rsi_1h": rsi_1h,
             "rsi_day_min": rsi_day_min,
             "rsi_dipped": None if rsi_day_min is None else rsi_day_min <= RSI_DIP_MAX,
             "prev_high": prev_high,
@@ -713,7 +715,7 @@ class DayEngine:
                     conn, session_id=session_id, status="open", day_date=day["date"],
                     ema_above=None if check["ema_above"] is None else int(check["ema_above"]),
                     hh_hl=None if check["hh_hl"] is None else int(check["hh_hl"]),
-                    entry_ms=s["cursor_ms"], entry_price=p["entry_price"], entry_rsi=p["signals"]["rsi"], entry_atr=p["atr"],
+                    entry_ms=s["cursor_ms"], entry_price=p["entry_price"], entry_rsi=p["signals"]["rsi"], entry_rsi_1h=sg["rsi_1h"], entry_atr=p["atr"],
                     zone_id=p["zone"]["id"], zone_upper=p["zone"]["upper"], zone_lower=p["zone"]["lower"], zone_interval=p["zone"]["interval"],
                     uptrend=None if sg["uptrend"] is None else int(sg["uptrend"]),
                     price_in_zone=int(bool(sg["price_in_zone"])), rsi_dipped=None if sg["rsi_dipped"] is None else int(sg["rsi_dipped"]),
@@ -821,6 +823,7 @@ class DayEngine:
             "sell_fee": res["sell_fee"], "fees": res["fees"], "pnl": res["pnl"], "pnl_pct": res["pnl_pct"],
             "r_multiple": res["r_multiple"], "cash_after_exit": cash_after,
             **self._what_if(s, trade, exit_ms, exit_price),
+            **self._excursion(s, trade, exit_ms),
             "updated_at": now,
         }
         with self.store.tx() as conn:
@@ -848,6 +851,24 @@ class DayEngine:
             return None
         self._set_cursor(s, target)
         return target
+
+    def _excursion(self, s: dict, trade: dict, exit_ms: int) -> dict:
+        """MAE / MFE: the lowest low and the highest high of the 15-minute candles after the entry
+        candle up to and including the exit candle, against the entry price (percent of the entry,
+        and in R = multiples of the risk taken). The adverse side is at most 0, the favourable at
+        least 0. All zero when the exit is in the entry candle itself."""
+        entry = float(trade["entry_price"])
+        df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, trade["entry_ms"] + self._base_ms, exit_ms)
+        if len(df) == 0:
+            return {"mae_pct": 0.0, "mfe_pct": 0.0, "mae_r": 0.0, "mfe_r": 0.0}
+        hi, lo = float(df["high"].max()), float(df["low"].min())
+        risk = trade.get("risk_usdt")
+        coins = float(trade["coins"])
+        to_r = (lambda move: move * coins / risk) if risk else (lambda move: None)
+        return {
+            "mae_pct": min(0.0, (lo / entry - 1.0) * 100.0), "mfe_pct": max(0.0, (hi / entry - 1.0) * 100.0),
+            "mae_r": None if not risk else min(0.0, to_r(lo - entry)), "mfe_r": None if not risk else max(0.0, to_r(hi - entry)),
+        }
 
     def _what_if(self, s: dict, trade: dict, exit_ms: int, exit_price: float) -> dict:
         """Highest high and lowest low of the 15-minute candles after the exit candle until 24:00 of
@@ -1192,6 +1213,11 @@ class DayEngine:
         st = self.state(session_id)
         with self.store.tx() as conn:
             rows = self.store.list_trades(conn, session_id)
+            for t in rows:   # trades closed before MAE / MFE existed get them once, from the candles
+                if t["status"] == "closed" and t["exit_ms"] is not None and t.get("mae_pct") is None:
+                    f = self._excursion(st, t, t["exit_ms"])
+                    self.store.update_trade(conn, t["id"], **f)
+                    t.update(f)
         return {"trades": [self._public_trade(t, st["fee_rate"], st["price"]) for t in rows]}
 
     # ------------------------------------------------------------- conditions
@@ -1399,6 +1425,8 @@ class DayEngine:
             "over_target_suggested": bool(t.get("whatif_high") is not None and tp0 is not None and t["whatif_high"] >= tp0),
         }
         out["has_image"] = bool(t["image_path"])
+        out["entry_rsi_1h"] = t.get("entry_rsi_1h")
+        out["excursion"] = None if t.get("mae_pct") is None else {k: t.get(k) for k in ("mae_pct", "mfe_pct", "mae_r", "mfe_r")}
         out["whatif"] = None if not t["whatif_n"] else {
             "n": t["whatif_n"], "high": t["whatif_high"], "low": t["whatif_low"],
             "above_exit_pct": t["whatif_above_exit_pct"], "below_exit_pct": t["whatif_below_exit_pct"],

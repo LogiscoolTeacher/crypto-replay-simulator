@@ -88,7 +88,7 @@ def test_start_moves_to_the_200th_day_after_the_listing(db: Path):
     assert s["start_note"].startswith(f"Start moved from {_day(LISTING - 10 * DAY)} to {_day(day200)}")
     assert _day(LISTING) in s["start_note"] and "200 daily candles" in s["start_note"]
     g = eng.view(s["id"], "1h", 50)["gauges"]
-    assert g["ema_long"]["value"] is not None and g["sma_long"]["value"] is not None
+    assert g["ema_long"]["value"] is not None and "sma_long" not in g
     assert eng.state(s["id"])["start_note"] == s["start_note"]
     # Reset goes back to the moved start, not the chosen date.
     eng.step(s["id"]); eng.step(s["id"])
@@ -546,12 +546,8 @@ def test_view_gauges_match_the_indicators(engine: ReplayEngine, session: dict):
     assert g["rsi"]["interval"] == "4h" and g["rsi"]["period"] == 14
     assert g["rsi"]["value"] == pytest.approx(v["indicators"][0]["outputs"]["rsi"][-1])
     assert g["price"] == v["close"][-1]
-    sm = engine.view(sid, "1D", limit=3, indicators=[("sma", {"period": 200})])["indicators"][0]["outputs"]["sma"][-1]
-    assert g["sma_long"]["period"] == 200 and g["sma_long"]["interval"] == "1D"
-    if sm is None:
-        assert g["sma_long"]["value"] is None and g["sma_long"]["price_pct"] is None
-    else:
-        assert g["sma_long"]["value"] == pytest.approx(sm) and g["sma_long"]["price_pct"] == pytest.approx((g["price"] / sm - 1) * 100)
+    assert g["ema_long"]["period"] == 200 and g["ema_long"]["interval"] == "1D"
+    assert "sma_long" not in g   # the daily SMA 200 is gone: the EMA 200 is the one long average
     b = engine.view(sid, "4h", limit=3, indicators=[("bbands", {"period": 20, "mult": 2.0})])["indicators"][0]["outputs"]
     bb = g["bb"]
     assert bb["period"] == 20 and bb["mult"] == 2.0 and bb["interval"] == "4h"
@@ -763,29 +759,29 @@ def test_trades_write_journal_rows_and_pictures(engine: ReplayEngine, session: d
     assert engine.snapshots(sid) == [] and not path.exists()
 
 
-def test_daily_sma_overlay_uses_completed_days_only(tmp_path: Path):
-    """With 300 days of history the overlay exists; intraday bars carry the previous day's value."""
-    db = tmp_path / "sma.db"
+def test_daily_ema_overlay_uses_completed_days_only(tmp_path: Path):
+    """With 300 days of history the overlay exists; intraday bars carry the previous day's value;
+    the last value is the gauge's EMA 200 (same series)."""
+    db = tmp_path / "ema.db"
     now = LISTING + 320 * DAY + 1
     eng = ReplayEngine(CandleStore(db, FakeClient(now)), SessionStore(db))
     s = eng.prepare(eng.create_session("BTCUSDT", LISTING + 300 * DAY, LISTING + 310 * DAY)["id"])
     sid = s["id"]
     eng.step(sid, n=30)  # 30 hours into the window
-    assert eng.view(sid, "1h", limit=10)["daily_sma"] is None
-    v = eng.view(sid, "1h", limit=40, daily_sma=True)
-    ov = v["daily_sma"]
-    assert ov["period"] == 200 and len(ov["values"]) == v["count"]
-    d = eng.view(sid, "1D", limit=5, indicators=[("sma", {"period": 200})])
-    daily_sma = dict(zip(d["time"], d["indicators"][0]["outputs"]["sma"]))
+    assert eng.view(sid, "1h", limit=10)["daily_ema"] is None
+    v = eng.view(sid, "1h", limit=40, daily_ema=True)
+    ov = v["daily_ema"]
+    assert ov["period"] == 200 and ov["interval"] == "1D" and len(ov["values"]) == v["count"]
+    # The daily view shows the EMA of each day; the last one equals the gauge.
+    dv = eng.view(sid, "1D", limit=5, daily_ema=True)
+    daily_ema = dict(zip(dv["time"], dv["daily_ema"]["values"]))
+    assert daily_ema[dv["time"][-1]] == pytest.approx(dv["gauges"]["ema_long"]["value"])
     for t, val in zip(v["time"], ov["values"]):
         prev_day = (t // 86400) * 86400 - 86400
-        if prev_day in daily_sma and daily_sma[prev_day] is not None:
-            assert val == pytest.approx(daily_sma[prev_day]), t
+        if prev_day in daily_ema and daily_ema[prev_day] is not None:
+            assert val == pytest.approx(daily_ema[prev_day]), t
     assert any(x is not None for x in ov["values"])
-    # The daily view shows the ordinary SMA of each day.
-    dv = eng.view(sid, "1D", limit=5, daily_sma=True)
-    assert dv["daily_sma"]["values"][-1] == pytest.approx(daily_sma[dv["time"][-1]])
-    assert eng.view(sid, "1h", limit=5, daily_sma=True)["gauges"]["sma_long"]["value"] == pytest.approx(dv["daily_sma"]["values"][-1])
+    assert all(x is None or x > 0 for x in ov["values"])
 
 
 def test_buy_whole_coins(engine: ReplayEngine, session: dict):
@@ -1092,27 +1088,26 @@ def test_long_average_changes_between_buy_and_sell(db: Path):
     engine.step(sid, n=20)
     b = engine.buy(sid, 400)
     g = engine.view(sid, "1h", limit=1)["gauges"]
-    assert b["buy_ema200"] == g["ema_long"]["value"] and b["buy_sma200_pct"] == g["sma_long"]["price_pct"]
+    assert b["buy_ema200"] == g["ema_long"]["value"] and b["buy_ema200_pct"] == g["ema_long"]["price_pct"]
+    assert b["buy_sma200"] is None   # the SMA 200 is no longer recorded (old column, kept for old rows)
     assert b["sell_ema200"] is None and b["ema200_change_pct"] is None and b["sma200_dist_change"] is None
     engine.step(sid, n=48)
     g2 = engine.view(sid, "1h", limit=1)["gauges"]
     sold = engine.sell(sid, b["id"])
-    assert sold["sell_ema200"] == g2["ema_long"]["value"] and sold["sell_sma200_pct"] == g2["sma_long"]["price_pct"]
-    for name, gauge in (("ema200", "ema_long"), ("sma200", "sma_long")):
+    assert sold["sell_ema200"] == g2["ema_long"]["value"] and sold["sell_sma200_pct"] is None
+    for name, gauge in (("ema200", "ema_long"),):
         before, after = g[gauge]["value"], g2[gauge]["value"]
         assert before is not None and after is not None  # 1400 days of history: the 200-day lines exist
         assert sold[f"{name}_change_pct"] == pytest.approx((after / before - 1) * 100)
         assert sold[f"{name}_dist_change"] == pytest.approx(g2[gauge]["price_pct"] - g[gauge]["price_pct"])
     # The sell's journal row carries the same four numbers; the CSV too.
     r = engine.snapshots(sid)[1]["readings"]
-    for k in ("ema200_change_pct", "ema200_dist_change", "sma200_change_pct", "sma200_dist_change"):
+    for k in ("ema200_change_pct", "ema200_dist_change"):
         assert r[k] == sold[k] or r[k] == pytest.approx(sold[k])
-    assert "sma200_dist_change" in engine.snapshots_csv(sid).splitlines()[0]
+    assert "ema200_dist_change" in engine.snapshots_csv(sid).splitlines()[0]
     # The pure rule, with numbers.
-    ch = ReplayEngine.long_avg_changes({"ema200": 100.0, "ema200_pct": -5.0, "sma200": 80.0, "sma200_pct": 2.0},
-                                       {"ema200": 110.0, "ema200_pct": 3.0, "sma200": 76.0, "sma200_pct": -1.0})
-    assert ch == {"ema200_change_pct": pytest.approx(10.0), "ema200_dist_change": pytest.approx(8.0),
-                  "sma200_change_pct": pytest.approx(-5.0), "sma200_dist_change": pytest.approx(-3.0)}
+    ch = ReplayEngine.long_avg_changes({"ema200": 100.0, "ema200_pct": -5.0}, {"ema200": 110.0, "ema200_pct": 3.0})
+    assert ch == {"ema200_change_pct": pytest.approx(10.0), "ema200_dist_change": pytest.approx(8.0)}
     assert ReplayEngine.long_avg_changes({"ema200": None}, {"ema200": 1.0})["ema200_change_pct"] is None
 
 

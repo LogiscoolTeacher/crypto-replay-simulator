@@ -134,7 +134,7 @@ def test_ui_end_to_end(page, server_url, tmp_path: Path):
     page.click("#btn-add-indicator")
     page.wait_for_function("window.__app.chart.chart.panes().length === 2")
     assert page.inner_text("#indicator-count") == "3"
-    page.wait_for_function("document.getElementById('legend').textContent.includes('Relative Strength Index')")
+    page.wait_for_function("document.getElementById('legend').textContent.includes('RSI (')")
     page.click("#btn-close-indicators")
 
     # Play for a moment, then pause.
@@ -294,19 +294,20 @@ def test_ui_end_to_end(page, server_url, tmp_path: Path):
     n_ind = page.evaluate("window.__app.indicators.instances.length")
     page.keyboard.press("o")
     page.wait_for_function(f"window.__app.indicators.instances.length === {n_ind + 1} && window.__app.chart.indicators.some(i => i.instance.key === 'bbands')")
-    page.wait_for_function("document.getElementById('legend').textContent.includes('Bollinger')")
+    page.wait_for_function("document.getElementById('legend').textContent.includes('BB (')")
     page.keyboard.press("o")
     page.wait_for_function(f"window.__app.indicators.instances.length === {n_ind} && !window.__app.chart.indicators.some(i => i.instance.key === 'bbands')")
 
-    # S: daily SMA 200 line on the intraday chart; the reading row follows the gauges.
-    assert page.evaluate("window.__app.chart.dailySma") is None
+    # S: daily EMA 200 line on the intraday chart; the reading row follows the gauges.
+    assert page.evaluate("window.__app.chart.dailyEma") is None
     page.keyboard.press("s")
-    page.wait_for_function("window.__app.state.dailySma === true && window.__app.chart.payload.daily_sma !== null")
-    assert page.is_checked("#daily-sma")
-    sm = page.evaluate("window.__app.chart.payload.gauges.sma_long")
-    assert (page.inner_text("#gauge-sma") == "–") == (sm["value"] is None)
+    page.wait_for_function("window.__app.state.dailyEma === true && window.__app.chart.payload.daily_ema !== null")
+    assert page.is_checked("#daily-ema")
+    em = page.evaluate("window.__app.chart.payload.gauges.ema_long")
+    assert (page.inner_text("#gauge-ema") == "–") == (em["value"] is None)
+    assert page.locator("#gauge-sma").count() == 0
     page.keyboard.press("s")
-    page.wait_for_function("window.__app.state.dailySma === false && window.__app.chart.dailySma === null")
+    page.wait_for_function("window.__app.state.dailyEma === false && window.__app.chart.dailyEma === null")
     # L: tubes at the next support / resistance and dashed lines at the 6-month high and low, on by default.
     g = page.evaluate("window.__app.chart.payload.gauges")
     lv = g["levels"]
@@ -507,12 +508,12 @@ def test_ui_end_to_end(page, server_url, tmp_path: Path):
     page.click("#tab-journal")
     page.wait_for_selector("#panel-journal:not(.hidden)")
     assert page.locator("#journal-list tr.journal").count() == 4  # two buys, the quarter and the rest of #1
-    assert page.locator("#journal-table thead th").count() == 21
+    assert page.locator("#journal-table thead th").count() == 20
     assert sorted(page.locator("#journal-list tr.journal.sell td.seq").all_inner_texts()) == ["#1.1", "#1.2"]
     reasons = page.locator("#journal-list tr.journal td.reasons").all_inner_texts()
     assert sorted(reasons) == sorted(["At support, RSI low (<30)", "–", "Trim", "At resistance, Profit target reached"])  # checklist order
     assert "bounce off the tube" in " ".join(page.get_attribute(f"#journal-list tr.journal:nth-child({i + 1}) td.reasons", "title") for i in range(4))
-    ath_cell = page.locator("#journal-list tr.journal:first-child td:nth-child(12)")
+    ath_cell = page.locator("#journal-list tr.journal:first-child td:nth-child(11)")
     assert re.fullmatch(r"[-+]\d+\.\d\d%", ath_cell.inner_text()) and ath_cell.get_attribute("title").startswith("1 year ")
     assert " · 6 months " in ath_cell.get_attribute("title")
     page.wait_for_function("[...document.querySelectorAll('#journal-list img.thumb')].every(i => i.complete && i.naturalWidth > 100)")
@@ -568,14 +569,14 @@ def test_ui_end_to_end(page, server_url, tmp_path: Path):
     page.wait_for_selector("#panel-history:not(.hidden)")
     assert page.is_hidden("#panel-open")
     assert "→" not in page.inner_text("#history-list") and page.locator("#history-list tr").count() == 2  # the two parts of #1
-    assert page.locator("#history-table thead th").count() == 25
+    assert page.locator("#history-table thead th").count() == 23
     hb = page.evaluate("window.__app.state.closedBuckets[0]")
     assert hb["held_high"] >= hb["exit_price"] and hb["held_low"] <= hb["entry_price"]
-    assert page.inner_text("#history-list .bucket:first-child td:nth-child(23)") == f"{hb['held_high_pct']:+.2f}%"
-    assert page.inner_text("#history-list .bucket:first-child td:nth-child(25)") == f"{hb['held_low_pct']:+.2f}%"
-    # EMA/SMA 200 change columns: sign colour follows the value, the hover text names both ends.
+    assert page.inner_text("#history-list .bucket:first-child td:nth-child(21)") == f"{hb['held_high_pct']:+.2f}%"
+    assert page.inner_text("#history-list .bucket:first-child td:nth-child(23)") == f"{hb['held_low_pct']:+.2f}%"
+    # EMA 200 change columns: sign colour follows the value, the hover text names both ends.
     closed = page.evaluate("window.__app.state.closedBuckets[0]")
-    for col, key in ((10, "ema200_change_pct"), (11, "ema200_dist_change"), (12, "sma200_change_pct"), (13, "sma200_dist_change")):
+    for col, key in ((10, "ema200_change_pct"), (11, "ema200_dist_change")):
         cell = page.locator(f"#history-list .bucket:first-child td:nth-child({col})")
         v = closed[key]
         if v is None:

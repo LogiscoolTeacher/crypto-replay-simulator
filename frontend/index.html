@@ -113,35 +113,40 @@
 
         <div id="help-popover" class="popover hidden" role="dialog" aria-label="Keyboard shortcuts">
           <div class="popover-head">
-            <strong>Keyboard shortcuts</strong>
+            <strong>Keys</strong>
             <button id="btn-close-help" class="btn icon" aria-label="Close">&times;</button>
           </div>
-          <dl class="keys">
+          <dl class="keys compact">
             <dt><kbd>P</kbd></dt><dd>Play / pause</dd>
-            <dt><kbd>&rarr;</kbd></dt><dd>Step one candle</dd>
+            <dt><kbd>&rarr;</kbd></dt><dd>Step</dd>
             <dt><kbd>R</kbd></dt><dd>Back to start</dd>
-            <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Zoom in / out</dd>
+            <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Zoom</dd>
             <dt><kbd>Space</kbd></dt><dd>Default zoom</dd>
-            <dt><kbd>B</kbd></dt><dd>Jump to the buy amount</dd>
-            <dt><kbd>F</kbd></dt><dd>Draw a Fibonacci retracement (again to cancel)</dd>
-            <dt><kbd>Delete</kbd></dt><dd>Remove the selected retracement</dd>
-            <dt><kbd>G</kbd></dt><dd>Fair value gaps on / off</dd>
-            <dt><kbd>O</kbd></dt><dd>Bollinger Bands 20/2 on / off</dd>
-            <dt><kbd>S</kbd></dt><dd>Daily SMA 200 line on / off</dd>
-            <dt><kbd>L</kbd></dt><dd>Support / resistance tubes and the 6-month high and low on / off</dd>
-            <dt><kbd>D</kbd></dt><dd>Hold: daily candles of the last year (also the 1Y button); release to return</dd>
-            <dt><kbd>Y</kbd></dt><dd>Hold: Bitcoin daily candles of the last 2 years with 3 support and 3 resistance lines (also the BTC 2Y button)</dd>
-            <dt><kbd>N</kbd></dt><dd>Day trading: New trade (also <kbd>B</kbd>)</dd>
-            <dt><kbd>X</kbd></dt><dd>Day trading: Sell the open trade (early exit)</dd>
-            <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Day trading, New trade panel open: move the stop by 0.05 % of the price (<kbd>Shift</kbd>: 0.25 %)</dd>
-            <dt><kbd>M</kbd></dt><dd>Day trading: Move the stop / target of the open trade (or drag the dotted lines on the chart); every move is saved with the trade</dd>
-            <dt><kbd>K</kbd></dt><dd>Day trading: Skip to the next day at 06:00</dd>
-            <dt><kbd>J</kbd></dt><dd>Day trading: Jump to the next day whose daily close is above the EMA 200</dd>
-            <dt><kbd>Z</kbd></dt><dd>Day trading: draw a support / resistance zone on the 1h or 4h chart (again to cancel)</dd>
+            <dt><kbd>F</kbd></dt><dd>Fibonacci</dd>
+            <dt><kbd>Delete</kbd></dt><dd>Remove retracement</dd>
+            <dt><kbd>G</kbd></dt><dd>Fair value gaps</dd>
+            <dt><kbd>O</kbd></dt><dd>Bollinger Bands</dd>
+            <dt><kbd>S</kbd></dt><dd>Daily EMA 200 line</dd>
+            <dt><kbd>L</kbd></dt><dd>S / R tubes, 6-month high / low</dd>
+            <dt><kbd>D</kbd></dt><dd>Hold: 1 year daily</dd>
+            <dt><kbd>Y</kbd></dt><dd>Hold: BTC 2 years</dd>
             <dt><kbd>H</kbd></dt><dd>This list</dd>
-            <dt><kbd>Esc</kbd></dt><dd>Cancel drawing, close panels</dd>
+            <dt><kbd>Esc</kbd></dt><dd>Cancel / close</dd>
           </dl>
-          <p class="muted small">Shortcuts are ignored while you type in a field.</p>
+          <dl class="keys compact swing-only">
+            <dt><kbd>B</kbd></dt><dd>Buy amount</dd>
+          </dl>
+          <p class="muted small day-only" style="margin:6px 0 2px">Day trading</p>
+          <dl class="keys compact day-only">
+            <dt><kbd>N</kbd> <kbd>B</kbd></dt><dd>New trade</dd>
+            <dt><kbd>X</kbd></dt><dd>Sell</dd>
+            <dt><kbd>M</kbd></dt><dd>Move stop / target</dd>
+            <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Move the stop (panel open)</dd>
+            <dt><kbd>Z</kbd></dt><dd>Draw zone</dd>
+            <dt><kbd>K</kbd></dt><dd>Skip day</dd>
+            <dt><kbd>J</kbd></dt><dd>Next day &gt; EMA</dd>
+            <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>Enter</kbd></dt><dd>Review marks, save</dd>
+          </dl>
         </div>
 
         <div id="fvg-popover" class="popover hidden" role="dialog" aria-label="Fair value gaps">
@@ -171,7 +176,7 @@
             <p id="indicator-error" class="error hidden" role="alert"></p>
           </div>
           <ul id="indicator-list" class="indicator-list"></ul>
-          <label class="row-flex small mtf"><input type="checkbox" id="daily-sma"> Daily SMA 200 on every timeframe (S)</label>
+          <label class="row-flex small mtf"><input type="checkbox" id="daily-ema"> Daily EMA 200 on every timeframe (S)</label>
           <p class="muted small">On intraday charts the line carries the value of the last completed day, so it never uses a close from the future.</p>
           <label class="row-flex small mtf">Levels (BTC 2Y lines, support/resistance tubes of ± this): swings within
             <input type="number" id="sr-tol" class="short" min="0.1" max="10" step="0.1" value="1.5" aria-label="Level cluster tolerance in percent"> % form one level</label>
@@ -186,7 +191,7 @@
           <button class="tab swing-only" role="tab" id="tab-journal" aria-selected="false" aria-controls="panel-journal">Journal <span id="journal-count" class="pill">0</span></button>
           <button class="tab swing-only" role="tab" id="tab-stats" aria-selected="false" aria-controls="panel-stats" title="Which reasons paid off, over all sessions">Statistics</button>
           <button class="tab swing-only" role="tab" id="tab-perf" aria-selected="false" aria-controls="panel-perf" title="How the trading went: numbers, equity curve, drawdown, trades, months">Performance</button>
-          <button class="tab day-only" role="tab" id="tab-day" aria-selected="false" aria-controls="panel-day" title="Every trade of this day-trading session with its picture at the exit">Trades <span id="day-trade-count" class="pill">0</span></button>
+          <button class="tab day-only" role="tab" id="tab-day" aria-selected="false" aria-controls="panel-day" title="Every trade of this day-trading session with its picture at 24:00 of the exit day">Trades <span id="day-trade-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-auto" aria-selected="false" aria-controls="panel-auto" title="The automatic-exit twin of every trade: same entry and size, the original stop and target, closed only when one of them is hit, overnight and across days. What your trade would have done hands-off.">Auto exits <span id="day-auto-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-days" aria-selected="false" aria-controls="panel-days" title="The daily journal: one row per trading day with the trend check, how the day ended, its picture and your notes">Days <span id="day-days-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-cal" aria-selected="false" aria-controls="panel-cal" title="One month, a week per row (Monday to Sunday): P&amp;L and trades per day; click a past day for its journal, a later day to jump there">Calendar</button>
@@ -200,22 +205,28 @@
             <button type="button" class="chip on" data-v="all" title="Trades with and without the condition">all</button>
             <button type="button" class="chip" data-v="yes" title="Only trades where the condition was met">yes</button>
             <button type="button" class="chip" data-v="no" title="Only trades where the condition was not met">no</button>
+            <details class="cols-menu" id="day-cols">
+              <summary class="btn small" title="Choose the columns of this table">Hide cols</summary>
+              <div class="cols-list" id="day-cols-list"></div>
+            </details>
             <span class="muted small hint">Times are Europe/Malta. Click a row for the picture and every saved field. Click a column header to sort.</span>
           </div>
-          <table class="buckets" id="day-trade-table">
+          <table class="buckets lined" id="day-trade-table">
             <thead><tr>
-              <th>Chart</th><th class="sortable" data-key="seq">#</th><th class="sortable" data-key="day_date">Day</th><th class="sortable" data-key="entry_ms">Entry</th><th class="sortable" data-key="exit_ms">Exit</th>
-              <th class="sortable" data-key="exit_type" title="stop, take-profit or early exit">Type</th><th class="num sortable" data-key="hold_hours" title="Hours between the buy and the exit (an open trade counts up to now)">Held</th><th title="Reason of an early exit (hover for the note)">Reason</th>
-              <th title="Trend check: daily close above EMA 200 / higher highs and higher lows">Trend</th>
-              <th title="The entry conditions at the buy (hover for the full list); evaluated in the Conditions tab">Conditions</th>
-              <th class="num sortable" data-key="confidence" title="Your confidence at the buy, 0 to 10">Conf.</th>
-              <th class="sortable" data-key="review_n" title="Your review at 24:00 of the exit day: stop too tight, price later over the target, stop saved me">Review</th>
-              <th class="num sortable" data-key="entry_price">Entry price</th><th class="num" title="RSI 14 of the 15-minute chart at the entry">RSI</th><th class="num" title="ATR 14 of the 15-minute chart at the entry">ATR</th>
-              <th class="num" title="Support zone the entry was based on">Zone</th><th class="num" title="Stop used (hover for the suggested one)">Stop</th><th class="num">Target</th><th class="num sortable" data-key="rr" title="Reward-to-risk at the entry">R/R</th>
-              <th class="num">Coins</th><th class="num" title="Position value in USDT">Value</th><th class="num" title="Risk in USDT (1 % of the start, or less when capped)">Risk</th><th title="Size capped by the cash">Capped</th><th title="Still open when the replay passed 24:00">Overnight</th>
-              <th class="num">Exit price</th><th class="num" title="Buy and sell fee">Fees</th><th class="num sortable" data-key="pnl" title="P&amp;L after fees">P&amp;L</th><th class="num sortable" data-key="pnl_pct" title="P&amp;L in percent of the position value">%</th><th class="num sortable" data-key="r_multiple" title="P&amp;L divided by the risk amount">R</th>
-              <th class="num" title="What if: highest high after the exit until 24:00, vs the exit price">High vs exit</th><th class="num" title="What if: lowest low after the exit until 24:00, vs the exit price">Low vs exit</th>
-              <th class="num" title="What if: highest high after the exit, vs the entry price">High vs entry</th><th class="num" title="What if: lowest low after the exit, vs the entry price">Low vs entry</th><th>Notes</th>
+              <th data-col="pic">Chart</th><th class="sortable" data-col="seq" data-key="seq">#</th><th class="sortable" data-col="day" data-key="day_date">Day</th><th class="sortable" data-col="entry" data-key="entry_ms">Entry</th><th class="sortable" data-col="exit" data-key="exit_ms">Exit</th>
+              <th class="sortable" data-col="type" data-key="exit_type" title="stop, take-profit or early exit">Type</th><th class="num sortable" data-col="held" data-key="hold_hours" title="Hours between the buy and the exit (an open trade counts up to now)">Held</th><th data-col="reason" title="Reason of an early exit (hover for the note)">Reason</th>
+              <th data-col="trend" title="Trend check: daily close above EMA 200 / higher highs and higher lows">Trend</th>
+              <th data-col="cond" title="The entry conditions at the buy (hover for the full list); evaluated in the Conditions tab">Conditions</th>
+              <th class="num sortable" data-col="conf" data-key="confidence" title="Your confidence at the buy, 0 to 10">Conf.</th>
+              <th class="sortable" data-col="review" data-key="review_n" title="Your review at 24:00 of the exit day: stop too tight, price later over the target, stop saved me">Review</th>
+              <th class="num sortable" data-col="entry_price" data-key="entry_price">Entry price</th><th class="num" data-col="rsi" title="RSI 14 of the 15-minute chart at the entry">RSI 15m</th><th class="num" data-col="rsi_1h" title="RSI 14 of the 1-hour chart at the entry">RSI 1h</th><th class="num" data-col="atr" title="ATR 14 of the 15-minute chart at the entry">ATR</th>
+              <th class="num" data-col="zone" title="Support zone the entry was based on">Zone</th><th class="num" data-col="stop" title="Stop used (hover for the suggested one)">Stop</th><th class="num" data-col="target">Target</th><th class="num sortable" data-col="rr" data-key="rr" title="Reward-to-risk at the entry">R/R</th>
+              <th class="num" data-col="coins">Coins</th><th class="num" data-col="value" title="Position value in USDT">Value</th><th class="num" data-col="risk" title="Risk in USDT (1 % of the start, or less when capped)">Risk</th><th data-col="capped" title="Size capped by the cash">Capped</th><th data-col="overnight" title="Still open when the replay passed 24:00">Overnight</th>
+              <th class="num" data-col="exit_price">Exit price</th><th class="num" data-col="fees" title="Buy and sell fee">Fees</th><th class="num sortable" data-col="pnl" data-key="pnl" title="P&amp;L after fees">P&amp;L</th><th class="num sortable" data-col="pnl_pct" data-key="pnl_pct" title="P&amp;L in percent of the position value">%</th><th class="num sortable" data-col="r" data-key="r_multiple" title="P&amp;L divided by the risk amount">R</th>
+              <th class="num sortable" data-col="mae" data-key="mae_pct" title="Maximum adverse excursion: the lowest low between the entry and the exit, vs the entry price">MAE %</th><th class="num sortable" data-col="mfe" data-key="mfe_pct" title="Maximum favourable excursion: the highest high between the entry and the exit, vs the entry price">MFE %</th>
+              <th class="num sortable" data-col="mae_r" data-key="mae_r" title="MAE in R (multiples of the risk taken)">MAE R</th><th class="num sortable" data-col="mfe_r" data-key="mfe_r" title="MFE in R (multiples of the risk taken)">MFE R</th>
+              <th class="num" data-col="hi_exit" title="What if: highest high after the exit until 24:00, vs the exit price">High vs exit</th><th class="num" data-col="lo_exit" title="What if: lowest low after the exit until 24:00, vs the exit price">Low vs exit</th>
+              <th class="num" data-col="hi_entry" title="What if: highest high after the exit, vs the entry price">High vs entry</th><th class="num" data-col="lo_entry" title="What if: lowest low after the exit, vs the entry price">Low vs entry</th><th data-col="notes">Notes</th>
             </tr></thead>
             <tbody id="day-trade-list"></tbody>
           </table>
@@ -323,7 +334,7 @@
           <table class="buckets" id="history-table">
             <thead><tr>
               <th>#</th><th>Buy date (UTC)</th><th>Sell date (UTC)</th><th class="num" title="Time between buy and sell">Held</th><th class="num">Amount</th><th class="num">Buy price</th>
-              <th class="num">Sell price</th><th class="num" title="RSI(14) at the buy">RSI buy</th><th class="num" title="RSI(14) at the sell">RSI sell</th><th class="num" title="Daily EMA 200 at the sell vs at the buy, in percent: did the 200-day trend rise while you held?">EMA200 &Delta;</th><th class="num" title="Price vs EMA 200 at the sell minus at the buy, in percentage points: did you move further above the line?">vs EMA &Delta;</th><th class="num" title="Daily SMA 200 at the sell vs at the buy, in percent">SMA200 &Delta;</th><th class="num" title="Price vs SMA 200 at the sell minus at the buy, in percentage points">vs SMA &Delta;</th><th class="num">Fees</th><th class="num">Total cost</th><th class="num">Proceeds</th><th class="num">P&amp;L</th><th class="num">%</th>
+              <th class="num">Sell price</th><th class="num" title="RSI(14) at the buy">RSI buy</th><th class="num" title="RSI(14) at the sell">RSI sell</th><th class="num" title="Daily EMA 200 at the sell vs at the buy, in percent: did the 200-day trend rise while you held?">EMA200 &Delta;</th><th class="num" title="Price vs EMA 200 at the sell minus at the buy, in percentage points: did you move further above the line?">vs EMA &Delta;</th><th class="num">Fees</th><th class="num">Total cost</th><th class="num">Proceeds</th><th class="num">P&amp;L</th><th class="num">%</th>
               <th class="num" title="Take profit set at the buy, percent above the buy price">Target</th><th class="num" title="Stop loss set at the buy, percent below the buy price">Stop</th>
               <th title="How the bucket was sold: by hand, or automatically at the target or the stop (hover for when Auto was switched on)">Exit</th>
               <th class="num" title="Highest high of the base candles while held (buy candle to sell candle)">High</th><th class="num" title="Highest high in percent of the buy price: what was on the table">High %</th>
@@ -346,7 +357,7 @@
             <thead><tr>
               <th>Chart</th><th>Side</th><th>#</th><th>Date (UTC)</th><th>TF</th><th class="num">Price</th><th class="num">Amount</th>
               <th class="num" title="RSI(14) of the timeframe on screen">RSI</th><th class="num" title="Bollinger %B">%B</th>
-              <th class="num" title="Price vs daily EMA 200">EMA200</th><th class="num" title="Price vs daily SMA 200">SMA200</th><th class="num" title="Price vs the all-time high (daily wicks). Hover a cell for 1 year, 6 months and 3 months.">ATH</th><th class="num" title="Price vs the all-time low (daily wicks). Hover a cell for 1 year, 6 months and 3 months.">ATL</th><th class="num" title="vs last buy (or the high since it)">vs buy</th>
+              <th class="num" title="Price vs daily EMA 200">EMA200</th><th class="num" title="Price vs the all-time high (daily wicks). Hover a cell for 1 year, 6 months and 3 months.">ATH</th><th class="num" title="Price vs the all-time low (daily wicks). Hover a cell for 1 year, 6 months and 3 months.">ATL</th><th class="num" title="vs last buy (or the high since it)">vs buy</th>
               <th class="num" title="vs last sell (or the high since it)">vs sell</th><th>Strategy</th><th>Lights</th>
               <th title="Reasons ticked when the trade was logged (hover for the note)">Reasons</th>
               <th class="num">P&amp;L</th><th class="num">%</th><th class="num">Held</th>
@@ -417,7 +428,6 @@
           <button type="button" id="btn-day-new" class="btn buy" title="Open the New trade panel (N)">New trade</button>
           <button type="button" id="btn-day-sell" class="btn sell" title="Early exit at the close of this candle, with a reason (X)">Sell</button>
           <span class="spacer"></span>
-          <button type="button" id="btn-day-ema" class="btn small" title="Jump to the next day whose daily close is above the EMA 200, at 06:00 (J)">Next day &gt; EMA</button>
           <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 06:00 (K)">Skip day &rarr; 06:00</button>
           <button type="button" id="btn-day-continue" class="btn small primary hidden" title="The trade has closed: jump to the next day at 06:00 (or buy again / step on instead)">Continue &rarr; 06:00</button>
         </div>
@@ -490,8 +500,6 @@
           <dt id="gauge-rsi-label" title="RSI(14) of the timeframe on screen, latest candle">RSI 14</dt><dd id="gauge-rsi" class="mono gauge">&ndash;</dd>
           <dt title="EMA 200 of daily candles, including the forming day">EMA 200 (1D)</dt><dd id="gauge-ema" class="mono">&ndash;</dd>
           <dt title="Current price relative to the daily EMA 200">Price vs EMA</dt><dd id="gauge-ema-pct" class="mono gauge">&ndash;</dd>
-          <dt title="SMA 200 of daily candles, including the forming day">SMA 200 (1D)</dt><dd id="gauge-sma" class="mono">&ndash;</dd>
-          <dt title="Current price relative to the daily SMA 200">Price vs SMA</dt><dd id="gauge-sma-pct" class="mono gauge">&ndash;</dd>
           <dt id="gauge-res-label" title="Nearest zone above the price (swing level ± tolerance, last year's daily candles) with at least 3 touches: distance to its edge, touches, days since the last touch">Resistance</dt><dd id="gauge-res" class="mono gauge">&ndash;</dd>
           <dt id="gauge-sup-label" title="Nearest zone at or below the price (swing level ± tolerance, last year's daily candles) with at least 3 touches: distance to its edge, touches, days since the last touch">Support</dt><dd id="gauge-sup" class="mono gauge">&ndash;</dd>
           <dt id="gauge-bb-label" title="Where the price sits between the Bollinger Bands 20/2 of the timeframe on screen: 0 = lower band, 1 = upper band. Green below the lower band, red above the upper.">%B (BB 20/2)</dt><dd id="gauge-bb" class="mono gauge">&ndash;</dd>
@@ -564,6 +572,7 @@
       <button id="btn-zoom-reset" class="btn icon" title="Default zoom (Space)" aria-label="Default zoom">&#x2922;</button>
     </span>
     <span class="step-info">step: <span id="step-size" class="mono">&ndash;</span></span>
+    <button type="button" id="btn-day-ema" class="btn small day-only" title="Jump to the next day whose daily close is above the EMA 200, at 06:00 (J)">Next day &gt; EMA</button>
     <label class="speed">Speed
       <input id="speed" type="range" min="1" max="10" value="2" aria-label="Candles per second">
       <span id="speed-label" class="mono">2/s</span>

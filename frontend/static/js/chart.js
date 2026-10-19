@@ -11,6 +11,9 @@ import { ZonePrimitive } from './zones.js';
 import { PlanPrimitive } from './plan.js';
 import { RsiZonePrimitive } from './rsi.js';
 
+// Short indicator names for the legend box (the full names stay in the Indicators panel).
+const SHORT_NAMES = { ema: 'EMA', sma: 'SMA', bbands: 'BB', rsi: 'RSI', macd: 'MACD', atr: 'ATR', vwap: 'VWAP', stoch: 'Stoch', obv: 'OBV' };
+
 export const SERIES_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
 export const UP = '#0ca30c';
 export const DOWN = '#d03b3b';
@@ -296,22 +299,22 @@ export class ChartView {
   selectFib(id) { this.fib.selectedId = id; this.fib.requestUpdate(); }
   setFibDraft(draft) { this.fib.draft = draft; this.fib.requestUpdate(); }
   setFvg(gaps, hideFilled) { this.fvg.gaps = gaps || []; this.fvg.hideFilled = !!hideFilled; this.fvg.requestUpdate(); }
-  // Daily SMA 200 overlay (multi-timeframe line), independent of the indicator list.
-  setDailySma(overlay) {
+  // Daily EMA 200 overlay (multi-timeframe line), independent of the indicator list.
+  setDailyEma(overlay) {
     const p = this.payload;
     if (!overlay || !p || !p.count) {
-      if (this.dailySma) { this.chart.removeSeries(this.dailySma); this.dailySma = null; }
+      if (this.dailyEma) { this.chart.removeSeries(this.dailyEma); this.dailyEma = null; }
       return;
     }
-    if (!this.dailySma) {
-      this.dailySma = this.chart.addSeries(LWC.LineSeries, {
-        color: '#d55181', lineWidth: 2, lineStyle: LWC.LineStyle.LargeDashed, title: 'SMA200 1D',
+    if (!this.dailyEma) {
+      this.dailyEma = this.chart.addSeries(LWC.LineSeries, {
+        color: '#d55181', lineWidth: 2, lineStyle: LWC.LineStyle.LargeDashed, title: 'EMA200 1D',
         priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceFormat: this.priceFormat(),
       }, 0);
     }
     const data = [];
     for (let i = 0; i < p.count; i++) if (overlay.values[i] !== null && overlay.values[i] !== undefined) data.push({ time: p.time[i], value: overlay.values[i] });
-    this.dailySma.setData(data);
+    this.dailyEma.setData(data);
   }
   // Snap a click (pixels relative to the chart element) to the high or low of the candle under it.
   snapClick(pt) {
@@ -378,7 +381,7 @@ export class ChartView {
   setQuiet(on) {
     this.quiet = !!on;
     for (const [l, title] of this._titles) l.applyOptions({ title: on ? '' : title });
-    if (this.dailySma) this.dailySma.applyOptions({ title: on ? '' : 'SMA200 1D' });
+    if (this.dailyEma) this.dailyEma.applyOptions({ title: on ? '' : 'EMA200 1D' });
   }
 
   // ---------------------------------------------------------- bucket lines
@@ -719,7 +722,8 @@ export class ChartView {
     for (const view of this.indicators) {
       const ind = view.data;
       if (!ind) continue;
-      const label = `${view.spec.name} (${Object.values(ind.params).join(', ')})`;
+      const key = view.instance ? view.instance.key : '';
+      const label = `${SHORT_NAMES[key] || view.spec.name} (${Object.values(ind.params).join(', ')})`;
       const vals = view.outputs.map(out => {
         const v = (ind.outputs[out.name] || [])[i];
         return `<span class="sw" style="background:${out.color}"></span>${out.label} <b>${v === null || v === undefined ? '–' : fmtNum(v, view.spec.overlay ? undefined : this.paneDecimals(view.spec))}</b>`;

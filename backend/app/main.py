@@ -187,7 +187,7 @@ class ViewRequest(BaseModel):
     strategy: StrategyRequest | None = None
     auto_fib: int | None = Field(default=None, ge=2, le=2000, description="Lookback in candles for an automatic retracement")
     fvg_min_pct: float | None = Field(default=None, ge=0, le=10, allow_inf_nan=False, description="Draw fair value gaps at least this percent of price high")
-    daily_sma: bool = Field(default=False, description="Also return the daily SMA 200 mapped onto the bars")
+    daily_ema: bool = Field(default=False, description="Also return the daily EMA 200 mapped onto the bars")
     sr_tol: float | None = Field(default=None, gt=0, le=10, allow_inf_nan=False, description="Swings within this percent form one level (next support/resistance); default 1.5")
     rsi_panes: list[str] = Field(default_factory=list, max_length=engine_rules.RSI_PANES_MAX, description="Timeframes whose RSI(14) is returned as extra panes, one value per bar on screen")
 
@@ -332,7 +332,7 @@ def _view(session_id: str, req: ViewRequest) -> dict:
         (req.strategy.key, req.strategy.params) if req.strategy else None,
         req.auto_fib,
         req.fvg_min_pct,
-        req.daily_sma,
+        req.daily_ema,
         req.sr_tol,
         rsi_panes=req.rsi_panes,
     )

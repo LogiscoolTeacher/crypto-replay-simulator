@@ -34,7 +34,7 @@ const state = {
   fibs: [], selectedFib: null, fibDraft: null, drawing: false,
   autoFib: { on: false, lookback: 100 },
   fvg: { on: false, minPct: 0.1, hideFilled: false },
-  dailySma: false,
+  dailyEma: false,
   viewSeq: 0,  // only the latest view request may paint the chart
   // Table sorting and RSI filter, per table ('open' | 'history').
   sort: { open: { key: 'seq', dir: 1 }, history: { key: 'seq', dir: 1 }, journal: { key: 'time_ms', dir: 1 } },
@@ -112,8 +112,8 @@ function rsiMatches(v, filter) {
 }
 // Sort keys per column, in header order (null = not sortable).
 const OPEN_KEYS = ['seq', 'opened_ms', 'age', 'qty', 'entry_price', 'buy_rsi', 'buy_fee', 'cost', 'market_value', 'unrealized_pnl', 'unrealized_pnl_pct', 'held_high_pct', 'held_low_pct', 'tp_pct', 'sl_pct', 'armed_ms', null];
-const JOURNAL_KEYS = [null, 'side', 'bucket_seq', 'time_ms', 'interval', 'price', 'quote', 'rsi', 'bb_pctb', 'ema200_pct', 'sma200_pct', 'ath_pct', 'atl_pct', 'vs_last_buy_pct', 'vs_last_sell_pct', 'strategy', null, null, 'realized_pnl', 'realized_pnl_pct', 'held_ms'];
-const HISTORY_KEYS = ['seq', 'opened_ms', 'closed_ms', 'held', 'qty', 'entry_price', 'exit_price', 'buy_rsi', 'sell_rsi', 'ema200_change_pct', 'ema200_dist_change', 'sma200_change_pct', 'sma200_dist_change', 'fees', 'cost', 'proceeds', 'realized_pnl', 'realized_pnl_pct', 'tp_pct', 'sl_pct', 'trigger', 'held_high', 'held_high_pct', 'held_low', 'held_low_pct'];
+const JOURNAL_KEYS = [null, 'side', 'bucket_seq', 'time_ms', 'interval', 'price', 'quote', 'rsi', 'bb_pctb', 'ema200_pct', 'ath_pct', 'atl_pct', 'vs_last_buy_pct', 'vs_last_sell_pct', 'strategy', null, null, 'realized_pnl', 'realized_pnl_pct', 'held_ms'];
+const HISTORY_KEYS = ['seq', 'opened_ms', 'closed_ms', 'held', 'qty', 'entry_price', 'exit_price', 'buy_rsi', 'sell_rsi', 'ema200_change_pct', 'ema200_dist_change', 'fees', 'cost', 'proceeds', 'realized_pnl', 'realized_pnl_pct', 'tp_pct', 'sl_pct', 'trigger', 'held_high', 'held_high_pct', 'held_low', 'held_low_pct'];
 function sortValue(b, key) {
   switch (key) {
     case 'age': return (state.session ? state.session.cursor_ms : 0) - b.opened_ms;
@@ -228,7 +228,7 @@ function viewRequest() {
     rsi_panes: isDay() && !state.peek ? DAY_RSI_PANES : [],   // not on the daily peek: intraday RSI at a day's close says little
     auto_fib: state.autoFib.on ? state.autoFib.lookback : null,
     fvg_min_pct: state.fvg.on ? state.fvg.minPct : null,
-    daily_sma: state.dailySma,
+    daily_ema: state.dailyEma,
     sr_tol: state.srTol,
   };
 }
@@ -649,10 +649,10 @@ function excursionCells(b, withPrices) {
 
 // Percentage points, signed: the change of a "price vs line" distance between buy and sell.
 function pp(v) { return v === null || v === undefined ? '–' : `${v >= 0 ? '+' : ''}${v.toFixed(2)} pp`; }
-// History cells for the daily EMA/SMA 200: how the line moved and how the price's distance to it changed.
+// History cells for the daily EMA 200: how the line moved and how the price's distance to it changed.
 function longAvgCells(b) {
   const cells = [];
-  for (const [name, label] of [['ema200', 'EMA 200'], ['sma200', 'SMA 200']]) {
+  for (const [name, label] of [['ema200', 'EMA 200']]) {
     const ch = b[`${name}_change_pct`], dist = b[`${name}_dist_change`];
     const at = (side) => (b[`${side}_${name}`] === null || b[`${side}_${name}`] === undefined ? '–' : fmtPrice(b[`${side}_${name}`]));
     const atPct = (side) => pctOrDash(b[`${side}_${name}_pct`]);
@@ -831,7 +831,7 @@ function applyState(s) {
 
 function applyContext(ctx) {
   chart.setData(ctx);
-  chart.setDailySma(null);
+  chart.setDailyEma(null);
   chart.setAutoFib(null);
   chart.setFvg([], state.fvg.hideFilled);
   chart.setLevels(ctx.levels);
@@ -849,7 +849,7 @@ function applyView(view) {
   renderLights(view);
   renderGauges(view.gauges);
   chart.setNearLevels(state.nearLevels ? view.gauges : null);
-  chart.setDailySma(state.dailySma ? view.daily_sma : null);
+  chart.setDailyEma(state.dailyEma ? view.daily_ema : null);
   chart.setAutoFib(view.auto_fib || null);
   renderFvg(view.fvg);
 }
@@ -940,19 +940,15 @@ function renderLevelGauges(lv) {
 function renderGauges(g) {
   renderExtremes(g ? g.extremes : null);
   const rsi = $('gauge-rsi'), ema = $('gauge-ema'), pctEl = $('gauge-ema-pct'), bbEl = $('gauge-bb'), bbw = $('gauge-bbw');
-  const smaEl = $('gauge-sma'), smaPct = $('gauge-sma-pct');
   const paint = (el, text, cls) => { el.textContent = text; el.classList.remove('up', 'down'); if (cls) el.classList.add(cls); };
   if (!g) {
     $('gauge-rsi-label').textContent = 'RSI 14';
-    paint(rsi, '–'); paint(ema, '–'); paint(pctEl, '–'); paint(bbEl, '–'); paint(bbw, '–'); paint(smaEl, '–'); paint(smaPct, '–');
+    paint(rsi, '–'); paint(ema, '–'); paint(pctEl, '–'); paint(bbEl, '–'); paint(bbw, '–');
     renderLevelGauges(null);
     $('gauge-bb-label').textContent = '%B (BB 20/2)';
     return;
   }
   renderLevelGauges(g.levels);
-  const sm = g.sma_long || {};
-  paint(smaEl, sm.value === null || sm.value === undefined ? '–' : fmtPrice(sm.value));
-  paint(smaPct, sm.price_pct === null || sm.price_pct === undefined ? '–' : pct(sm.price_pct), sm.price_pct === null || sm.price_pct === undefined ? '' : pnlClass(sm.price_pct));
   const bb = g.bb || {};
   $('gauge-bb-label').textContent = `%B (BB ${bb.period || 20}/${bb.mult || 2}, ${g.rsi.interval})`;
   const pb = bb.pctb;
@@ -1008,7 +1004,7 @@ async function loadSession(id, { fit = true } = {}) {
   renderFvg(null);
   state.journal = [];
   renderJournal();
-  chart.setDailySma(null);
+  chart.setDailyEma(null);
   endPeek(null, { restore: false });
   if (!id) {
     state.session = null;
@@ -1043,7 +1039,7 @@ async function loadSession(id, { fit = true } = {}) {
     indicators.load(s.id, DEFAULT_INDICATORS);   // triggers onChange -> applyIndicators (no fetch yet)
     loadFibPrefs();
     loadFvgPrefs();
-    loadDailySmaPref();
+    loadDailyEmaPref();
     loadNearLevelsPref();
     loadSrTolPref();
     loadWholeCoinsPref();
@@ -1164,7 +1160,7 @@ async function reset() {
     renderJournal();
     loadFibPrefs();
     loadFvgPrefs();
-    loadDailySmaPref();
+    loadDailyEmaPref();
     loadNearLevelsPref();
     loadSrTolPref();
     loadWholeCoinsPref();
@@ -1750,7 +1746,7 @@ function renderBottom() {
   const open = state.bottomOpen;
   const center = document.querySelector('.center');
   center.classList.toggle('collapsed', !open);
-  center.classList.toggle('tall', open && activeTab() === 'tab-perf');  // room for the diagrams
+  center.classList.toggle('tall', open && ['tab-perf', 'tab-day', 'tab-auto'].includes(activeTab()));  // room for the diagrams and the trade tables
   const b = $('btn-bottom');
   b.textContent = open ? '\u25BE' : '\u25B4';
   b.setAttribute('aria-expanded', String(open));
@@ -1929,7 +1925,6 @@ function renderFvg(gaps) {
     : 'Gaps are hidden.';
 }
 
-// S: daily SMA 200 overlay on whatever timeframe is on screen.
 // Cluster tolerance of the Bitcoin support/resistance levels (Indicators panel).
 function loadSrTolPref() {
   const v = parseFloat(getPref('srtol', String(SR_TOL_DEFAULT)));
@@ -1957,16 +1952,17 @@ function setNearLevels(on) {
   chart.setNearLevels(state.nearLevels && !state.peek && p ? p.gauges : null);
 }
 
-function loadDailySmaPref() {
-  state.dailySma = getPref('dailysma', '0') === '1';
-  $('daily-sma').checked = state.dailySma;
+// S: daily EMA 200 overlay on whatever timeframe is on screen.
+function loadDailyEmaPref() {
+  state.dailyEma = getPref('dailyema', '0') === '1';
+  $('daily-ema').checked = state.dailyEma;
 }
-function setDailySma(on) {
+function setDailyEma(on) {
   if (!ready()) return;
-  state.dailySma = !!on;
-  $('daily-sma').checked = state.dailySma;
-  setPref('dailysma', state.dailySma ? '1' : '0');
-  if (state.dailySma) refreshView(); else chart.setDailySma(null);
+  state.dailyEma = !!on;
+  $('daily-ema').checked = state.dailyEma;
+  setPref('dailyema', state.dailyEma ? '1' : '0');
+  if (state.dailyEma) refreshView(); else chart.setDailyEma(null);
 }
 
 // O: Bollinger Bands 20/2 on the chart, through the normal indicator list (so they can be edited there).
@@ -2054,7 +2050,6 @@ function renderJournal() {
       [`num rsi ${rsiClass(r.rsi)}`, rsiText(r.rsi)],
       ['num', num(r.bb_pctb)],
       [`num ${pnlClass(r.ema200_pct)}`, r.ema200_pct === null || r.ema200_pct === undefined ? '–' : pct(r.ema200_pct)],
-      [`num ${pnlClass(r.sma200_pct)}`, r.sma200_pct === null || r.sma200_pct === undefined ? '–' : pct(r.sma200_pct)],
       [`num ${pnlClass(r.ath_pct)}`, pctOrDash(r.ath_pct), `1 year ${pctOrDash(r.high_1y_pct)} · 6 months ${pctOrDash(r.high_6m_pct)} · 3 months ${pctOrDash(r.high_3m_pct)}`],
       [`num ${pnlClass(r.atl_pct)}`, pctOrDash(r.atl_pct), `1 year ${pctOrDash(r.low_1y_pct)} · 6 months ${pctOrDash(r.low_6m_pct)} · 3 months ${pctOrDash(r.low_3m_pct)}`],
       [`num ${pnlClass(r.vs_last_buy_pct)}`, r.vs_last_buy_pct === null || r.vs_last_buy_pct === undefined ? '–' : pct(r.vs_last_buy_pct)],
@@ -2192,7 +2187,7 @@ function onKeydown(e) {
   else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); state.drawing ? cancelFibDraw() : startFibDraw(); }
   else if (e.key === 'g' || e.key === 'G') { e.preventDefault(); toggleFvg(); }
   else if (e.key === 'o' || e.key === 'O') { e.preventDefault(); toggleBollinger(); }
-  else if (e.key === 's' || e.key === 'S') { e.preventDefault(); setDailySma(!state.dailySma); }
+  else if (e.key === 's' || e.key === 'S') { e.preventDefault(); setDailyEma(!state.dailyEma); }
   else if (e.key === 'l' || e.key === 'L') { e.preventDefault(); setNearLevels(!state.nearLevels); }
   else if (e.key === 'h' || e.key === 'H') { e.preventDefault(); openHelp($('help-popover').classList.contains('hidden')); }
   else if (e.key === 'd' || e.key === 'D') { e.preventDefault(); if (!e.repeat) startPeek('year'); }
@@ -2307,7 +2302,7 @@ async function init() {
   $('btn-help').addEventListener('click', () => openHelp($('help-popover').classList.contains('hidden')));
   $('btn-close-help').addEventListener('click', () => openHelp(false));
   for (const id of ['fvg-on', 'fvg-min', 'fvg-hide-filled']) $(id).addEventListener('change', onFvgChange);
-  $('daily-sma').addEventListener('change', () => setDailySma($('daily-sma').checked));
+  $('daily-ema').addEventListener('change', () => setDailyEma($('daily-ema').checked));
   $('near-levels').addEventListener('change', () => setNearLevels($('near-levels').checked));
   initTableTools();
   initJournal();

@@ -29,6 +29,9 @@ const COND_LABELS = [
   ['tp_moved', 'Target moved during the trade'],
 ];   // empty bars kept right of the last candle while the New trade panel is open
 
+// The Trades tab columns shown by default (data-col names of the table headers); the rest hide until chosen.
+const DAY_COLS_DEFAULT = ['pic', 'seq', 'day', 'entry', 'exit', 'held', 'trend', 'cond', 'conf', 'pnl', 'pnl_pct', 'r'];
+
 export class DayMode {
   constructor(ctx) {
     this.c = ctx;
@@ -48,6 +51,7 @@ export class DayMode {
     this.auto = { trades: [], summary: null };   // the automatic-exit twins (Auto exits tab)
     this.reviewTrade = null;      // the trade shown in the review dialog (editing from the trade dialog)
     this.inlineReviewId = null;   // the trade whose pending review is in the side panel (its marks keep the user's clicks)
+    this.hiddenCols = this.loadCols();   // Trades tab: the hidden columns (null = the default set)
     this.conditions = null;        // the Conditions tab's last answer
     this.condScope = 'session';    // 'session' | 'all'
     this.condFilter = { key: 'all', val: 'all' };   // the Trades tab filter
@@ -278,12 +282,14 @@ export class DayMode {
     if (chk) {
       const ema = chk.ema_above;
       const detail = chk.ema200 === null ? 'EMA 200 n/a' : `close ${this.c.fmtPrice(chk.daily_close)} vs EMA ${this.c.fmtPrice(chk.ema200)}`;
-      set('day-ema', `${this.flag(ema)} · ${detail}`, `mono gauge ${ema === null ? '' : ema ? 'up' : 'down'}`);
+      set('day-ema', this.flag(ema), `mono gauge ${ema === null ? '' : ema ? 'up' : 'down'}`);
+      $('day-ema').title = detail;
       $('btn-hh-yes').classList.toggle('on', chk.hh_hl === true);
       $('btn-hh-no').classList.toggle('on', chk.hh_hl === false);
       set('day-uptrend', this.flag(chk.uptrend), `gauge ${chk.uptrend === null ? '' : chk.uptrend ? 'up' : 'down'}`);
     } else {
       set('day-ema', '–', 'mono gauge');
+      $('day-ema').title = '';
       set('day-uptrend', '–', 'gauge');
       $('btn-hh-yes').classList.remove('on');
       $('btn-hh-no').classList.remove('on');
@@ -863,8 +869,9 @@ export class DayMode {
   }
 
   // ----------------------------------------------------------------- events
-  // Events of a step or a sell: an exit saves the picture of the chart at the exit and then jumps to
-  // the next 06:00 by itself (spec: no confirmation); a jump is only announced.
+  // Events of a step or a sell: after an exit the replay jumps to 24:00 of the exit day; the trade's
+  // picture (the chart as on screen) and the day's picture are taken there. A night exit (already
+  // past 24:00) gets them at once. A jump is only announced.
   async handleEvents(events) {
     if (!this.active()) return;
     {
@@ -874,15 +881,58 @@ export class DayMode {
         this.c.pause();
         const tr = ev.trade;
         this.c.toast(`Trade #${tr.seq} closed (${tr.exit_type}) @ ${this.c.fmtPrice(tr.exit_price)}: ${this.signed(tr.pnl)} USDT (${this.pctText(tr.pnl_pct)}, ${this.signed(tr.r_multiple)} R)`, tr.pnl < 0);
-        if (ev.jumped_to_ms !== null && ev.jumped_to_ms !== undefined) await this.c.refreshView();   // the replay jumped to 24:00: show the whole day
+        if (ev.jumped_to_ms !== null && ev.jumped_to_ms !== undefined) await this.c.refreshView();   // the replay jumped to 24:00: the whole day is on the chart
         await this.refresh();
-        await this.capturePicture(tr);
+        await this.capturePicture(tr);   // at 24:00 of the exit day, the chart as on screen
         await this.captureDayPicture();   // the day's own journal picture, with the closed trade drawn
       }
     }
     const d = this.day;
     if (this.ready() && d.review_pending) this.c.toast(`Review trade #${d.review_pending.seq} in the side panel: keys 1, 2, 3 switch the marks, Enter saves. The replay waits.`);
     else if (events.some(ev => ev.kind === 'exit')) this.c.toast('Trade closed. You can buy again, step on, or press Continue \u2192 06:00.');
+  }
+
+  // ---------------------------------------------------------------- columns
+  // The Trades table shows a short set of columns by default; the "Hide cols" menu adds or removes
+  // any of them, and the choice is kept in this browser.
+  colNames() { return Array.from(this.$('day-trade-table').querySelectorAll('thead th')).map(th => th.dataset.col); }
+  loadCols() {
+    try { const v = JSON.parse(localStorage.getItem('day.cols.hidden') || 'null'); if (Array.isArray(v)) return new Set(v); } catch { /* no storage */ }
+    return null;
+  }
+  hiddenSet() {
+    if (this.hiddenCols === null) this.hiddenCols = new Set(this.colNames().filter(c => !DAY_COLS_DEFAULT.includes(c)));
+    return this.hiddenCols;
+  }
+  saveCols() { try { localStorage.setItem('day.cols.hidden', JSON.stringify([...this.hiddenSet()])); } catch { /* ignore */ } }
+  applyCols() {
+    const hidden = this.hiddenSet();
+    const names = this.colNames();
+    const table = this.$('day-trade-table');
+    table.querySelectorAll('thead th').forEach((th, i) => th.classList.toggle('col-hidden', hidden.has(names[i])));
+    for (const tr of table.querySelectorAll('tbody tr')) tr.querySelectorAll('td').forEach((td, i) => td.classList.toggle('col-hidden', hidden.has(names[i])));
+    for (const cb of this.$('day-cols-list').querySelectorAll('input')) cb.checked = !hidden.has(cb.value);
+  }
+  buildColsMenu() {
+    const list = this.$('day-cols-list');
+    list.innerHTML = '';
+    for (const th of this.$('day-trade-table').querySelectorAll('thead th')) {
+      const lab = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = th.dataset.col;
+      cb.addEventListener('change', () => { const h = this.hiddenSet(); if (cb.checked) h.delete(cb.value); else h.add(cb.value); this.saveCols(); this.applyCols(); });
+      lab.appendChild(cb); lab.appendChild(document.createTextNode(th.textContent.trim()));
+      if (th.title) lab.title = th.title;
+      list.appendChild(lab);
+    }
+    const foot = document.createElement('div'); foot.className = 'cols-foot';
+    const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'btn small'; reset.textContent = 'Default columns';
+    reset.addEventListener('click', () => { this.hiddenCols = null; try { localStorage.removeItem('day.cols.hidden'); } catch { /* ignore */ } this.applyCols(); });
+    const all = document.createElement('button'); all.type = 'button'; all.className = 'btn small'; all.textContent = 'Show all';
+    all.addEventListener('click', () => { this.hiddenCols = new Set(); this.saveCols(); this.applyCols(); });
+    foot.appendChild(reset); foot.appendChild(all);
+    list.appendChild(foot);
+    this.applyCols();
   }
 
   // ----------------------------------------------------------------- review
@@ -981,7 +1031,8 @@ export class DayMode {
     if (!d || !d.review_pending) return;
     await this.submitReview(d.review_pending, this.reviewAnswers('dr-list'), 'dr-error', 'btn-dr-save');
   }
-  // The chart as it stands at the exit: zones, entry, stop, take-profit and the exit line.
+  // The trade's picture: the chart as on screen at 24:00 of the exit day, with zones, entry, stop,
+  // take-profit and the exit line.
   async capturePicture(trade) {
     if (!this.ready()) return;
     this.c.chart.setDayLines(trade);
@@ -1201,7 +1252,8 @@ export class DayMode {
     const shown = f.key === 'all' || f.val === 'all' ? this.trades
       : this.trades.filter(t => t.conditions && t.conditions[f.key] === (f.val === 'yes'));
     const rows = [...shown].sort((a, b) => {
-      const val = t => (this.sort.key === 'hold_hours' ? this.holdHours(t.entry_ms, t.exit_ms) : this.sort.key === 'review_n' ? this.reviewCount(t) : t[this.sort.key]);
+      const val = t => (this.sort.key === 'hold_hours' ? this.holdHours(t.entry_ms, t.exit_ms) : this.sort.key === 'review_n' ? this.reviewCount(t)
+        : ['mae_pct', 'mfe_pct', 'mae_r', 'mfe_r'].includes(this.sort.key) ? (t.excursion ? t.excursion[this.sort.key] : null) : t[this.sort.key]);
       const va = val(a), vb = val(b);
       const x = va === null || va === undefined ? -Infinity : va, y = vb === null || vb === undefined ? -Infinity : vb;
       return (x < y ? -1 : x > y ? 1 : 0) * this.sort.dir;
@@ -1220,7 +1272,7 @@ export class DayMode {
         const img = document.createElement('img');
         img.className = 'thumb';
         img.src = `${this.c.api.dayTradeImageUrl(this.session.id, t.id)}?v=${encodeURIComponent(t.updated_at)}`;
-        img.alt = `Chart at the exit of trade #${t.seq}`;
+        img.alt = `Chart at 24:00 of the exit day of trade #${t.seq}`;
         pic.appendChild(img);
       } else pic.textContent = t.status === 'open' ? 'open' : '–';
       tr.appendChild(pic);
@@ -1244,6 +1296,7 @@ export class DayMode {
       else for (const label of tags) { const s = document.createElement('span'); s.className = 'rtag'; s.textContent = label; rvCell.appendChild(s); }
       td(fp(t.entry_price), 'num');
       td(t.entry_rsi === null ? '–' : t.entry_rsi.toFixed(1), 'num');
+      td(t.entry_rsi_1h === null || t.entry_rsi_1h === undefined ? '–' : t.entry_rsi_1h.toFixed(1), 'num');
       td(t.entry_atr === null ? '–' : fp(t.entry_atr), 'num');
       td(`${fp(t.zone_lower)} – ${fp(t.zone_upper)}`, 'num');
       td(fp(t.stop_used), 'num', `default (zone middle) ${t.stop_suggested === null ? 'n/a' : fp(t.stop_suggested)} · ATR stop ${t.stop_atr === null || t.stop_atr === undefined ? 'n/a' : fp(t.stop_atr)}`);
@@ -1259,6 +1312,12 @@ export class DayMode {
       td(this.signed(t.pnl), `num pnl ${this.cls(t.pnl)}`);
       td(this.pctText(t.pnl_pct), `num ${this.cls(t.pnl_pct)}`);
       td(this.signed(t.r_multiple), `num ${this.cls(t.r_multiple)}`);
+      const x = t.excursion;
+      const xt = x ? `lowest low ${this.pctText(x.mae_pct)} / highest high ${this.pctText(x.mfe_pct)} vs the entry, between the entry and the exit` : (t.status === 'closed' ? 'not available' : 'after the exit');
+      td(x ? this.pctText(x.mae_pct) : (t.status === 'closed' ? 'n/a' : ''), `num ${x ? this.cls(x.mae_pct) : 'muted'}`, xt);
+      td(x ? this.pctText(x.mfe_pct) : (t.status === 'closed' ? 'n/a' : ''), `num ${x ? this.cls(x.mfe_pct) : 'muted'}`, xt);
+      td(x && x.mae_r !== null ? this.signed(x.mae_r) : (t.status === 'closed' ? 'n/a' : ''), `num ${x ? this.cls(x.mae_r) : 'muted'}`, xt);
+      td(x && x.mfe_r !== null ? this.signed(x.mfe_r) : (t.status === 'closed' ? 'n/a' : ''), `num ${x ? this.cls(x.mfe_r) : 'muted'}`, xt);
       const w = t.whatif;
       for (const k of ['above_exit_pct', 'below_exit_pct', 'high_vs_entry_pct', 'low_vs_entry_pct']) {
         td(w ? this.pctText(w[k]) : (t.status === 'closed' ? 'n/a' : ''), `num ${w ? this.cls(w[k]) : 'muted'}`,
@@ -1268,6 +1327,7 @@ export class DayMode {
       tr.addEventListener('click', () => this.openTrade(t));
       tbody.appendChild(tr);
     }
+    this.applyCols();
     const empty = $('day-trade-empty');
     empty.classList.toggle('hidden', rows.length > 0);
     if (!rows.length && this.trades.length) empty.textContent = `No trade matches the filter (${this.trades.length} hidden).`;
@@ -1351,11 +1411,14 @@ export class DayMode {
     $('snap-notes-wrap').classList.add('hidden');
     const fp = this.c.fmtPrice;
     const w = t.whatif;
+    const x = t.excursion;
     const groups = [
       ['Basics', [['Coin', this.session.symbol], ['Trading day', t.day_date], ['Confidence at the buy', t.confidence === null || t.confidence === undefined ? 'not scored' : `${t.confidence} / 10`],
         ['Checklist', `v1 · risk ${this.n(t.risk_amount)} USDT (1 % of the start)`]]],
       ['Trend check', [['Daily close above EMA 200', this.flag(t.ema_above)], ['Higher highs and higher lows', this.flag(t.hh_hl)]]],
-      ['Conditions at the buy', COND_LABELS.map(([k, label]) => [label, this.flag(t.conditions ? t.conditions[k] : null)])],
+      ['Conditions at the buy', [...COND_LABELS.map(([k, label]) => [label, this.flag(t.conditions ? t.conditions[k] : null)]),
+        ['RSI 14 (15m) at the buy', t.entry_rsi === null || t.entry_rsi === undefined ? 'n/a' : t.entry_rsi.toFixed(2)],
+        ['RSI 14 (1h) at the buy', t.entry_rsi_1h === null || t.entry_rsi_1h === undefined ? 'n/a' : t.entry_rsi_1h.toFixed(2)]]],
       ['Entry', [['Time (Malta)', t.entry_local], ['Time (UTC)', t.entry_iso], ['Price', fp(t.entry_price)], ['RSI 14 (15m)', t.entry_rsi === null ? 'n/a' : t.entry_rsi.toFixed(2)],
         ['ATR 14 (15m)', t.entry_atr === null ? 'n/a' : fp(t.entry_atr)], ['Zone upper edge', fp(t.zone_upper)], ['Zone lower edge', fp(t.zone_lower)]]],
       ['Plan', [['Default stop (zone middle)', t.stop_suggested === null ? 'n/a' : fp(t.stop_suggested)], ['ATR stop (zone low − 0.5 × ATR)', t.stop_atr === null || t.stop_atr === undefined ? 'n/a' : fp(t.stop_atr)],
@@ -1368,6 +1431,10 @@ export class DayMode {
       ['Exit', [['Time (Malta)', t.exit_local || '–'], ['Held', this.holdText(this.holdHours(t.entry_ms, t.exit_ms))], ['Price', t.exit_price === null || t.exit_price === undefined ? '–' : fp(t.exit_price)], ['Type', t.exit_type || 'open'],
         ['Reason', t.exit_reason_label || '–'], ['Note', t.exit_note || '–'], ['Overnight', t.overnight ? 'yes' : 'no']]],
       ['Result', [['P&L (after fees)', `${this.signed(t.pnl)} USDT`], ['P&L % of position', this.pctText(t.pnl_pct)], ['Fees', t.fees === null || t.fees === undefined ? '–' : `${this.n(t.fees)} USDT`], ['R', this.signed(t.r_multiple)]]],
+      ['MAE / MFE (between the entry and the exit)', x
+        ? [['Worst move against (MAE)', `${this.pctText(x.mae_pct)} of the entry${x.mae_r === null ? '' : ` \u00b7 ${this.signed(x.mae_r)} R`}`],
+          ['Best move for (MFE)', `${this.pctText(x.mfe_pct)} of the entry${x.mfe_r === null ? '' : ` \u00b7 ${this.signed(x.mfe_r)} R`}`]]
+        : [['MAE / MFE', t.status === 'closed' ? 'n/a' : 'after the exit']]],
       ['What if (until 24:00 of the exit day)', w ? [['Candles after the exit', String(w.n)], ['Highest high', fp(w.high)], ['Lowest low', fp(w.low)], ['Above exit', this.pctText(w.above_exit_pct)],
         ['Below exit', this.pctText(w.below_exit_pct)], ['High vs entry', this.pctText(w.high_vs_entry_pct)], ['Low vs entry', this.pctText(w.low_vs_entry_pct)]] : [['Window', t.status === 'closed' ? 'n/a (no candles before 24:00)' : 'trade still open']]],
       ['Review (at 24:00 of the exit day)', t.review && t.review.reviewed
@@ -1445,6 +1512,8 @@ export class DayMode {
     $('btn-day-sell').addEventListener('click', () => this.openExit());
     $('btn-day-skip').addEventListener('click', () => this.skipDay());
     $('btn-day-ema').addEventListener('click', () => this.nextEmaDay());
+    this.buildColsMenu();
+    document.addEventListener('click', (e) => { const m = $('day-cols'); if (m.open && !m.contains(e.target)) m.open = false; });
     $('btn-day-continue').addEventListener('click', () => this.continueDay());
     $('btn-cal-prev').addEventListener('click', () => this.moveCal(-1));
     $('btn-cal-next').addEventListener('click', () => this.moveCal(1));
