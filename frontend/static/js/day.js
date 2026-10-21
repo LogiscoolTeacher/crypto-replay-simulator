@@ -895,6 +895,10 @@ export class DayMode {
   // ---------------------------------------------------------------- columns
   // The Trades table shows a short set of columns by default; the "Hide cols" menu adds or removes
   // any of them, and the choice is kept in this browser.
+  altText(x) {
+    const fp = this.c.fmtPrice;
+    return `${x.exit_type === 'take-profit' ? 'target' : x.exit_type} at ${x.exit_local} @ ${fp(x.exit_price)} \u00b7 ${this.signed(x.pnl)} USDT \u00b7 ${this.signed(x.r_multiple)} R \u00b7 stop ${fp(x.stop)}, target ${fp(x.take_profit)}${x.diff === null ? '' : ` \u00b7 ${this.signed(x.diff)} USDT vs your exit`}`;
+  }
   colNames() { return Array.from(this.$('day-trade-table').querySelectorAll('thead th')).map(th => th.dataset.col); }
   loadCols() {
     try { const v = JSON.parse(localStorage.getItem('day.cols.hidden') || 'null'); if (Array.isArray(v)) return new Set(v); } catch { /* no storage */ }
@@ -1210,11 +1214,18 @@ export class DayMode {
     const rows = this.auto.trades || [];
     $('day-auto-count').textContent = String(rows.length);
     $('day-auto-empty').classList.toggle('hidden', rows.length > 0);
+    $('day-auto-count').title = rows.some(a => a.status === 'none') ? 'rows without a twin show only the alternatives' : '';
     const sm = this.auto.summary;
     $('auto-summary').textContent = !sm || !sm.count ? '' : [
       `${sm.closed} closed (${sm.by_type['take-profit']} target · ${sm.by_type.stop} stop)${sm.open ? ` · ${sm.open} open` : ''}`,
       sm.closed ? `auto ${this.signed(sm.pnl)} USDT${sm.avg_r === null ? '' : ` · avg ${this.signed(sm.avg_r)} R`} · held ${this.holdText(sm.avg_hold_hours)} on average` : '',
       sm.compared ? `vs manual ${this.signed(sm.manual_pnl)} USDT on the same ${sm.compared} trade${sm.compared === 1 ? '' : 's'} (held ${this.holdText(sm.manual_avg_hold_hours)}) · difference ${this.signed(sm.diff)} USDT` : '',
+      ...['alt1', 'alt2'].map(k => {
+        const a = sm[k];
+        if (!a || !a.count) return '';
+        const types = Object.entries(a.by_type).filter(([, n]) => n).map(([typ, n]) => `${n} ${typ === 'take-profit' ? 'target' : typ}`).join(' · ');
+        return `${k === 'alt1' ? 'Alt 1' : 'Alt 2'} ${this.signed(a.pnl)} USDT on ${a.count} (${types})${a.avg_r === null ? '' : ` · avg ${this.signed(a.avg_r)} R`}${a.compared ? ` · vs manual ${this.signed(a.diff)}` : ''}`;
+      }),
     ].filter(Boolean).join('   |   ');
     const fp = this.c.fmtPrice;
     for (const a of rows) {
@@ -1225,12 +1236,13 @@ export class DayMode {
       td(a.day_date, 'date');
       td(a.entry_local.slice(11), 'date');
       td(fp(a.entry_price), 'num');
-      td(fp(a.stop), 'num', `${this.pctText(a.stop_pct)} from the entry`);
-      td(fp(a.take_profit), 'num', `${this.pctText(a.tp_pct)} from the entry`);
+      const none = a.status === 'none';   // a trade from before the twins existed: only the alternatives
+      td(none ? '–' : fp(a.stop), 'num', none ? '' : `${this.pctText(a.stop_pct)} from the entry`);
+      td(none ? '–' : fp(a.take_profit), 'num', none ? '' : `${this.pctText(a.tp_pct)} from the entry`);
       td(a.exit_local ? a.exit_local.slice(11) : '–', 'date');
-      td(a.exit_type || 'open', `exit ${a.exit_type === 'stop' ? 'stop' : a.exit_type === 'take-profit' ? 'target' : ''}`);
+      td(none ? 'no twin' : a.exit_type || 'open', none ? 'muted' : `exit ${a.exit_type === 'stop' ? 'stop' : a.exit_type === 'take-profit' ? 'target' : ''}`, none ? 'the trade was made before the twins existed' : '');
       td(a.exit_price === null || a.exit_price === undefined ? '–' : fp(a.exit_price), 'num');
-      td(this.holdText(this.holdHours(a.entry_ms, a.exit_ms)), `num${a.exit_ms === null ? ' muted' : ''}`, a.exit_ms === null ? 'open: held until now' : 'hours from the buy to the exit');
+      td(none ? '–' : this.holdText(this.holdHours(a.entry_ms, a.exit_ms)), `num${a.exit_ms === null ? ' muted' : ''}`, none ? '' : a.exit_ms === null ? 'open: held until now' : 'hours from the buy to the exit');
       td(this.signed(a.pnl), `num pnl ${this.cls(a.pnl)}`);
       td(this.pctText(a.pnl_pct), `num ${this.cls(a.pnl_pct)}`);
       td(this.signed(a.r_multiple), `num ${this.cls(a.r_multiple)}`);
@@ -1239,6 +1251,16 @@ export class DayMode {
       td(m ? this.holdText(m.hold_hours === null ? this.holdHours(a.entry_ms, null) : m.hold_hours) : '–', `num${m && m.hold_hours === null ? ' muted' : ''}`);
       td(m ? this.signed(m.pnl) : '–', `num ${m ? this.cls(m.pnl) : ''}`);
       td(this.signed(a.diff), `num ${this.cls(a.diff)}`, 'twin minus manual');
+      const al = a.alts;
+      const altCells = (x, withTarget) => {
+        if (withTarget) td(x ? fp(x.take_profit) : '–', 'num', x ? `${this.pctText((x.take_profit / a.entry_price - 1) * 100)} from the entry` : '');
+        if (!x) { td('not yet', 'muted', 'available once the replay reaches the closing 24:00'); td('', 'num'); td('', 'num'); return; }
+        td(`${x.exit_type === 'take-profit' ? 'target' : x.exit_type} ${x.exit_local.slice(11)}`, `exit ${x.exit_type === 'stop' ? 'stop' : x.exit_type === 'take-profit' ? 'target' : ''}`, `@ ${fp(x.exit_price)} · held ${this.holdText(x.hold_hours)}${x.diff === null ? '' : ` · ${this.signed(x.diff)} USDT vs manual`}`);
+        td(this.signed(x.pnl), `num pnl ${this.cls(x.pnl)}`);
+        td(this.signed(x.r_multiple), `num ${this.cls(x.r_multiple)}`);
+      };
+      altCells(al && al.alt1, false);
+      altCells(al && al.alt2, true);
       const manualTrade = this.trades.find(t => t.id === a.trade_id);
       if (manualTrade) tr.addEventListener('click', () => this.openTrade(manualTrade));
       tbody.appendChild(tr);
@@ -1319,9 +1341,10 @@ export class DayMode {
       td(x && x.mae_r !== null ? this.signed(x.mae_r) : (t.status === 'closed' ? 'n/a' : ''), `num ${x ? this.cls(x.mae_r) : 'muted'}`, xt);
       td(x && x.mfe_r !== null ? this.signed(x.mfe_r) : (t.status === 'closed' ? 'n/a' : ''), `num ${x ? this.cls(x.mfe_r) : 'muted'}`, xt);
       const w = t.whatif;
-      for (const k of ['above_exit_pct', 'below_exit_pct', 'high_vs_entry_pct', 'low_vs_entry_pct']) {
-        td(w ? this.pctText(w[k]) : (t.status === 'closed' ? 'n/a' : ''), `num ${w ? this.cls(w[k]) : 'muted'}`,
-          w ? `${w.n} candles after the exit until 24:00 · high ${fp(w.high)}, low ${fp(w.low)}` : 'no candles after the exit before 24:00');
+      const wt = w ? `${w.n} candles after the exit until 24:00 · high ${fp(w.high)}, low ${fp(w.low)}` : (t.status === 'closed' ? 'no candles after the exit before 24:00' : 'after the exit');
+      for (const [k, r] of [['above_exit_pct', false], ['below_exit_pct', false], ['above_exit_r', true], ['below_exit_r', true], ['high_vs_entry_pct', false], ['low_vs_entry_pct', false]]) {
+        const has = w && w[k] !== null && w[k] !== undefined;
+        td(has ? (r ? this.signed(w[k]) : this.pctText(w[k])) : (t.status === 'closed' ? 'n/a' : ''), `num ${has ? this.cls(w[k]) : 'muted'}`, wt);
       }
       td(t.notes || '', 'reasons', t.notes || '');
       tr.addEventListener('click', () => this.openTrade(t));
@@ -1435,8 +1458,15 @@ export class DayMode {
         ? [['Worst move against (MAE)', `${this.pctText(x.mae_pct)} of the entry${x.mae_r === null ? '' : ` \u00b7 ${this.signed(x.mae_r)} R`}`],
           ['Best move for (MFE)', `${this.pctText(x.mfe_pct)} of the entry${x.mfe_r === null ? '' : ` \u00b7 ${this.signed(x.mfe_r)} R`}`]]
         : [['MAE / MFE', t.status === 'closed' ? 'n/a' : 'after the exit']]],
-      ['What if (until 24:00 of the exit day)', w ? [['Candles after the exit', String(w.n)], ['Highest high', fp(w.high)], ['Lowest low', fp(w.low)], ['Above exit', this.pctText(w.above_exit_pct)],
-        ['Below exit', this.pctText(w.below_exit_pct)], ['High vs entry', this.pctText(w.high_vs_entry_pct)], ['Low vs entry', this.pctText(w.low_vs_entry_pct)]] : [['Window', t.status === 'closed' ? 'n/a (no candles before 24:00)' : 'trade still open']]],
+      ['After the exit (until 24:00 of the exit day)', w
+        ? [['Candles after the exit', String(w.n)],
+          ['Best move above the exit (MFE after)', `${this.pctText(w.above_exit_pct)} of the exit${w.above_exit_r === null ? '' : ` \u00b7 ${this.signed(w.above_exit_r)} R`} (high ${fp(w.high)})`],
+          ['Worst move below the exit (MAE after)', `${this.pctText(w.below_exit_pct)} of the exit${w.below_exit_r === null ? '' : ` \u00b7 ${this.signed(w.below_exit_r)} R`} (low ${fp(w.low)})`],
+          ['High vs entry', this.pctText(w.high_vs_entry_pct)], ['Low vs entry', this.pctText(w.low_vs_entry_pct)]]
+        : [['Window', t.status === 'closed' ? 'n/a (no candles before 24:00)' : 'trade still open']]],
+      ['Alternatives (hands-off, closed at 24:00 at the latest)', t.alts
+        ? [['Alt 1: stop and target of the buy', this.altText(t.alts.alt1)], ['Alt 2: same stop, target 1:2', this.altText(t.alts.alt2)], ['Closing candle', t.alts.end_local]]
+        : [['Alternatives', `available once the replay reaches ${t.entry_local && t.entry_local.slice(11) < '06:00' ? 'the next' : 'the'} 24:00`]]],
       ['Review (at 24:00 of the exit day)', t.review && t.review.reviewed
         ? [['Stop too tight', t.review.stop_tight ? 'true' : 'false'], ['Price later went over the target', t.review.over_target ? 'true' : 'false'], ['The stop saved me', t.review.stop_saved ? 'true' : 'false'],
           ['Answered', t.review.reviewed_at.slice(0, 16).replace('T', ' ')]]

@@ -192,7 +192,7 @@
           <button class="tab swing-only" role="tab" id="tab-stats" aria-selected="false" aria-controls="panel-stats" title="Which reasons paid off, over all sessions">Statistics</button>
           <button class="tab swing-only" role="tab" id="tab-perf" aria-selected="false" aria-controls="panel-perf" title="How the trading went: numbers, equity curve, drawdown, trades, months">Performance</button>
           <button class="tab day-only" role="tab" id="tab-day" aria-selected="false" aria-controls="panel-day" title="Every trade of this day-trading session with its picture at 24:00 of the exit day">Trades <span id="day-trade-count" class="pill">0</span></button>
-          <button class="tab day-only" role="tab" id="tab-auto" aria-selected="false" aria-controls="panel-auto" title="The automatic-exit twin of every trade: same entry and size, the original stop and target, closed only when one of them is hit, overnight and across days. What your trade would have done hands-off.">Auto exits <span id="day-auto-count" class="pill">0</span></button>
+          <button class="tab day-only" role="tab" id="tab-auto" aria-selected="false" aria-controls="panel-auto" title="Hands-off versions of every trade: the twin (original stop and target, runs until one is hit, overnight and across days), Alt 1 (same levels, closed at 24:00 at the latest) and Alt 2 (same stop, target at 1:2, closed at 24:00 at the latest).">Auto exits <span id="day-auto-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-days" aria-selected="false" aria-controls="panel-days" title="The daily journal: one row per trading day with the trend check, how the day ended, its picture and your notes">Days <span id="day-days-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-cal" aria-selected="false" aria-controls="panel-cal" title="One month, a week per row (Monday to Sunday): P&amp;L and trades per day; click a past day for its journal, a later day to jump there">Calendar</button>
           <button class="tab day-only" role="tab" id="tab-cond" aria-selected="false" aria-controls="panel-cond" title="How the closed trades did with and without each entry condition">Conditions</button>
@@ -225,8 +225,9 @@
               <th class="num" data-col="exit_price">Exit price</th><th class="num" data-col="fees" title="Buy and sell fee">Fees</th><th class="num sortable" data-col="pnl" data-key="pnl" title="P&amp;L after fees">P&amp;L</th><th class="num sortable" data-col="pnl_pct" data-key="pnl_pct" title="P&amp;L in percent of the position value">%</th><th class="num sortable" data-col="r" data-key="r_multiple" title="P&amp;L divided by the risk amount">R</th>
               <th class="num sortable" data-col="mae" data-key="mae_pct" title="Maximum adverse excursion: the lowest low between the entry and the exit, vs the entry price">MAE %</th><th class="num sortable" data-col="mfe" data-key="mfe_pct" title="Maximum favourable excursion: the highest high between the entry and the exit, vs the entry price">MFE %</th>
               <th class="num sortable" data-col="mae_r" data-key="mae_r" title="MAE in R (multiples of the risk taken)">MAE R</th><th class="num sortable" data-col="mfe_r" data-key="mfe_r" title="MFE in R (multiples of the risk taken)">MFE R</th>
-              <th class="num" data-col="hi_exit" title="What if: highest high after the exit until 24:00, vs the exit price">High vs exit</th><th class="num" data-col="lo_exit" title="What if: lowest low after the exit until 24:00, vs the exit price">Low vs exit</th>
-              <th class="num" data-col="hi_entry" title="What if: highest high after the exit, vs the entry price">High vs entry</th><th class="num" data-col="lo_entry" title="What if: lowest low after the exit, vs the entry price">Low vs entry</th><th data-col="notes">Notes</th>
+              <th class="num" data-col="hi_exit" title="After the exit until 24:00: the best move above your exit price (highest high), percent of the exit">MFE after</th><th class="num" data-col="lo_exit" title="After the exit until 24:00: the worst move below your exit price (lowest low), percent of the exit">MAE after</th>
+              <th class="num" data-col="mfe_after_r" title="The best move above your exit until 24:00, in R (multiples of the risk taken)">MFE after R</th><th class="num" data-col="mae_after_r" title="The worst move below your exit until 24:00, in R">MAE after R</th>
+              <th class="num" data-col="hi_entry" title="After the exit until 24:00: highest high vs the entry price">High vs entry</th><th class="num" data-col="lo_entry" title="After the exit until 24:00: lowest low vs the entry price">Low vs entry</th><th data-col="notes">Notes</th>
             </tr></thead>
             <tbody id="day-trade-list"></tbody>
           </table>
@@ -236,13 +237,15 @@
           <div class="table-tools">
             <span id="auto-summary" class="small mono"></span>
             <span class="spacer"></span>
-            <span class="small muted">Every buy opens a hidden twin with the original stop and target. It exits only when one of them is hit, however long that takes. P&amp;L after fees, no effect on your cash.</span>
+            <span class="small muted">Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash.</span>
           </div>
           <table class="buckets" id="day-auto-table" aria-label="Automatic exits">
             <thead><tr>
               <th>#</th><th>Day</th><th>Entry</th><th class="num">Entry price</th><th class="num" title="The original stop of the trade">Stop</th><th class="num" title="The original target of the trade">Target</th>
               <th>Exit</th><th title="stop or take-profit">Type</th><th class="num">Exit price</th><th class="num" title="Hours between the buy and the exit (an open twin counts up to now)">Held</th><th class="num" title="P&amp;L of the twin after fees">P&amp;L</th><th class="num">%</th><th class="num" title="P&amp;L divided by the risk amount">R</th>
               <th title="How your manual trade ended">Manual exit</th><th class="num" title="Hours your manual trade was held">Manual held</th><th class="num" title="P&amp;L of your manual trade after fees">Manual P&amp;L</th><th class="num" title="Twin minus manual: positive = hands-off would have done better">Difference</th>
+              <th title="Alternative 1: the stop and target of the buy, closed with the 24:00 candle when neither was hit (a night buy runs to the next 24:00)">Alt 1 exit</th><th class="num" title="P&amp;L of Alt 1 after fees">Alt 1 P&amp;L</th><th class="num" title="Alt 1 P&amp;L divided by the risk amount">Alt 1 R</th>
+              <th class="num" title="Alternative 2: the stop of the buy and a target 2 x the risk above the entry">Alt 2 target</th><th title="How Alt 2 ended: stop, take-profit or the 24:00 close">Alt 2 exit</th><th class="num" title="P&amp;L of Alt 2 after fees">Alt 2 P&amp;L</th><th class="num" title="Alt 2 P&amp;L divided by the risk amount">Alt 2 R</th>
             </tr></thead>
             <tbody id="day-auto-list"></tbody>
           </table>

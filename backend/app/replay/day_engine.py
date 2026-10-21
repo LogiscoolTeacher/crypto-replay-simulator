@@ -160,6 +160,11 @@ def trade_changes(t: dict) -> list[dict]:
     return data if isinstance(data, list) else []
 MAX_PRICE = 1e12
 EXIT_STOP, EXIT_TP, EXIT_EARLY = "stop", "take-profit", "early exit"
+# how the alternative trades end when neither level is hit: the close of the 24:00 candle, or of the
+# last candle there is; Alt 2 takes its target at ALT_RATIO times the risk above the entry
+EXIT_EOD, EXIT_DATA_END = "end of day", "end of data"
+ALT_RATIO = 2.0
+ALT_KEYS = ("alt1", "alt2")
 HOUR_MS = 3_600_000
 EXIT_REASONS: tuple[tuple[str, str], ...] = (
     ("stalls", "Price stalls at resistance"),
@@ -206,6 +211,18 @@ def day_bounds(d: date) -> tuple[int, int]:
     """(06:00, 24:00) local of the trading day `d` in ms. Entries are allowed for candles closing
     inside these bounds, both included."""
     return local_ms(d, DAY_START_HOUR), local_ms(d + timedelta(days=1), 0)
+
+
+def alt_window_end(entry_ms: int) -> int:
+    """24:00 local (ms) at which the alternative trades of a buy at the candle opening at `entry_ms`
+    close at the latest: the 24:00 of the entry's trading day, or, for a buy at 24:00 itself or in
+    the night, the 24:00 of the trading day that follows."""
+    close = entry_ms + config.interval_ms(BASE_INTERVAL)
+    d = trading_day(close)
+    _, end = day_bounds(d)
+    if close >= end:
+        _, end = day_bounds(d + timedelta(days=1))
+    return end
 
 
 def in_entry_window(close_ms: int, d: date | None = None) -> bool:
@@ -260,6 +277,23 @@ def trade_result(entry: float, exit_price: float, coins: float, position_value: 
         "pnl_pct": pnl / position_value * 100.0 if position_value else None,
         "r_multiple": pnl / risk_amount if risk_amount else None,
     }
+
+
+def alts_public(t: dict) -> dict | None:
+    """The stored alternatives of a trade for the API: exit times in local clock, the hours held and
+    the difference to the manual result (None while the manual trade is open)."""
+    raw = t.get("alts")
+    if not raw:
+        return None
+    a = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    out = {"end_ms": a["end_ms"], "end_local": local_str(a["end_ms"])}
+    for k in ALT_KEYS:
+        x = dict(a[k])
+        x["exit_local"] = local_str(x["exit_ms"] + config.interval_ms(BASE_INTERVAL))
+        x["hold_hours"] = hold_hours(t["entry_ms"], x["exit_ms"])
+        x["diff"] = (x["pnl"] - t["pnl"]) if t.get("status") == "closed" and t.get("pnl") is not None else None
+        out[k] = x
+    return out
 
 
 def what_if(entry: float, exit_price: float, highest_high: float, lowest_low: float) -> dict:
@@ -834,6 +868,8 @@ class DayEngine:
         s["cash"] = cash_after
         trade.update(fields)
         jumped = self._jump_to_day_end(s, exit_ms)
+        with self.store.tx() as conn:
+            self._fill_alternatives(s, conn, trade)   # the day is on the chart now: the alternatives can be settled
         return {"kind": "exit", "exit_type": exit_type, "trade": self._public_trade(trade, s["fee_rate"]),
                 "jumped_to_ms": jumped, "jumped_to_local": local_str(jumped + self._base_ms) if jumped is not None else None}
 
@@ -869,6 +905,66 @@ class DayEngine:
             "mae_pct": min(0.0, (lo / entry - 1.0) * 100.0), "mfe_pct": max(0.0, (hi / entry - 1.0) * 100.0),
             "mae_r": None if not risk else min(0.0, to_r(lo - entry)), "mfe_r": None if not risk else max(0.0, to_r(hi - entry)),
         }
+
+    def _alternatives(self, s: dict, trade: dict) -> dict | None:
+        """The two hands-off alternatives of a trade, both closed at the latest with the 24:00 candle
+        (alt_window_end): Alt 1 keeps the stop and the target set at the buy, Alt 2 keeps the stop and
+        takes a target ALT_RATIO times the risk above the entry. On every candle after the entry
+        candle a low at or below the stop exits at the stop (the stop wins when both levels are hit
+        in one candle), a high at or above the target exits at the target; otherwise the close of the
+        last candle ends it ("end of day", or "end of data" when the data stops first). None while
+        the replay has not reached that last candle yet, so no alternative ever knows the future."""
+        base = self._base_ms
+        last, final = alt_window_end(trade["entry_ms"]) - base, EXIT_EOD    # open time of the 24:00 candle
+        if s["data_end_ms"] < last:
+            last, final = s["data_end_ms"], EXIT_DATA_END
+        if s["cursor_ms"] < last:
+            return None
+        df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, trade["entry_ms"] + base, last)
+        if len(df) == 0:
+            return None
+        entry = float(trade["entry_price"])
+        stop = float(trade["stop_used"] if trade.get("stop_initial") is None else trade["stop_initial"])
+        tp1 = float(trade["take_profit"] if trade.get("tp_initial") is None else trade["tp_initial"])
+        tp2 = entry + ALT_RATIO * (entry - stop)
+        rows = list(zip(df["time"].astype("int64"), df["high"], df["low"], df["close"]))
+
+        def run(tp: float) -> dict:
+            for t_open, high, low, close in rows:
+                if float(low) <= stop:
+                    exit_ms, exit_price, exit_type = int(t_open) * 1000, stop, EXIT_STOP
+                    break
+                if float(high) >= tp:
+                    exit_ms, exit_price, exit_type = int(t_open) * 1000, tp, EXIT_TP
+                    break
+            else:
+                t_open, _, _, close = rows[-1]
+                exit_ms, exit_price, exit_type = int(t_open) * 1000, float(close), final
+            res = trade_result(entry, exit_price, trade["coins"], trade["position_value"], trade["buy_fee"], s["fee_rate"], trade["risk_amount"])
+            return {"stop": stop, "take_profit": tp, "exit_ms": exit_ms, "exit_price": exit_price, "exit_type": exit_type,
+                    "pnl": res["pnl"], "pnl_pct": res["pnl_pct"], "r_multiple": res["r_multiple"]}
+
+        return {"end_ms": last + base, "alt1": run(tp1), "alt2": run(tp2)}
+
+    def _fill_alternatives(self, s: dict, conn: sqlite3.Connection, trade: dict) -> None:
+        """Store the alternatives of a trade that has none yet, when the replay allows it."""
+        if trade.get("alts"):
+            return
+        a = self._alternatives(s, trade)
+        if a is not None:
+            raw = json.dumps(a)
+            self.store.update_trade(conn, trade["id"], alts=raw)
+            trade["alts"] = raw
+
+    def _backfill(self, st: dict, conn: sqlite3.Connection, rows: list[dict]) -> None:
+        """Numbers added after a trade was made: MAE / MFE of closed trades, the alternatives of
+        every trade whose 24:00 the replay has passed."""
+        for t in rows:
+            if t["status"] == "closed" and t["exit_ms"] is not None and t.get("mae_pct") is None:
+                f = self._excursion(st, t, t["exit_ms"])
+                self.store.update_trade(conn, t["id"], **f)
+                t.update(f)
+            self._fill_alternatives(st, conn, t)
 
     def _what_if(self, s: dict, trade: dict, exit_ms: int, exit_price: float) -> dict:
         """Highest high and lowest low of the 15-minute candles after the exit candle until 24:00 of
@@ -934,13 +1030,18 @@ class DayEngine:
         st = self.state(session_id)   # settles the twins first
         with self.store.tx() as conn:
             rows = self.store.list_auto_trades(conn, session_id)
-            manual = {t["id"]: t for t in self.store.list_trades(conn, session_id)}
+            trades = self.store.list_trades(conn, session_id)
+            self._backfill(st, conn, trades)
+            manual = {t["id"]: t for t in trades}
         out = [self._public_auto(a, manual.get(a["trade_id"])) for a in rows]
+        have = {a["trade_id"] for a in rows}
+        out += [self._public_auto_none(t) for t in trades if t["id"] not in have]   # trades from before the twins: alternatives only
+        out.sort(key=lambda a: a["seq"])
         closed = [a for a in out if a["status"] == "closed"]
         both = [a for a in closed if a["manual"] and a["manual"]["status"] == "closed"]
         avg = lambda xs: (sum(xs) / len(xs)) if xs else None  # noqa: E731
         summary = {
-            "count": len(out), "open": len(out) - len(closed), "closed": len(closed),
+            "count": len(out), "open": sum(1 for a in out if a["status"] == "open"), "closed": len(closed),
             "wins": sum(1 for a in closed if a["pnl"] > 0),
             "pnl": sum(a["pnl"] for a in closed), "avg_r": avg([a["r_multiple"] for a in closed if a["r_multiple"] is not None]),
             "by_type": {k: sum(1 for a in closed if a["exit_type"] == k) for k in (EXIT_STOP, EXIT_TP)},
@@ -953,7 +1054,30 @@ class DayEngine:
             "auto_avg_hold_hours": avg([a["hold_hours"] for a in both]),
         }
         summary["diff"] = summary["auto_pnl"] - summary["manual_pnl"]
+        for k in ALT_KEYS:   # the two hands-off alternatives, over the trades that have them
+            alts = [a["alts"][k] for a in out if a["alts"]]
+            same = [(a["alts"][k], a["manual"]) for a in out if a["alts"] and a["manual"] and a["manual"]["status"] == "closed"]
+            summary[k] = {
+                "count": len(alts), "wins": sum(1 for x in alts if x["pnl"] > 0),
+                "pnl": sum(x["pnl"] for x in alts), "avg_r": avg([x["r_multiple"] for x in alts if x["r_multiple"] is not None]),
+                "by_type": {typ: sum(1 for x in alts if x["exit_type"] == typ) for typ in (EXIT_STOP, EXIT_TP, EXIT_EOD, EXIT_DATA_END)},
+                "avg_hold_hours": avg([hold_hours(a["entry_ms"], a["alts"][k]["exit_ms"]) for a in out if a["alts"]]),
+                "compared": len(same), "manual_pnl": sum(m["pnl"] for _, m in same), "alt_pnl": sum(x["pnl"] for x, _ in same),
+            }
+            summary[k]["diff"] = summary[k]["alt_pnl"] - summary[k]["manual_pnl"]
         return {"trades": out, "summary": summary, "price": st["price"]}
+
+    @classmethod
+    def _public_auto_none(cls, manual: dict) -> dict:
+        """The row of a trade without a twin (made before the twins existed): status "none", the
+        twin's fields empty, the manual side and the alternatives as usual."""
+        a = {"id": None, "trade_id": manual["id"], "seq": manual["seq"], "status": "none", "day_date": manual["day_date"],
+             "entry_ms": manual["entry_ms"], "entry_price": manual["entry_price"], "stop": None, "take_profit": None,
+             "coins": manual["coins"], "position_value": manual["position_value"], "buy_fee": manual["buy_fee"], "risk_amount": manual["risk_amount"],
+             "exit_ms": None, "exit_price": None, "exit_type": None, "sell_fee": None, "fees": None, "pnl": None, "pnl_pct": None, "r_multiple": None}
+        out = cls._public_auto({**a, "stop": manual["entry_price"], "take_profit": manual["entry_price"]}, manual)
+        out.update(stop=None, take_profit=None, stop_pct=None, tp_pct=None)
+        return out
 
     @staticmethod
     def _public_auto(a: dict, manual: dict | None) -> dict:
@@ -971,6 +1095,7 @@ class DayEngine:
                  "hold_hours": hold_hours(manual["entry_ms"], manual["exit_ms"])}
         out["manual"] = m
         out["diff"] = (a["pnl"] - manual["pnl"]) if (m and a["status"] == "closed" and manual["status"] == "closed") else None
+        out["alts"] = alts_public(manual) if manual is not None else None
         return out
 
     # ------------------------------------------------------------------ clock
@@ -1213,11 +1338,7 @@ class DayEngine:
         st = self.state(session_id)
         with self.store.tx() as conn:
             rows = self.store.list_trades(conn, session_id)
-            for t in rows:   # trades closed before MAE / MFE existed get them once, from the candles
-                if t["status"] == "closed" and t["exit_ms"] is not None and t.get("mae_pct") is None:
-                    f = self._excursion(st, t, t["exit_ms"])
-                    self.store.update_trade(conn, t["id"], **f)
-                    t.update(f)
+            self._backfill(st, conn, rows)
         return {"trades": [self._public_trade(t, st["fee_rate"], st["price"]) for t in rows]}
 
     # ------------------------------------------------------------- conditions
@@ -1427,11 +1548,16 @@ class DayEngine:
         out["has_image"] = bool(t["image_path"])
         out["entry_rsi_1h"] = t.get("entry_rsi_1h")
         out["excursion"] = None if t.get("mae_pct") is None else {k: t.get(k) for k in ("mae_pct", "mfe_pct", "mae_r", "mfe_r")}
+        risk = t.get("risk_usdt")
+        after_r = (lambda level: (level - t["exit_price"]) * t["coins"] / risk) if (risk and t.get("exit_price") is not None) else (lambda level: None)
         out["whatif"] = None if not t["whatif_n"] else {
             "n": t["whatif_n"], "high": t["whatif_high"], "low": t["whatif_low"],
             "above_exit_pct": t["whatif_above_exit_pct"], "below_exit_pct": t["whatif_below_exit_pct"],
+            # the same two moves in R: the best move above and the worst move below the exit, in multiples of the risk
+            "above_exit_r": after_r(t["whatif_high"]), "below_exit_r": after_r(t["whatif_low"]),
             "high_vs_entry_pct": t["whatif_high_vs_entry_pct"], "low_vs_entry_pct": t["whatif_low_vs_entry_pct"],
         }
+        out["alts"] = alts_public(t)
         if t["status"] == "open" and price is not None:
             mv = t["coins"] * price
             unrealized = mv * (1.0 - fee_rate) - t["position_value"] - t["buy_fee"]  # if sold now, after fees

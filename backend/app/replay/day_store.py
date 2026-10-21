@@ -165,6 +165,8 @@ MIGRATIONS = {
         "entry_rsi_1h": "REAL",
         # maximum adverse / favourable excursion between the entry and the exit, percent of the entry and in R
         "mae_pct": "REAL", "mfe_pct": "REAL", "mae_r": "REAL", "mfe_r": "REAL",
+        # the two hands-off alternatives (JSON: end_ms, alt1, alt2), filled once the replay reached their 24:00
+        "alts": "TEXT",
     },
     # the daily journal: notes, the end-of-day picture and how / when the day was left
     "day_checks": {"notes": "TEXT", "image_path": "TEXT", "image_ms": "INTEGER", "left_ms": "INTEGER", "left_how": "TEXT"},

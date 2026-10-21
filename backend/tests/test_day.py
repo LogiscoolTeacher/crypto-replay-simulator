@@ -15,6 +15,7 @@ from app.replay.day_engine import (
     DAY_NOTES_MAX_CHARS,
     STOP_ATR_MULT,
     DayEngine,
+    alt_window_end,
     day_bounds,
     in_entry_window,
     local_ms,
@@ -888,3 +889,58 @@ def test_mae_mfe_and_the_1h_rsi_are_saved_with_the_trade(db: Path):
         day.store.update_trade(conn, tr["id"], mae_pct=None, mfe_pct=None, mae_r=None, mfe_r=None)
     again = day.trades(sid)["trades"][-1]
     assert again["id"] == tr["id"] and again["excursion"] == pytest.approx(x)
+
+
+def test_alternative_trades_close_at_24_00_at_the_latest(db: Path):
+    """Alt 1 keeps the stop and target of the buy, Alt 2 keeps the stop with a 1:2 target; both end
+    with the 24:00 candle when neither level is hit. They appear only once the replay has reached
+    that candle, next to the twin in the Auto exits listing, and old trades get them on a listing."""
+    c2 = FIRST_CURSOR + 2 * Q
+    price = quarter_candle(FIRST_CURSOR)[3]
+    day = make(db, {c2: (price, price + 5.0, price - 1.0, price + 1.0)})   # the high reaches Alt 2's target (+4) only
+    sid = day.create_session("BTCUSDT", START, END)["id"]
+    day.prepare(sid)
+    z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
+    t = day.buy(sid, z["id"], take_profit=price + 10.0, stop=price - 2.0, confidence=6)["trade"]
+    assert t["alts"] is None
+    day.move_trade(sid, stop=price - 1.0)                                  # the alternatives keep the stop of the buy
+    day.step(sid, 1)
+    assert day.trades(sid)["trades"][0]["alts"] is None                    # still open, 24:00 not reached: nothing yet
+    man = day.sell(sid, "other", note="out")["events"][0]["trade"]        # the replay jumps to 24:00
+    a = man["alts"]
+    end = FIRST_CURSOR + 72 * Q                                            # the candle closing at 24:00
+    assert a["end_ms"] == end + Q and a["end_local"].endswith("00:00")
+    a1, a2 = a["alt1"], a["alt2"]
+    assert a1["stop"] == a2["stop"] == price - 2.0 and a1["take_profit"] == price + 10.0 and a2["take_profit"] == price + 4.0
+    assert a2["exit_type"] == "take-profit" and a2["exit_ms"] == c2 and a2["exit_price"] == price + 4.0
+    want = trade_result(price, price + 4.0, man["coins"], man["position_value"], man["buy_fee"], 0.001, man["risk_amount"])
+    assert a2["pnl"] == pytest.approx(want["pnl"]) and a2["r_multiple"] == pytest.approx(want["r_multiple"]) and a2["diff"] == pytest.approx(a2["pnl"] - man["pnl"])
+    assert a1["exit_type"] == "end of day" and a1["exit_ms"] == end and a1["exit_price"] == quarter_candle(end)[3] and a1["hold_hours"] == pytest.approx(18.0)
+    # the after-exit moves also in R
+    w = man["whatif"]
+    assert w["above_exit_r"] == pytest.approx((price + 5.0 - man["exit_price"]) * man["coins"] / man["risk_usdt"]) and w["above_exit_r"] > 0
+    assert w["below_exit_r"] == pytest.approx((w["low"] - man["exit_price"]) * man["coins"] / man["risk_usdt"]) and w["below_exit_r"] < 0
+    # the Auto exits listing carries them with a summary
+    auto = day.auto_trades(sid)
+    assert auto["trades"][0]["alts"]["alt2"] == a2
+    sm = auto["summary"]
+    assert sm["alt2"]["count"] == 1 and sm["alt2"]["by_type"]["take-profit"] == 1 and sm["alt2"]["pnl"] == pytest.approx(a2["pnl"])
+    assert sm["alt1"]["by_type"]["end of day"] == 1 and sm["alt1"]["diff"] == pytest.approx(a1["pnl"] - man["pnl"]) and sm["alt1"]["compared"] == 1
+    # an old trade without them gets them from the candles when the trades are listed
+    with day.store.tx() as conn:
+        day.store.update_trade(conn, man["id"], alts=None)
+    again = day.trades(sid)["trades"][-1]
+    assert again["id"] == man["id"] and again["alts"] == a
+
+
+def test_alternative_window_ends_at_the_next_24_00_for_night_buys():
+    """A buy during the day closes its alternatives at that day's 24:00; a buy at 24:00 itself or in
+    the night (00:00-06:00) at the 24:00 of the following trading day."""
+    noon = local_ms(date(2018, 5, 10), 12) - Q                           # the candle closing at 12:00
+    assert local_hm(alt_window_end(noon)) == (date(2018, 5, 11), 0, 0)
+    midnight = local_ms(date(2018, 5, 11), 0) - Q                        # the candle closing at 24:00
+    assert local_hm(alt_window_end(midnight)) == (date(2018, 5, 12), 0, 0)
+    night = local_ms(date(2018, 5, 11), 2) - Q                           # 02:00 in the night after the 10th
+    assert local_hm(alt_window_end(night)) == (date(2018, 5, 12), 0, 0)
+    dawn = local_ms(date(2018, 5, 11), 6) - Q                            # the 06:00 candle starts the 11th
+    assert local_hm(alt_window_end(dawn)) == (date(2018, 5, 12), 0, 0)
