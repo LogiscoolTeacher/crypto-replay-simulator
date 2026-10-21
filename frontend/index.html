@@ -145,6 +145,7 @@
             <dt><kbd>Z</kbd></dt><dd>Draw zone</dd>
             <dt><kbd>K</kbd></dt><dd>Skip day</dd>
             <dt><kbd>J</kbd></dt><dd>Next day &gt; EMA</dd>
+            <dt><kbd>E</kbd></dt><dd>Next strategy signal</dd>
             <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>Enter</kbd></dt><dd>Review marks, save</dd>
           </dl>
         </div>
@@ -480,6 +481,17 @@
         </div>
         <ul id="day-zones" class="indicator-list zones" aria-label="Support / resistance zones"></ul>
         <p id="day-zones-empty" class="muted small">No zones yet. Switch to 1h or 4h and press Z.</p>
+      </section>
+
+      <section class="card day-only" id="day-signal-card">
+        <h2>Strategy signals</h2>
+        <div class="row-flex">
+          <select id="day-strategy" aria-label="Jump strategy"></select>
+          <span class="spacer"></span>
+          <button type="button" id="btn-day-signal" class="btn small primary" title="Jump to the strategy's next entry signal (also at night); its zone is added to your zones (E)">Next signal (E)</button>
+        </div>
+        <p id="day-strategy-note" class="muted small"></p>
+        <p id="day-signal-last" class="small" role="status"></p>
       </section>
 
       <section class="card swing-only" id="strategy-card">

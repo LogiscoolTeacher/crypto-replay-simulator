@@ -299,6 +299,11 @@ class DayGotoRequest(BaseModel):
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="A later trading day (YYYY-MM-DD) to jump to, at 06:00")
 
 
+class DayNextSignalRequest(BaseModel):
+    strategy: str = Field(default="rline_retest", description="Jump strategy key (see /api/day/strategies)")
+    params: dict[str, Any] | None = Field(default=None, description="Strategy parameters; defaults where left out")
+
+
 class DayStepRequest(BaseModel):
     n: int = Field(default=1, ge=1, le=100_000, description="15-minute candles to advance (stops at an exit)")
     view: ViewRequest | None = Field(default=None, description="If given, the response also carries this view")
@@ -707,6 +712,18 @@ def day_goto(session_id: str, req: DayGotoRequest) -> dict:
 def day_next_ema_day(session_id: str) -> dict:
     """Jump forward to 06:00 of the next trading day whose daily close is above the EMA 200 (no open trade)."""
     return day.next_ema_day(session_id)
+
+
+@app.get("/api/day/strategies")
+def day_strategies() -> list[dict]:
+    """The strategies the "Next signal" button can jump with, with their parameters."""
+    return day.signal_strategies()
+
+
+@app.post("/api/day/sessions/{session_id}/next-signal")
+def day_next_signal(session_id: str, req: DayNextSignalRequest) -> dict:
+    """Jump forward to the strategy's next entry signal (no open trade); its zone is added to the session's zones."""
+    return day.next_signal(session_id, req.strategy, req.params)
 
 
 @app.post("/api/day/sessions/{session_id}/continue")

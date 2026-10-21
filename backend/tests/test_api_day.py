@@ -274,6 +274,18 @@ def test_next_ema_day_route(client: TestClient, session: dict):
     client.post(f"{base}/reset")
 
 
+def test_next_signal_routes(client: TestClient, session: dict):
+    base = f"/api/day/sessions/{session['id']}"
+    strategies = client.get("/api/day/strategies").json()
+    assert [x["key"] for x in strategies] == ["rline_retest"] and strategies[0]["interval"] == "1h" and strategies[0]["params"]
+    client.post(f"{base}/reset")
+    assert client.post(f"{base}/next-signal", json={"strategy": "nope"}).status_code == 422
+    assert client.post(f"{base}/next-signal", json={"params": {"retest_max": "x"}}).status_code == 422
+    r = client.post(f"{base}/next-signal", json={})   # the fake market's tiny waves give no RLine
+    assert r.status_code == 409 and "No later RLine_Retest signal" in r.text
+    client.post(f"{base}/reset")
+
+
 def test_conditions_routes(client: TestClient, session: dict):
     sid = session["id"]
     r = client.get(f"/api/day/sessions/{sid}/trades")

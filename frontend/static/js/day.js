@@ -58,6 +58,7 @@ export class DayMode {
     this.days = [];            // the daily journal rows
     this.calMonth = null;      // 'YYYY-MM' shown in the Calendar tab; null = the month of the current day
     this.notesDate = null;     // the day whose notes the card's box shows
+    this.strategies = [];      // the jump strategies of the "Next signal" button (from the server)
     this.notesTimer = null;
     this.capturing = false;    // a day picture is being taken
   }
@@ -96,6 +97,7 @@ export class DayMode {
     this.notesDate = null;
     clearTimeout(this.notesTimer);
     this.selectedZone = null;
+    this.$('day-signal-last').textContent = '';
     this.plan = null;
     this.cancelDraw();
     this.c.chart.setUserZones([]);
@@ -317,6 +319,7 @@ export class DayMode {
     $('btn-day-sell').disabled = !ok || busy || !d.can_sell;
     $('btn-day-skip').disabled = !ok || busy || !d.can_skip;
     $('btn-day-ema').disabled = !ok || busy || !(d.can_skip || d.can_continue);   // any state without an open trade
+    $('btn-day-signal').disabled = !ok || busy || !(d.can_skip || d.can_continue) || !$('day-strategy').value;
     $('btn-day-continue').disabled = !ok || busy || !d.can_continue;
     $('btn-day-continue').classList.toggle('hidden', !(ok && d.can_continue));
     $('btn-day-skip').classList.toggle('hidden', !!(ok && d.can_continue));   // both jump to the next 06:00: one button at a time
@@ -846,11 +849,39 @@ export class DayMode {
     if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
     await this.jump(() => this.c.api.dayNextEma(this.session.id));
   }
+  // Jump to the selected strategy's next entry signal; the zone it came from is added and selected.
+  async nextSignal() {
+    if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
+    const key = this.$('day-strategy').value;
+    if (!key) return;
+    await this.jump(() => this.c.api.dayNextSignal(this.session.id, { strategy: key }), (events) => {
+      const ev = events.find(x => x.kind === 'jump' && x.signal);
+      if (!ev) return;
+      if (this.zones.some(z => z.id === ev.zone_id)) { this.selectedZone = ev.zone_id; this.renderZones(); }
+      this.$('day-signal-last').textContent = `${ev.to_local} Malta · ${ev.reason}`;
+    });
+  }
+  async loadStrategies() {
+    try { this.strategies = await this.c.api.dayStrategies(); } catch { this.strategies = []; }
+    const sel = this.$('day-strategy');
+    sel.innerHTML = '';
+    for (const s of this.strategies) {
+      const o = document.createElement('option');
+      o.value = s.key; o.textContent = `${s.name} (${s.interval})`;
+      sel.appendChild(o);
+    }
+    this.renderStrategyNote();
+    this.render();
+  }
+  renderStrategyNote() {
+    const s = this.strategies.find(x => x.key === this.$('day-strategy').value);
+    this.$('day-strategy-note').textContent = s ? s.description : 'No strategies available.';
+  }
   async continueDay() {
     if (!this.ready() || this.busy || !this.day.can_continue) return;
     await this.jump(() => this.c.api.dayContinue(this.session.id));
   }
-  async jump(call) {
+  async jump(call, after = null) {
     this.busy = true;
     this.render();
     await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
@@ -864,6 +895,7 @@ export class DayMode {
       await this.c.refreshView();
       for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`);
       await this.refresh();   // the journal row of the day just left (how it ended) and the new day's row
+      if (after && this.c.fresh(t)) after(events);
     } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
     finally { this.busy = false; this.render(); }
   }
@@ -1515,6 +1547,7 @@ export class DayMode {
     if (k === 'x') { e.preventDefault(); this.openExit(); return true; }
     if (k === 'k') { e.preventDefault(); this.skipDay(); return true; }
     if (k === 'j') { e.preventDefault(); this.nextEmaDay(); return true; }
+    if (k === 'e') { e.preventDefault(); this.nextSignal(); return true; }
     if (k === 'z') { e.preventDefault(); this.drawing ? this.cancelDraw() : this.startDraw(); return true; }
     return false;
   }
@@ -1542,6 +1575,9 @@ export class DayMode {
     $('btn-day-sell').addEventListener('click', () => this.openExit());
     $('btn-day-skip').addEventListener('click', () => this.skipDay());
     $('btn-day-ema').addEventListener('click', () => this.nextEmaDay());
+    $('btn-day-signal').addEventListener('click', () => this.nextSignal());
+    $('day-strategy').addEventListener('change', () => { this.renderStrategyNote(); this.render(); });
+    this.loadStrategies();
     this.buildColsMenu();
     document.addEventListener('click', (e) => { const m = $('day-cols'); if (m.open && !m.contains(e.target)) m.open = false; });
     $('btn-day-continue').addEventListener('click', () => this.continueDay());

@@ -1,0 +1,115 @@
+"""RLine_Retest: zones from swing highs, the three RLine rules, breakout and retest, no lookahead."""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from app.strategies.rline import detect_rline, get_jump_strategy, near_round, round_levels
+
+H_S = 3600
+
+
+def path(start: float, legs: list[tuple[float, int]], flat: int = 20, wick: float = 0.2) -> pd.DataFrame:
+    """1h candles walking in straight lines: `flat` bars at `start`, then each (target, bars) leg.
+    Each candle opens at the previous close; high / low are `wick` beyond the body."""
+    closes = [start] * flat
+    for target, bars in legs:
+        a = closes[-1]
+        closes += list(np.linspace(a, target, bars + 1)[1:])
+    c = np.array(closes)
+    o = np.concatenate([[c[0]], c[:-1]])
+    return pd.DataFrame({
+        "time": np.arange(len(c), dtype="int64") * H_S,
+        "open": o, "high": np.maximum(o, c) + wick, "low": np.minimum(o, c) - wick, "close": c,
+        "volume": np.ones(len(c)),
+    })
+
+
+def bar_at(df: pd.DataFrame, cond) -> int:
+    return int(np.flatnonzero(cond(df))[0])
+
+
+# two rejections at 93.3 (no round number near: 90 / 95), break, move away, come back
+TWO_TOUCHES = [(93.3, 10), (88.0, 10), (93.3, 10), (88.0, 10), (97.0, 10), (99.0, 6), (92.0, 10)]
+ONE_TOUCH = [(93.3, 10), (88.0, 10), (97.0, 10), (99.0, 6), (92.0, 10)]
+
+
+def test_round_levels():
+    assert round_levels(83_000) == (80_000, 85_000)
+    assert round_levels(140) == (100, 150)
+    assert round_levels(2_400) == (2_000, 2_500)
+    assert round_levels(83_000, half=False) == (80_000, 90_000)
+    assert near_round(99_800, 100_300, 0) == 100_000
+    assert near_round(93.2, 93.5, 0.3) is None
+    assert near_round(99.9, 100.2, 0.0) == 100
+
+
+def test_rule_a_two_touches_break_and_retest():
+    df = path(88.0, TWO_TOUCHES)
+    out = detect_rline(df)
+    assert len(out["signals"]) == 1
+    s = out["signals"][0]
+    assert s["rules"] == ["A"] and s["touches"] == 2
+    assert s["zone_top"] == pytest.approx(93.5) and s["zone_bottom"] < s["zone_top"]
+    brk = bar_at(df, lambda d: (d["close"] > s["zone_top"]) & (d.index > 50))
+    assert s["breakout_ms"] == brk * H_S * 1000
+    # the signal is the first later bar whose low reaches the top again
+    exp = bar_at(df, lambda d: (d["low"] <= s["zone_top"]) & (d.index > brk + 2))
+    assert s["bar"] == exp and s["bar_ms"] == exp * H_S * 1000
+
+
+def test_one_plain_touch_is_no_rline():
+    assert detect_rline(path(88.0, ONE_TOUCH))["signals"] == []
+
+
+def test_rule_b_one_touch_with_high_volume():
+    df = path(88.0, ONE_TOUCH)
+    peak = int(df["high"].iloc[:40].idxmax())
+    df.loc[peak, "volume"] = 3.0
+    out = detect_rline(df)
+    assert [s["rules"] for s in out["signals"]] == [["B"]]
+    df.loc[peak, "volume"] = 1.8                      # below 2 x the average
+    assert detect_rline(df)["signals"] == []
+    assert [s["rules"] for s in detect_rline(df, {"vol_mult": 1.5})["signals"]] == [["B"]]
+
+
+def test_rule_c_one_touch_at_a_round_number():
+    df = path(95.0, [(100.0, 10), (95.0, 10), (104.0, 10), (106.0, 6), (99.0, 10)])
+    out = detect_rline(df)
+    assert len(out["signals"]) == 1 and out["signals"][0]["rules"] == ["C"] and out["signals"][0]["psych"] == 100
+
+
+def test_late_retest_and_failed_breakout():
+    df = path(88.0, TWO_TOUCHES)
+    assert detect_rline(df, {"retest_max": 8})["signals"] == []
+    # breaks out, never moves away, falls back below the zone: no signal
+    df2 = path(88.0, TWO_TOUCHES[:4] + [(93.7, 10), (88.0, 6), (97.0, 10), (92.0, 10)])
+    sig = detect_rline(df2)["signals"]
+    assert all(s["breakout_ms"] > 60 * H_S * 1000 for s in sig)   # only the later, second breakout could signal
+
+
+def test_touches_come_from_swing_highs_only():
+    # two swing lows at 93.3 (the highs 97.2 and 98.7 between them are single, plain touches),
+    # then a rally through everything and back: lows build no zone, so there is no signal
+    df = path(92.0, [(97.0, 10), (93.3, 10), (98.5, 10), (93.3, 10), (101.0, 10), (102.5, 6), (92.0, 10)])
+    assert detect_rline(df)["signals"] == []
+
+
+def test_no_lookahead():
+    df = path(88.0, TWO_TOUCHES + [(105.0, 20), (100.0, 10), (110.0, 15), (103.0, 10)])
+    full = detect_rline(df)["signals"]
+    assert full
+    for k in range(10, len(df) + 1, 3):
+        assert detect_rline(df.iloc[:k])["signals"] == [s for s in full if s["bar"] < k]
+
+
+def test_params_are_validated():
+    with pytest.raises(ValueError):
+        detect_rline(path(88.0, ONE_TOUCH), {"min_h_atr": 2.0, "max_h_atr": 1.0})
+    with pytest.raises(ValueError):
+        detect_rline(path(88.0, ONE_TOUCH), {"nope": 1})
+    with pytest.raises(ValueError):
+        get_jump_strategy("nope")
+    assert get_jump_strategy("rline_retest").describe()["name"] == "RLine_Retest"
+    assert detect_rline(path(88.0, [])[:0])["signals"] == []

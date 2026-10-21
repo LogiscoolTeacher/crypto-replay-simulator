@@ -52,12 +52,15 @@ import pandas as pd
 
 from .. import config
 from ..indicators import core
+from ..indicators.registry import validate_params
+from ..strategies.rline import JUMP_STRATEGIES, JumpStrategy, get_jump_strategy
 from .day_store import DayStore
 from .engine import (
     EMA_LONG_INTERVAL,
     EMA_LONG_PERIOD,
     EMA_LONG_WARMUP_BARS,
     RSI_WARMUP_BARS,
+    WARMUP_BARS,
     Conflict,
     Invalid,
     NotFound,
@@ -317,6 +320,7 @@ class DayEngine:
         self.candles = replay.candles
         self.sessions = replay.sessions
         self._lock = replay._lock  # one lock for both engines: they write the same session rows
+        self._signals: dict[tuple, list[dict]] = {}   # jump-strategy signals per session, strategy and params
 
     # ---------------------------------------------------------------- sessions
     def create_session(
@@ -1210,6 +1214,94 @@ class DayEngine:
             if target is None:
                 raise Conflict("No later day with a daily close above the EMA 200 before the end of the replay.")
             return self.goto_day(session_id, target.isoformat())
+
+    # --------------------------------------------------------- jump strategies
+    @staticmethod
+    def signal_strategies() -> list[dict]:
+        """The strategies the "Next signal" button can jump with."""
+        return [j.describe() for j in JUMP_STRATEGIES.values()]
+
+    def next_signal(self, session_id: str, strategy: str, params: dict | None = None) -> dict:
+        """Jump forward to the next entry signal of a jump strategy (the button "Next signal"): the
+        15m candle in which the signal happens becomes the cursor, also in the night. The zone the
+        signal came from is added to the session's zones (1h) so the New trade panel can use it.
+        The gates of the other jumps apply: the review first, no open trade, not past the end;
+        Conflict when no signal is left before the replay's end."""
+        try:
+            js = get_jump_strategy(strategy)
+            full = validate_params(js.params, params)
+        except ValueError as e:
+            raise Invalid(str(e)) from None
+        with self._lock:
+            s = self._ready(session_id)
+            ds = self._day_row(session_id)
+            self._review_gate(session_id, ds)
+            if s["cursor_ms"] >= s["data_end_ms"]:
+                raise Conflict("The replay has reached its end.")
+            with self.store.tx() as conn:
+                if self.store.open_trade(conn, session_id) is not None:
+                    raise Conflict("A trade is open: close it before jumping to the next signal.")
+            sig = self._next_signal_after(s, js, full, s["cursor_ms"])
+            if sig is None:
+                raise Conflict(f"No later {js.name} signal before the end of the replay.")
+            base = self._base_ms
+            target = sig["cursor_ms"]
+            cur = trading_day(s["cursor_ms"] + base)
+            if trading_day(target + base) > cur:
+                self._mark_left(s, cur, LEFT_EXIT if ds["phase"] == "exited" else LEFT_SKIP)
+            if ds["phase"] == "exited":
+                with self.store.tx() as conn:
+                    self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=_now_iso())
+            self._set_cursor(s, target)
+            zone = self._signal_zone(session_id, sig)
+            close = target + base
+            night = "" if in_entry_window(close) else " (night, outside 06:00–24:00)"
+            ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(close),
+                  "reason": f"{js.name}: {js.describe_signal(sig)}{night}.",
+                  "strategy": js.key, "signal": {k: v for k, v in sig.items() if k != "bar"}, "zone_id": zone["id"]}
+        st = self.state(session_id)
+        st["events"] = [ev]
+        return st
+
+    def _next_signal_after(self, s: dict, js: JumpStrategy, params: dict, after_ms: int) -> dict | None:
+        """The first signal whose 15m candle opens after `after_ms` (and not after the data end),
+        with `cursor_ms` = the open time of that 15m candle."""
+        iv_ms = config.interval_ms(js.interval)
+        for sig in self._strategy_signals(s, js, params):
+            if sig["bar_ms"] + iv_ms <= after_ms:
+                continue
+            if "cursor_ms" not in sig:
+                sig["cursor_ms"] = self._refine_signal(s, sig, iv_ms)
+            if sig["cursor_ms"] is not None and after_ms < sig["cursor_ms"] <= s["data_end_ms"]:
+                return sig
+        return None
+
+    def _strategy_signals(self, s: dict, js: JumpStrategy, params: dict) -> list[dict]:
+        """All signals of the strategy over the session's candles (warm-up included), computed once:
+        the detector is causal, so the signals after the cursor never depend on later candles."""
+        key = (s["id"], js.key, tuple(sorted(params.items())), s["data_end_ms"])
+        if key not in self._signals:
+            iv_ms = config.interval_ms(js.interval)
+            df = self.candles.get_candles(s["symbol"], js.interval, s["start_ms"] - WARMUP_BARS * iv_ms, s["data_end_ms"])
+            self._signals = {k: v for k, v in self._signals.items() if k[0] != s["id"] or k[1:3] != key[1:3]}
+            self._signals[key] = js.detect(df, params)["signals"]
+        return self._signals[key]
+
+    def _refine_signal(self, s: dict, sig: dict, iv_ms: int) -> int | None:
+        """Open time of the first 15m candle inside the signal's candle whose low reaches the zone
+        top (the moment price enters the zone), or None on a data gap."""
+        q = self.candles.get_candles(s["symbol"], BASE_INTERVAL, sig["bar_ms"], sig["bar_ms"] + iv_ms - self._base_ms)
+        hit = q[q["low"] <= sig["zone_top"]]
+        return int(hit["time"].iloc[0]) * 1000 if len(hit) else None
+
+    def _signal_zone(self, session_id: str, sig: dict) -> dict:
+        """The signal's zone as a session zone (1h), reusing an identical one."""
+        top, bottom = float(sig["zone_top"]), float(sig["zone_bottom"])
+        with self.store.tx() as conn:
+            for z in self.store.list_zones(conn, session_id):
+                if math.isclose(z["upper"], top) and math.isclose(z["lower"], bottom):
+                    return self._public_zone(z)
+        return self.add_zone(session_id, "1h", top, bottom)
 
     def _next_ema_above_day(self, s: dict, after: date) -> date | None:
         """The first trading day after `after` whose last completed daily candle closes above the

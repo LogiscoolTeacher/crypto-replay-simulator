@@ -29,6 +29,8 @@ from app.replay.day_engine import (
 from app.replay.day_store import DayStore
 from app.replay.engine import Conflict, Invalid, NotFound, ReplayEngine
 from app.replay.session_store import SessionStore
+from app.indicators.registry import validate_params
+from app.strategies.rline import RLINE_PARAMS, get_jump_strategy
 from tests.fakes import DAY, H, LISTING, Q, FineFakeClient, quarter_candle
 
 START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC (Malta summer time: 06:00 local = 04:00 UTC)
@@ -686,6 +688,46 @@ def test_next_ema_day(day: DayEngine, session: dict, monkeypatch):
     day.buy(sid, z["id"], take_profit=price * 3.0, stop=price * 0.5, confidence=5)
     with pytest.raises(Conflict):
         day.next_ema_day(sid)                       # a trade is open
+
+
+def test_next_signal(day: DayEngine, session: dict, monkeypatch):
+    sid = session["id"]
+    assert isinstance(day._strategy_signals(day._ready(sid), get_jump_strategy("rline_retest"), validate_params(RLINE_PARAMS, {})), list)
+    sig = lambda bar_ms, top: {"bar": 0, "bar_ms": bar_ms, "zone_top": top, "zone_bottom": top - 1.0, "rules": ["A"], "touches": 2,  # noqa: E731
+                               "touch_ms": [], "breakout_ms": bar_ms - 5 * H, "psych": None}
+    fake = [sig(START - H, 1e6), sig(START + 6 * H, 1e6), sig(START + 6 * H + H, 1e6), sig(START + 3 * DAY, 1e6)]
+    monkeypatch.setattr(day, "_strategy_signals", lambda s, js, p: fake)
+    st = day.next_signal(sid, "rline_retest")       # the first signal after the cursor, the same day, 08:00 local
+    ev = st["events"][0]
+    assert st["cursor_ms"] == START + 6 * H and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 8, 15)
+    assert ev["kind"] == "jump" and ev["reason"].startswith("RLine_Retest: retest of") and "night" not in ev["reason"]
+    zones = day.zones(sid)
+    assert len(zones) == 1 and zones[0]["id"] == ev["zone_id"] and zones[0]["interval"] == "1h" and zones[0]["upper"] == 1e6
+    st = day.next_signal(sid, "rline_retest")       # the next hour's signal; the same zone is reused
+    assert st["cursor_ms"] == START + 7 * H and len(day.zones(sid)) == 1
+    st = day.next_signal(sid, "rline_retest")       # 02:00 local on 2018-05-13: the night of 2018-05-12, still jumped to
+    assert st["day"]["date"] == "2018-05-12" and "night" in st["events"][0]["reason"]
+    assert [(r["date"], r["left_how"]) for r in day.days(sid)["days"]][0] == ("2018-05-10", "skip")
+    with pytest.raises(Conflict):
+        day.next_signal(sid, "rline_retest")        # nothing left
+    with pytest.raises(Invalid):
+        day.next_signal(sid, "nope")
+    with pytest.raises(Invalid):
+        day.next_signal(sid, "rline_retest", {"min_gap": 0})
+    # the signal moment is the first 15m candle of the hour whose low reaches the zone top
+    day.reset(sid)
+    hour = START + 7 * H                            # the fake's falling half-wave: each 15m low below the one before
+    lows = [day.candles.get_candles("BTCUSDT", "15m", hour + k * Q, hour + k * Q)["low"].iloc[0] for k in range(4)]
+    assert lows == sorted(lows, reverse=True)
+    fake[:] = [sig(hour, (lows[1] + lows[2]) / 2)]
+    st = day.next_signal(sid, "rline_retest")
+    assert st["cursor_ms"] == hour + 2 * Q
+    price = st["price"]
+    z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
+    day.buy(sid, z["id"], take_profit=price * 3.0, stop=price * 0.5, confidence=5)
+    fake[:] = [sig(START + 2 * DAY, 1e6)]
+    with pytest.raises(Conflict):
+        day.next_signal(sid, "rline_retest")        # a trade is open
 
 
 def test_skip_day(day: DayEngine, session: dict):
