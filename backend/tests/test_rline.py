@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.strategies.rline import detect_rline, get_jump_strategy, near_round, round_levels
+from app.indicators import core
+from app.indicators.registry import validate_params
+from app.strategies.rline import RLINE_PARAMS, Touch, Zone, detect_rline, get_jump_strategy, near_round, round_levels
 
 H_S = 3600
 
@@ -80,6 +82,49 @@ def test_rule_c_one_touch_at_a_round_number():
     assert len(out["signals"]) == 1 and out["signals"][0]["rules"] == ["C"] and out["signals"][0]["psych"] == 100
 
 
+def test_zone_is_drawn_from_the_wick_to_the_body():
+    for spike in (None, 94.0):           # the path's 0.2 wick (below the floor), then a 0.7 wick
+        df = path(88.0, ONE_TOUCH)
+        hs = df["high"].iloc[:40]
+        k = int(hs[hs == hs.max()].index[-1])   # the swing high: the later of two equal highs at the turn
+        if spike is not None:
+            df.loc[k, "high"] = spike
+        df.loc[k, "volume"] = 3.0        # a high-volume touch: an RLine with one touch
+        atr = float(core.atr(df["high"], df["low"], df["close"], 14).iloc[k])
+        top, body = float(df["high"].iloc[k]), float(max(df["open"].iloc[k], df["close"].iloc[k]))
+        s = detect_rline(df)["signals"][0]
+        assert s["zone_top"] == pytest.approx(top)
+        assert s["zone_top"] - s["zone_bottom"] == pytest.approx(min(max(top - body, 0.5 * atr), 1.0 * atr))
+    assert top - body == pytest.approx(0.7) and 0.5 * atr < 0.7 < atr   # the second case is the wick itself
+
+
+def test_zone_clamp_keeps_every_touch():
+    p = validate_params(RLINE_PARAMS, {})
+    # the 2023-02-03 / 02-04 BTC case: the latest touch came in a quieter hour (ATR 103)
+    z = Zone(touches=[Touch(0, 5, 23715.7, 23604.6, 177.9, 1.0), Touch(21, 26, 23587.8, 23503.7, 103.4, 1.0)])
+    z.resize(p)
+    assert z.top == 23715.7 and z.bottom == pytest.approx(23715.7 - 177.9)     # 1 ATR of the most volatile touch
+    z = Zone(touches=[Touch(0, 5, 100.0, 99.9, 1.0, 1.0), Touch(9, 14, 98.8, 98.7, 1.0, 1.0)])
+    z.resize(p)
+    assert z.bottom == 98.8                                                     # past 1 ATR, down to the lower touch high
+
+
+def test_retest_near_the_zone():
+    base = TWO_TOUCHES[:-1]              # up to after the breakout, no pullback yet
+    z = [x for x in detect_rline(path(88.0, base))["zones"] if x["state"] == "broken"][0]
+    df0 = path(88.0, base)
+    brk = int(z["breakout_ms"] // 1000 // H_S)
+    atr = float(core.atr(df0["high"], df0["low"], df0["close"], 14).iloc[brk])
+    stop_at = z["top"] + 0.15 * atr      # the pullback's lowest low: above the top, inside 0.25 ATR
+    df = path(88.0, base + [(stop_at + 0.2, 10)])
+    assert df["low"].iloc[-12:].min() == pytest.approx(stop_at)
+    sig = detect_rline(df)["signals"]
+    assert len(sig) == 1 and sig[0]["near"] is True and sig[0]["entry_level"] == pytest.approx(z["top"] + 0.25 * atr)
+    assert "came within" in get_jump_strategy("rline_retest").describe_signal(sig[0])
+    assert detect_rline(df, {"near_atr": 0.0})["signals"] == []
+    assert detect_rline(path(88.0, TWO_TOUCHES))["signals"][0]["near"] is False   # this one dips into the zone
+
+
 def test_late_retest_and_failed_breakout():
     df = path(88.0, TWO_TOUCHES)
     assert detect_rline(df, {"retest_max": 8})["signals"] == []
@@ -109,6 +154,8 @@ def test_params_are_validated():
         detect_rline(path(88.0, ONE_TOUCH), {"min_h_atr": 2.0, "max_h_atr": 1.0})
     with pytest.raises(ValueError):
         detect_rline(path(88.0, ONE_TOUCH), {"nope": 1})
+    with pytest.raises(ValueError):
+        detect_rline(path(88.0, ONE_TOUCH), {"near_atr": 0.5, "away_atr": 0.5})   # back as far as away
     with pytest.raises(ValueError):
         get_jump_strategy("nope")
     assert get_jump_strategy("rline_retest").describe()["name"] == "RLine_Retest"

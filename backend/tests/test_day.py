@@ -719,9 +719,9 @@ def test_next_signal(day: DayEngine, session: dict, monkeypatch):
     hour = START + 7 * H                            # the fake's falling half-wave: each 15m low below the one before
     lows = [day.candles.get_candles("BTCUSDT", "15m", hour + k * Q, hour + k * Q)["low"].iloc[0] for k in range(4)]
     assert lows == sorted(lows, reverse=True)
-    fake[:] = [sig(hour, (lows[1] + lows[2]) / 2)]
+    fake[:] = [{**sig(hour, lows[3] - 1.0), "entry_level": (lows[1] + lows[2]) / 2, "near": True}]   # the near-zone buffer counts
     st = day.next_signal(sid, "rline_retest")
-    assert st["cursor_ms"] == hour + 2 * Q
+    assert st["cursor_ms"] == hour + 2 * Q and "came within" in st["events"][0]["reason"]
     price = st["price"]
     z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price * 3.0, stop=price * 0.5, confidence=5)

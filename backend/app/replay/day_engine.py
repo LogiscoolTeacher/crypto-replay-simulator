@@ -1291,10 +1291,10 @@ class DayEngine:
         return self._signals[key]
 
     def _refine_signal(self, s: dict, sig: dict, iv_ms: int) -> int | None:
-        """Open time of the first 15m candle inside the signal's candle whose low reaches the zone
-        top (the moment price enters the zone), or None on a data gap."""
+        """Open time of the first 15m candle inside the signal's candle whose low reaches the
+        signal's entry level (the zone top plus the near-zone buffer), or None on a data gap."""
         q = self.candles.get_candles(s["symbol"], BASE_INTERVAL, sig["bar_ms"], sig["bar_ms"] + iv_ms - self._base_ms)
-        hit = q[q["low"] <= sig["zone_top"]]
+        hit = q[q["low"] <= sig.get("entry_level", sig["zone_top"])]
         return int(hit["time"].iloc[0]) * 1000 if len(hit) else None
 
     def _signal_zone(self, session_id: str, sig: dict) -> dict:
