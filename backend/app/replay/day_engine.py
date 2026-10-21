@@ -18,7 +18,7 @@ Clock (all local times in Europe/Malta)
   is the user's answer. Uptrend = both yes; otherwise Buy is blocked for the day.
 
 Trading
-* Risk per trade = 1 % of the STARTING capital, fixed. Fee 0.1 % of the trade value on every buy
+* Risk per trade = 0.1 % of the STARTING capital (100 USDT at the default 100 000), fixed. Fee 0.1 % of the trade value on every buy
   and every sell (the session's fee rate).
 * Entry at the close of the current 15-minute candle. Suggested stop = lower edge of the chosen
   support zone - 0.5 x ATR 14 (15m, at the entry candle); the user may change it. The stop must be
@@ -31,7 +31,7 @@ Trading
   are exactly at the level (no gap or slippage model: a known limitation of v1).
 * Early exit by hand at the close of the current candle ("early exit") with a required reason.
 * P&L = sell value - position value - buy fee - sell fee; P&L % of the position value;
-  R = P&L / risk_amount (the nominal 1 %). "What if" after the exit: highest high and lowest low of
+  R = P&L / risk_amount (the nominal 0.1 %). "What if" after the exit: highest high and lowest low of
   the 15-minute candles after the exit candle until 24:00 of the exit day (local date of the exit
   candle's open), as percentages of the exit price and of the entry price; "n/a" when empty.
 """
@@ -78,7 +78,8 @@ ZONE_INTERVALS = ("1h", "4h")      # the user draws zones on these charts (they 
 TIMEZONE = "Europe/Malta"
 TZ = ZoneInfo(TIMEZONE)
 DAY_START_HOUR = 6                 # the trading day starts at 06:00 local time
-RISK_PCT = 1.0                     # of the starting capital, fixed for the session
+RISK_PCT = 0.1                     # of the starting capital, fixed for the session (was 1 % on 10k)
+DAY_START_BALANCE = 100_000.0      # default starting capital: 0.1 % = 100 USDT risk, no leverage needed down to a ~0.1 % stop
 ATR_PERIOD = 14
 ATR_WARMUP_BARS = 600              # bars fed to RSI and ATR at the entry; far beyond where the seed matters
 STOP_ATR_MULT = 0.5                # ATR stop = zone lower edge - 0.5 x ATR (offered next to the default)
@@ -321,6 +322,8 @@ class DayEngine:
         self.sessions = replay.sessions
         self._lock = replay._lock  # one lock for both engines: they write the same session rows
         self._signals: dict[tuple, list[dict]] = {}   # jump-strategy signals per session, strategy and params
+        with store.tx() as conn:
+            store.upgrade_risk(conn, RISK_PCT)   # sessions made under an older risk rule keep their risk amount
 
     # ---------------------------------------------------------------- sessions
     def create_session(
@@ -328,7 +331,7 @@ class DayEngine:
         symbol: str,
         start_ms: int,
         end_ms: int | None = None,
-        start_balance: float = config.DEFAULT_START_BALANCE,
+        start_balance: float = DAY_START_BALANCE,
         name: str | None = None,
     ) -> dict:
         s = self.replay.create_session(
@@ -670,7 +673,7 @@ class DayEngine:
             except Invalid as exc:
                 errors.append(str(exc))
             if size["capped"]:
-                warnings.append("Not enough cash for the full size: the position is capped and the risk is below 1 %.")
+                warnings.append(f"Not enough cash for the full size: the position is capped and the risk is below {RISK_PCT:g} %.")
         rr = None
         tp = None
         if ratio is not None and not (math.isfinite(float(ratio)) and 0 < float(ratio) <= RATIO_MAX):

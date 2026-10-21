@@ -18,6 +18,8 @@ const PEEK_INTERVAL = '1D';  // hold D / the 1Y button: daily candles of the las
 const PEEK_BARS = 365;
 const CONTEXT_YEARS = 2;     // hold Y / the BTC 2Y button: Bitcoin daily candles with major levels
 const SR_TOL_DEFAULT = 1.5;
+const SWING_START_BALANCE = '10000';   // the new-session form's default balance per mode (day: 0.1 % risk = 100 USDT)
+const DAY_START_BALANCE = '100000';
 const FIB_HINT = 'Fib 1 of 2: click the swing start. Clicks snap to the candle high or low. Esc cancels.';
 const DEFAULT_INDICATORS = [{ key: 'ema', params: { period: 20 } }, { key: 'ema', params: { period: 50 } }];
 
@@ -1671,6 +1673,9 @@ function renderSessionMode() {
   $('f-note-swing').classList.toggle('hidden', dayMode);
   $('f-note-day').classList.toggle('hidden', !dayMode);
   $('f-name').placeholder = dayMode ? 'e.g. BTC day trading May' : 'e.g. BTC summer 2025';
+  // each mode's default balance, unless the user typed another one
+  const bal = $('f-balance');
+  if (bal.value === (dayMode ? SWING_START_BALANCE : DAY_START_BALANCE)) bal.value = dayMode ? DAY_START_BALANCE : SWING_START_BALANCE;
 }
 
 async function submitSessionDialog(e) {

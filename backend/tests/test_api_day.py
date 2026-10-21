@@ -29,7 +29,7 @@ def client() -> TestClient:
 
 @pytest.fixture(scope="module")
 def session(client: TestClient):
-    r = client.post("/api/day/sessions", json={"symbol": SYMBOL, "start": iso(START), "end": iso(END), "start_balance": 10_000})
+    r = client.post("/api/day/sessions", json={"symbol": SYMBOL, "start": iso(START), "end": iso(END), "start_balance": 100_000})
     assert r.status_code == 201, r.text
     s = r.json()
     assert s["mode"] == "day" and s["status"] in ("preparing", "ready")
@@ -103,7 +103,7 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert r.status_code == 200, r.text
     t = r.json()["trade"]
     assert t["status"] == "open" and t["notes"] == "via api" and t["rr"] == pytest.approx(2.0) and t["confidence"] == 7
-    assert r.json()["state"]["day"]["trade"]["id"] == t["id"] and r.json()["state"]["cash"] < 10_000
+    assert r.json()["state"]["day"]["trade"]["id"] == t["id"] and r.json()["state"]["cash"] < 100_000
     assert client.post(f"{base}/buy", json={"zone_id": z["id"], "take_profit": tp, "confidence": 7}).status_code == 409
     assert client.post(f"{base}/skip").status_code == 409
 
@@ -171,7 +171,7 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     r = client.post(f"{base}/skip")
     assert r.status_code == 200 and r.json()["day"]["date"] == "2018-05-12"
     r = client.post(f"{base}/reset")
-    assert r.status_code == 200 and r.json()["cursor_ms"] == FIRST_CURSOR and r.json()["cash"] == 10_000
+    assert r.status_code == 200 and r.json()["cursor_ms"] == FIRST_CURSOR and r.json()["cash"] == 100_000
     assert client.get(f"{base}/trades").json()["trades"] == [] and client.get(f"{base}/zones").json() == []
     assert client.delete(f"{base}/zones/{z['id']}").status_code == 404
 

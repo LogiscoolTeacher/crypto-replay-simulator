@@ -207,6 +207,29 @@ class DayStore:
         finally:
             conn.close()
 
+    def upgrade_risk(self, conn: sqlite3.Connection, risk_pct: float) -> int:
+        """Bring sessions made under an older risk rule to `risk_pct` (of the starting capital) by
+        raising their starting capital and cash, never their risk amount: 10k at 1 % (100 USDT)
+        becomes 100k at 0.1 % (still 100 USDT). Trades keep their numbers; their cash snapshots
+        move by the same amount. Only raises; idempotent (risk_pct is the marker). Returns the
+        number of sessions changed."""
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone() is None:
+            return 0
+        rows = conn.execute(
+            "SELECT d.session_id, d.risk_amount, s.start_balance FROM day_sessions d JOIN sessions s ON s.id = d.session_id "
+            "WHERE abs(d.risk_pct - ?) > 1e-12", (risk_pct,)).fetchall()
+        changed = 0
+        for r in rows:
+            delta = r["risk_amount"] * 100.0 / risk_pct - r["start_balance"]
+            if delta > 1e-9:
+                conn.execute("UPDATE sessions SET start_balance = start_balance + ?, cash = cash + ? WHERE id = ?", (delta, delta, r["session_id"]))
+                conn.execute("UPDATE day_trades SET cash_after_entry = cash_after_entry + ?, "
+                             "cash_after_exit = CASE WHEN cash_after_exit IS NULL THEN NULL ELSE cash_after_exit + ? END "
+                             "WHERE session_id = ?", (delta, delta, r["session_id"]))
+                changed += 1
+            conn.execute("UPDATE day_sessions SET risk_pct = ? WHERE session_id = ?", (risk_pct, r["session_id"]))
+        return changed
+
     # ---------------------------------------------------------------- generic
     def _insert(self, conn: sqlite3.Connection, table: str, f: dict[str, Any]) -> int:
         bad = set(f) - set(self._columns[table])

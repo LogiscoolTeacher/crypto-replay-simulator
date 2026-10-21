@@ -61,7 +61,7 @@ def day(db: Path) -> DayEngine:
 
 @pytest.fixture
 def session(day: DayEngine) -> dict:
-    s = day.create_session("BTCUSDT", START, END, start_balance=10_000)
+    s = day.create_session("BTCUSDT", START, END, start_balance=100_000)
     assert s["status"] == "preparing" and s["mode"] == "day"
     return day.prepare(s["id"])
 
@@ -190,11 +190,11 @@ def test_plan_and_buy(day: DayEngine, session: dict):
     p = day.plan(sid, tight["id"])
     assert p["stop_suggested"] == pytest.approx(price) and p["errors"] == ["The stop must be below the entry price."]
     assert p["coins"] is None and p["can_buy"] is False
-    # a stop less than one percent away asks for more than the cash: the size is capped
-    p = day.plan(sid, tight["id"], stop=price - 0.5)
-    assert p["capped"] is True and p["position_value"] + p["buy_fee"] == pytest.approx(10_000.0)
+    # a stop less than 0.1 % away asks for more than the cash: the size is capped
+    p = day.plan(sid, tight["id"], stop=price - 0.05)
+    assert p["capped"] is True and p["position_value"] + p["buy_fee"] == pytest.approx(100_000.0)
     assert p["risk_usdt"] < 100.0 and any("capped" in w for w in p["warnings"])
-    z = day.add_zone(sid, "1h", price + 0.5, price - 3.0)   # a wider zone: the full one-percent risk fits
+    z = day.add_zone(sid, "1h", price + 0.5, price - 3.0)   # a wider zone: the full 100 USDT risk fits
     p = day.plan(sid, z["id"])
     assert p["blocked"] is None and p["errors"] == [] and p["entry_price"] == price
     assert p["stop_suggested"] == pytest.approx(price - 1.25)                       # (upper + lower) / 2
@@ -241,7 +241,7 @@ def test_plan_and_buy(day: DayEngine, session: dict):
     assert t["stop_suggested"] == pytest.approx(price - 1.25) and t["stop_atr"] == pytest.approx(p["stop_atr"]) and t["stop_used"] == t["stop_suggested"]
     assert t["entry_local"] == "2018-05-10 06:00" and t["overnight"] is False
     st = res["state"]
-    assert st["cash"] == pytest.approx(10_000 - p["position_value"] - p["buy_fee"])
+    assert st["cash"] == pytest.approx(100_000 - p["position_value"] - p["buy_fee"])
     assert st["day"]["entries_allowed"] is False and st["day"]["block_reason"] == "A trade is open."
     assert st["day"]["trade"]["id"] == t["id"] and st["account"]["open_trades"] == 1 and st["day"]["can_skip"] is False
     assert st["account"]["equity"] == pytest.approx(st["cash"] + t["coins"] * price)
@@ -274,7 +274,7 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     want = trade_result(price, price + 4.0, tr["coins"], tr["position_value"], tr["buy_fee"], 0.001, 100.0)
     assert tr["pnl"] == pytest.approx(want["pnl"]) and tr["r_multiple"] == pytest.approx(want["r_multiple"])
     assert tr["pnl_pct"] == pytest.approx(want["pnl_pct"]) and tr["fees"] == pytest.approx(tr["buy_fee"] + tr["sell_fee"])
-    assert st["cash"] == pytest.approx(10_000 + tr["pnl"]) and st["account"]["realized_pnl"] == pytest.approx(tr["pnl"])
+    assert st["cash"] == pytest.approx(100_000 + tr["pnl"]) and st["account"]["realized_pnl"] == pytest.approx(tr["pnl"])
     assert st["day"]["phase"] == "exited" and st["day"]["entries_allowed"] is False   # nothing before the review
     assert st["day"]["block_reason"] == "Answer the review questions for trade #1 first." and st["day"]["can_continue"] is False
     assert st["day"]["last_exit"]["id"] == tr["id"] and st["day"]["review_pending"]["id"] == tr["id"]
@@ -730,6 +730,38 @@ def test_next_signal(day: DayEngine, session: dict, monkeypatch):
         day.next_signal(sid, "rline_retest")        # a trade is open
 
 
+def test_default_balance_and_risk(day: DayEngine):
+    s = day.create_session("BTCUSDT", START, END)
+    assert s["start_balance"] == 100_000 and s["day"]["risk_amount"] == 100.0 and s["day"]["risk_pct"] == 0.1
+
+
+def test_upgrade_old_risk_sessions(db: Path, day: DayEngine, session: dict):
+    sid = session["id"]
+    day.set_trend_check(sid, True)
+    price = day.state(sid)["price"]
+    z = day.add_zone(sid, "1h", price + 0.5, price - 3.0)
+    day.buy(sid, z["id"], take_profit=price + 50.0, confidence=5)
+    day.step(sid, 3)
+    day.sell(sid, "stalls")
+    before = day.trades(sid)["trades"][0]
+    cash = day.state(sid)["cash"]
+    # the same session as the old rule made it: 10k start at 1 % (100 USDT)
+    with day.store.tx() as conn:
+        conn.execute("UPDATE sessions SET start_balance = 10000, cash = cash - 90000 WHERE id = ?", (sid,))
+        conn.execute("UPDATE day_trades SET cash_after_entry = cash_after_entry - 90000, cash_after_exit = cash_after_exit - 90000 WHERE session_id = ?", (sid,))
+        conn.execute("UPDATE day_sessions SET risk_pct = 1.0 WHERE session_id = ?", (sid,))
+    for _ in range(2):   # the next start upgrades it; the one after changes nothing
+        again = make(db)
+        st = again.state(sid)
+        assert st["start_balance"] == pytest.approx(100_000) and st["cash"] == pytest.approx(cash)
+        assert st["day"]["risk_amount"] == 100.0 and st["day"]["risk_pct"] == 0.1
+        t = again.trades(sid)["trades"][0]
+        assert t["pnl"] == pytest.approx(before["pnl"]) and t["r_multiple"] == pytest.approx(before["r_multiple"])
+        with again.store.tx() as conn:
+            row = conn.execute("SELECT cash_after_entry, cash_after_exit FROM day_trades WHERE session_id = ?", (sid,)).fetchone()
+        assert row[1] == pytest.approx(cash) and row[0] > 90_000
+
+
 def test_skip_day(day: DayEngine, session: dict):
     sid = session["id"]
     st = day.skip_day(sid)
@@ -822,7 +854,7 @@ def test_reset_and_delete(day: DayEngine, session: dict):
     day.attach_image(sid, tid, PNG)
     day.step(sid, 3)
     st = day.reset(sid)
-    assert st["cursor_ms"] == FIRST_CURSOR and st["cash"] == 10_000 and st["day"]["phase"] == "trading"
+    assert st["cursor_ms"] == FIRST_CURSOR and st["cash"] == 100_000 and st["day"]["phase"] == "trading"
     assert day.trades(sid)["trades"] == [] and day.zones(sid) == [] and st["day"]["check"]["hh_hl"] is None
     assert not (day.replay._snapshot_dir() / sid).exists()
     day.delete_session(sid)

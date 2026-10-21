@@ -222,7 +222,7 @@
               <th class="sortable" data-col="review" data-key="review_n" title="Your review at 24:00 of the exit day: stop too tight, price later over the target, stop saved me">Review</th>
               <th class="num sortable" data-col="entry_price" data-key="entry_price">Entry price</th><th class="num" data-col="rsi" title="RSI 14 of the 15-minute chart at the entry">RSI 15m</th><th class="num" data-col="rsi_1h" title="RSI 14 of the 1-hour chart at the entry">RSI 1h</th><th class="num" data-col="atr" title="ATR 14 of the 15-minute chart at the entry">ATR</th>
               <th class="num" data-col="zone" title="Support zone the entry was based on">Zone</th><th class="num" data-col="stop" title="Stop used (hover for the suggested one)">Stop</th><th class="num" data-col="target">Target</th><th class="num sortable" data-col="rr" data-key="rr" title="Reward-to-risk at the entry">R/R</th>
-              <th class="num" data-col="coins">Coins</th><th class="num" data-col="value" title="Position value in USDT">Value</th><th class="num" data-col="risk" title="Risk in USDT (1 % of the start, or less when capped)">Risk</th><th data-col="capped" title="Size capped by the cash">Capped</th><th data-col="overnight" title="Still open when the replay passed 24:00">Overnight</th>
+              <th class="num" data-col="coins">Coins</th><th class="num" data-col="value" title="Position value in USDT">Value</th><th class="num" data-col="risk" title="Risk in USDT (0.1 % of the start, or less when capped)">Risk</th><th data-col="capped" title="Size capped by the cash">Capped</th><th data-col="overnight" title="Still open when the replay passed 24:00">Overnight</th>
               <th class="num" data-col="exit_price">Exit price</th><th class="num" data-col="fees" title="Buy and sell fee">Fees</th><th class="num sortable" data-col="pnl" data-key="pnl" title="P&amp;L after fees">P&amp;L</th><th class="num sortable" data-col="pnl_pct" data-key="pnl_pct" title="P&amp;L in percent of the position value">%</th><th class="num sortable" data-col="r" data-key="r_multiple" title="P&amp;L divided by the risk amount">R</th>
               <th class="num sortable" data-col="mae" data-key="mae_pct" title="Maximum adverse excursion: the lowest low between the entry and the exit, vs the entry price">MAE %</th><th class="num sortable" data-col="mfe" data-key="mfe_pct" title="Maximum favourable excursion: the highest high between the entry and the exit, vs the entry price">MFE %</th>
               <th class="num sortable" data-col="mae_r" data-key="mae_r" title="MAE in R (multiples of the risk taken)">MAE R</th><th class="num sortable" data-col="mfe_r" data-key="mfe_r" title="MFE in R (multiples of the risk taken)">MFE R</th>
@@ -425,7 +425,7 @@
           <dt title="Close of the last completed daily candle (UTC day) against the EMA 200 of the completed days; computed by the program">Close &gt; EMA 200</dt><dd id="day-ema" class="mono gauge small">&ndash;</dd>
           <dt title="Higher highs and higher lows on the daily chart: your own judgment, once per day">Higher highs &amp; lows</dt><dd class="hh"><button type="button" id="btn-hh-yes" class="btn small chip">Yes</button> <button type="button" id="btn-hh-no" class="btn small chip">No</button></dd>
           <dt title="Both answers yes">Uptrend</dt><dd id="day-uptrend" class="gauge">&ndash;</dd>
-          <dt title="Fixed: 1 % of the starting capital, fees come on top">Risk per trade</dt><dd id="day-risk" class="mono">&ndash;</dd>
+          <dt title="Fixed: 0.1 % of the starting capital (100 USDT at 100 000), fees come on top">Risk per trade</dt><dd id="day-risk" class="mono">&ndash;</dd>
         </dl>
         <p id="day-gate" class="small muted" role="status"></p>
         <div class="row-flex">
@@ -689,7 +689,7 @@
       <div class="form-grid">
         <label class="wide">Mode <select name="mode" id="f-mode">
           <option value="swing">Swing trading (buckets)</option>
-          <option value="day">Day trading (15-minute candles, Europe/Malta, 1 % risk per trade)</option>
+          <option value="day">Day trading (15-minute candles, Europe/Malta, 0.1 % risk per trade)</option>
         </select></label>
         <label>Coin <select name="symbol" id="f-symbol" required></select></label>
         <label id="f-base-wrap">Base timeframe <select name="base_interval" id="f-base"></select></label>
@@ -707,7 +707,7 @@
         <label class="wide">Name <span class="muted">(optional)</span> <input name="name" id="f-name" type="text" maxlength="80" placeholder="e.g. BTC summer 2025"></label>
       </div>
       <p class="muted small" id="f-note-swing">The base timeframe is the finest you can view in this session. Finer timeframes mean more data to download.</p>
-      <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 1 % of the start balance per trade, trading day 06:00 to 24:00 Europe/Malta. The first day begins at the first 06:00 after the start date.</p>
+      <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 0.1 % of the start balance per trade (100 USDT at the default 100 000), trading day 06:00 to 24:00 Europe/Malta. The first day begins at the first 06:00 after the start date.</p>
       <p id="form-error" class="error hidden"></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="btn-cancel-session">Cancel</button>

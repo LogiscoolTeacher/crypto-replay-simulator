@@ -1469,7 +1469,7 @@ export class DayMode {
     const x = t.excursion;
     const groups = [
       ['Basics', [['Coin', this.session.symbol], ['Trading day', t.day_date], ['Confidence at the buy', t.confidence === null || t.confidence === undefined ? 'not scored' : `${t.confidence} / 10`],
-        ['Checklist', `v1 · risk ${this.n(t.risk_amount)} USDT (1 % of the start)`]]],
+        ['Checklist', `v1 · risk ${this.n(t.risk_amount)} USDT`]]],
       ['Trend check', [['Daily close above EMA 200', this.flag(t.ema_above)], ['Higher highs and higher lows', this.flag(t.hh_hl)]]],
       ['Conditions at the buy', [...COND_LABELS.map(([k, label]) => [label, this.flag(t.conditions ? t.conditions[k] : null)]),
         ['RSI 14 (15m) at the buy', t.entry_rsi === null || t.entry_rsi === undefined ? 'n/a' : t.entry_rsi.toFixed(2)],
