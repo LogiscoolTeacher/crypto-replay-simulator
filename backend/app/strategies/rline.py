@@ -21,8 +21,8 @@ leaks the future.
    bars before it (the swing-high candle or a neighbour); C) a round number (multiples of
    10^floor(log10 price), and of half that) inside the zone or within `psych_atr` x ATR of it.
 4. Breakout: a candle closes above the top of an RLine. The zone becomes support-in-waiting.
-5. Retest: at least `min_gap` bars after the breakout and after a high of top + away_atr x ATR,
-   a candle's low comes within `near_atr` x ATR (at the breakout) of the top -> signal. No retest within `retest_max` bars, or a close below
+5. Retest: at least `min_gap` bars after the breakout and after a close of at least top + away_atr x ATR
+   (a wick spiking above and snapping back does not count as having moved away), a candle's low comes within `near_atr` x ATR (at the breakout) of the top -> signal. No retest within `retest_max` bars, or a close below
    the zone before it qualifies as a retest -> the zone is dropped. One signal per zone.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ RLINE_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec("vol_mult", "High volume (x average of 20 bars)", "float", 2.0, 1.0, 20.0, 0.1),
     ParamSpec("psych_atr", "Round number near the zone within (x ATR)", "float", 0.25, 0.0, 5.0, 0.05),
     ParamSpec("psych_half", "Round numbers", "choice", "full and half", choices=("full and half", "full only")),
-    ParamSpec("away_atr", "Move away after the breakout (x ATR)", "float", 0.5, 0.0, 20.0, 0.1),
+    ParamSpec("away_atr", "Move away after the breakout: a close above the top (x ATR)", "float", 0.75, 0.0, 20.0, 0.1),
     ParamSpec("min_gap", "Retest at least (bars after the breakout)", "int", 2, 1, 1000, 1),
     ParamSpec("retest_max", "Retest within (bars after the breakout)", "int", 48, 1, 10_000, 1),
     ParamSpec("near_atr", "Retest counts within (x ATR above the zone)", "float", 0.25, 0.0, 20.0, 0.05),
@@ -186,7 +186,7 @@ def detect_rline(df: pd.DataFrame, params: dict[str, Any] | None = None) -> dict
                         continue                 # closed above a plain zone: it is gone
                     z.state, z.rules, z.breakout_bar = "broken", rules, i
                     z.breakout_atr = atr[i] if math.isfinite(atr[i]) else z.touches[-1].atr
-                    z.away = high[i] >= z.top + p["away_atr"] * z.breakout_atr
+                    z.away = close[i] >= z.top + p["away_atr"] * z.breakout_atr
                 elif i - z.last_touch() > p["lookback_bars"]:
                     continue
                 alive.append(z)
@@ -206,7 +206,7 @@ def detect_rline(df: pd.DataFrame, params: dict[str, Any] | None = None) -> dict
                 continue
             if close[i] < z.bottom:
                 continue                         # back below before a valid retest: failed breakout
-            if high[i] >= z.top + p["away_atr"] * z.breakout_atr:
+            if close[i] >= z.top + p["away_atr"] * z.breakout_atr:
                 z.away = True
             alive.append(z)
         zones = alive
@@ -288,7 +288,7 @@ JUMP_STRATEGIES: dict[str, JumpStrategy] = {
         key="rline_retest",
         name="RLine_Retest",
         description="1h: a resistance zone with 2+ touches, a high-volume touch or a round number is broken; "
-                    "the signal is the first time price comes back into it.",
+                    "after a close 0.75 ATR above it, the signal is the first time price comes back into it.",
         interval="1h",
         params=RLINE_PARAMS,
         detect=detect_rline,

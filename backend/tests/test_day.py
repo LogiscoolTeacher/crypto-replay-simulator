@@ -19,6 +19,7 @@ from app.replay.day_engine import (
     day_bounds,
     in_entry_window,
     local_ms,
+    picture_frame,
     position_size,
     reward_to_risk,
     to_local,
@@ -1005,6 +1006,23 @@ def test_alternative_trades_close_at_24_00_at_the_latest(db: Path):
         day.store.update_trade(conn, man["id"], alts=None)
     again = day.trades(sid)["trades"][-1]
     assert again["id"] == man["id"] and again["alts"] == a
+
+
+def test_picture_frame_spans_the_held_days():
+    """The trade picture runs from 06:00 of the entry's trading day to 24:00 of the exit's (candle
+    open times in seconds: the candles closing at 06:00 and at 24:00); a night exit keeps its candle."""
+    def frame(entry_ms, exit_ms):
+        f = picture_frame(entry_ms, exit_ms)
+        return local_hm(f["from_s"] * 1000 + Q), local_hm(f["to_s"] * 1000 + Q)
+    noon, evening = local_ms(date(2018, 5, 10), 12) - Q, local_ms(date(2018, 5, 10), 18) - Q
+    assert frame(noon, evening) == ((date(2018, 5, 10), 6, 0), (date(2018, 5, 11), 0, 0))
+    next_day = local_ms(date(2018, 5, 11), 10) - Q                       # held overnight
+    assert frame(noon, next_day) == ((date(2018, 5, 10), 6, 0), (date(2018, 5, 12), 0, 0))
+    night = local_ms(date(2018, 5, 11), 3) - Q                           # closed at 03:00 in the night
+    assert frame(noon, night) == ((date(2018, 5, 10), 6, 0), (date(2018, 5, 11), 3, 0))
+    night_buy = local_ms(date(2018, 5, 11), 2) - Q                       # bought in the night after the 10th
+    assert frame(night_buy, next_day)[0] == (date(2018, 5, 10), 6, 0)
+    assert picture_frame(noon, None) is None
 
 
 def test_alternative_window_ends_at_the_next_24_00_for_night_buys():

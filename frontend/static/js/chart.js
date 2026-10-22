@@ -683,6 +683,16 @@ export class ChartView {
     this.chart.timeScale().setVisibleLogicalRange(range);
   }
   setRange(range) { if (range && Number.isFinite(range.from) && Number.isFinite(range.to) && range.to > range.from) this._setRange(range); }
+  // The logical range showing the bars opening from `fromS` to `toS` (unix seconds), clamped to the
+  // loaded bars, with a little room on both sides; null without bars.
+  rangeForTimes(fromS, toS) {
+    const t = this.payload ? this.payload.time : [];
+    if (!t.length) return null;
+    const firstAtOrAfter = (x) => { let lo = 0, hi = t.length; while (lo < hi) { const m = (lo + hi) >> 1; if (t[m] < x) lo = m + 1; else hi = m; } return lo; };
+    const i0 = Math.min(firstAtOrAfter(fromS), t.length - 1);
+    const i1 = Math.max(i0, Math.min(firstAtOrAfter(toS + 1) - 1, t.length - 1));
+    return { from: i0 - 1, to: i1 + 2 };
+  }
   // Pending request first, then the range reported by the change event (the getter lags a frame).
   currentRange() { return this.targetRange || this.appliedRange || this.chart.timeScale().getVisibleLogicalRange(); }
 

@@ -229,6 +229,19 @@ def alt_window_end(entry_ms: int) -> int:
     return end
 
 
+def picture_frame(entry_ms: int, exit_ms: int | None) -> dict | None:
+    """The time span (unix seconds, candle open times like the chart's) a trade's picture shows:
+    from the candle closing at 06:00 of the entry's trading day to the candle closing at 24:00 of
+    the exit's trading day, so an overnight trade shows every day it was held. A night exit (past
+    that 24:00) keeps its exit candle. None while the trade is open."""
+    if exit_ms is None:
+        return None
+    base = config.interval_ms(BASE_INTERVAL)
+    start, _ = day_bounds(trading_day(entry_ms + base))
+    _, end = day_bounds(trading_day(exit_ms + base))
+    return {"from_s": (start - base) // 1000, "to_s": max(exit_ms, end - base) // 1000}
+
+
 def in_entry_window(close_ms: int, d: date | None = None) -> bool:
     start, end = day_bounds(d or trading_day(close_ms))
     return start <= close_ms <= end
@@ -1633,6 +1646,7 @@ class DayEngine:
         out["exit_local"] = local_str(t["exit_ms"] + config.interval_ms(BASE_INTERVAL)) if t["exit_ms"] is not None else None
         out["exit_reason_label"] = EXIT_REASON_LABELS.get(t["exit_reason"]) if t["exit_reason"] else None
         out["hold_hours"] = hold_hours(t["entry_ms"], t["exit_ms"])   # None while open (the UI counts from the entry)
+        out["frame"] = picture_frame(t["entry_ms"], t["exit_ms"])     # what the trade's picture shows
         tp0 = out["tp_initial"]
         out["review"] = {
             **{key: flag(t.get(col)) for key, col, _ in REVIEW_QUESTIONS},

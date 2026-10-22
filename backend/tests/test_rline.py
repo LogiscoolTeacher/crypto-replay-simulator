@@ -125,6 +125,21 @@ def test_retest_near_the_zone():
     assert detect_rline(path(88.0, TWO_TOUCHES))["signals"][0]["near"] is False   # this one dips into the zone
 
 
+def test_retest_needs_a_close_away():
+    # breaks out just above the top, a wick spikes 1 ATR above it, then back to the zone
+    df = path(88.0, TWO_TOUCHES[:4] + [(93.8, 2), (93.8, 4), (92.0, 6)])
+    brk = bar_at(df, lambda d: (d["close"] > 93.5) & (d.index > 50))
+    atr = float(core.atr(df["high"], df["low"], df["close"], 14).iloc[brk])
+    assert df["close"].iloc[brk:brk + 6].max() < 93.5 + 0.75 * atr     # no close far enough above
+    df.loc[brk + 2, "high"] = 93.5 + 1.0 * atr
+    assert detect_rline(df)["signals"] == []                            # a wick alone does not count
+    df.loc[brk + 2, "close"] = 93.5 + 0.8 * atr                         # one close 0.8 ATR above
+    df.loc[brk + 2, "high"] = df.loc[brk + 2, "close"] + 0.2
+    sig = detect_rline(df)["signals"]
+    assert len(sig) == 1 and sig[0]["breakout_ms"] == brk * H_S * 1000 and sig[0]["bar"] > brk + 2
+    assert detect_rline(df, {"away_atr": 1.0})["signals"] == []         # not 1 ATR, though
+
+
 def test_late_retest_and_failed_breakout():
     df = path(88.0, TWO_TOUCHES)
     assert detect_rline(df, {"retest_max": 8})["signals"] == []

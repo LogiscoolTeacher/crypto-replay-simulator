@@ -902,8 +902,8 @@ export class DayMode {
 
   // ----------------------------------------------------------------- events
   // Events of a step or a sell: after an exit the replay jumps to 24:00 of the exit day; the trade's
-  // picture (the chart as on screen) and the day's picture are taken there. A night exit (already
-  // past 24:00) gets them at once. A jump is only announced.
+  // picture (15m, from the entry's 06:00 to that 24:00) and the day's picture are taken there. A
+  // night exit (already past 24:00) gets them at once. A jump is only announced.
   async handleEvents(events) {
     if (!this.active()) return;
     {
@@ -915,7 +915,7 @@ export class DayMode {
         this.c.toast(`Trade #${tr.seq} closed (${tr.exit_type}) @ ${this.c.fmtPrice(tr.exit_price)}: ${this.signed(tr.pnl)} USDT (${this.pctText(tr.pnl_pct)}, ${this.signed(tr.r_multiple)} R)`, tr.pnl < 0);
         if (ev.jumped_to_ms !== null && ev.jumped_to_ms !== undefined) await this.c.refreshView();   // the replay jumped to 24:00: the whole day is on the chart
         await this.refresh();
-        await this.capturePicture(tr);   // at 24:00 of the exit day, the chart as on screen
+        await this.capturePicture(tr);   // at 24:00 of the exit day: 15m from the entry day's 06:00
         await this.captureDayPicture();   // the day's own journal picture, with the closed trade drawn
       }
     }
@@ -1067,15 +1067,36 @@ export class DayMode {
     if (!d || !d.review_pending) return;
     await this.submitReview(d.review_pending, this.reviewAnswers('dr-list'), 'dr-error', 'btn-dr-save');
   }
-  // The trade's picture: the chart as on screen at 24:00 of the exit day, with zones, entry, stop,
-  // take-profit and the exit line.
+  // The trade's picture, taken at 24:00 of the exit day: always the 15-minute chart from 06:00 of the
+  // entry's trading day to 24:00 of the exit's (trade.frame; a night exit ends at the exit), with
+  // zones, entry, stop, take-profit and the exit line, whatever the zoom on screen. A hold longer than
+  // the loaded bars (~6 days) starts at the oldest one. The view and zoom come back afterwards.
   async capturePicture(trade) {
-    if (!this.ready()) return;
-    this.c.chart.setDayLines(trade);
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));  // let the lines paint
+    if (!this.ready() || this.capturing) return;
+    this.capturing = true;
+    const chart = this.c.chart;
+    const prev = this.state.interval;
+    const range = chart.currentRange();
     let image = null;
-    try { image = this.c.chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
-    this.c.chart.setDayLines(this.day ? this.day.trade : null);
+    try {
+      if (prev !== '15m') await this.c.setInterval('15m');
+      const frame = trade.frame && chart.rangeForTimes(trade.frame.from_s, trade.frame.to_s);
+      if (frame) chart.setRange(frame);
+      chart.setDayLines(trade);
+      // the range applies on a later frame: wait until the chart shows it, then one more for the paint
+      // (a frame falls back to a timer, so a hidden page cannot hang here)
+      const nextFrame = () => new Promise(r => { const id = setTimeout(r, 100); requestAnimationFrame(() => { clearTimeout(id); r(); }); });
+      for (let k = 0; k < 10; k++) {
+        await nextFrame();
+        const v = chart.chart.timeScale().getVisibleLogicalRange();
+        if (!frame || (v && Math.abs(v.from - frame.from) < 0.5 && Math.abs(v.to - frame.to) < 0.5)) break;
+      }
+      await nextFrame();
+      try { image = chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
+      chart.setDayLines(this.day ? this.day.trade : null);
+      if (prev !== '15m' && this.state.interval === '15m') await this.c.setInterval(prev);
+      if (range && this.state.interval === prev) chart.setRange(range);
+    } finally { this.capturing = false; }
     if (!image) return;
     const t = this.c.token();
     try {
