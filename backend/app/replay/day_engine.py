@@ -598,7 +598,8 @@ class DayEngine:
             if z is None:
                 raise NotFound(f"zone {zone_id} not found in session {session_id}")
             upper, lower = self._zone_edges(z["interval"], p1, p2)
-            self.store.update_zone(conn, z["id"], upper=upper, lower=lower, updated_at=_now_iso())
+            # a resized signal zone becomes the trader's own: it is never removed by itself any more
+            self.store.update_zone(conn, z["id"], upper=upper, lower=lower, source=None, updated_at=_now_iso())
             z = self.store.get_zone(conn, session_id, z["id"])
         return self._public_zone(z)  # type: ignore[arg-type]
 
@@ -1311,13 +1312,21 @@ class DayEngine:
         return int(hit["time"].iloc[0]) * 1000 if len(hit) else None
 
     def _signal_zone(self, session_id: str, sig: dict) -> dict:
-        """The signal's zone as a session zone (1h), reusing an identical one."""
+        """The signal's zone as a session zone (1h), reusing an identical one. The zones of earlier
+        signals go unless a trade uses them, so the chart only shows the current signal's zone
+        next to the zones drawn by hand."""
         top, bottom = float(sig["zone_top"]), float(sig["zone_bottom"])
         with self.store.tx() as conn:
             for z in self.store.list_zones(conn, session_id):
                 if math.isclose(z["upper"], top) and math.isclose(z["lower"], bottom):
+                    self.store.delete_unused_signal_zones(conn, session_id, keep=z["id"])
                     return self._public_zone(z)
-        return self.add_zone(session_id, "1h", top, bottom)
+            self.store.delete_unused_signal_zones(conn, session_id)
+        z = self.add_zone(session_id, "1h", top, bottom)
+        with self.store.tx() as conn:
+            self.store.update_zone(conn, z["id"], source="signal")
+        z["source"] = "signal"
+        return z
 
     def _next_ema_above_day(self, s: dict, after: date) -> date | None:
         """The first trading day after `after` whose last completed daily candle closes above the
@@ -1376,11 +1385,13 @@ class DayEngine:
         return {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(target + self._base_ms), "reason": reason}
 
     def _mark_left(self, s: dict, d: date, how: str) -> None:
-        """Record on the day's journal row when and how the replay left it."""
+        """Record on the day's journal row when and how the replay left it. Leaving a day also
+        removes the zones of "Next signal" that no trade used."""
         start, end = day_bounds(d)
         check = self._trend_check(s, d, start, end)
         with self.store.tx() as conn:
             self.store.update_check(conn, check["id"], left_ms=s["cursor_ms"], left_how=how, updated_at=_now_iso())
+            self.store.delete_unused_signal_zones(conn, s["id"])
 
     def _first_day_cursor(self, s: dict, from_ms: int) -> int:
         """The base candle closing at the first 06:00 that the candle opening at `from_ms` can reach."""

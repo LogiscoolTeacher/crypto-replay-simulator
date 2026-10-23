@@ -1036,3 +1036,28 @@ def test_alternative_window_ends_at_the_next_24_00_for_night_buys():
     assert local_hm(alt_window_end(night)) == (date(2018, 5, 12), 0, 0)
     dawn = local_ms(date(2018, 5, 11), 6) - Q                            # the 06:00 candle starts the 11th
     assert local_hm(alt_window_end(dawn)) == (date(2018, 5, 12), 0, 0)
+
+
+def test_next_signal_keeps_only_the_current_signal_zone(day: DayEngine, session: dict, monkeypatch):
+    """Each "Next signal" replaces the zone of the signal before unless a trade used it; leaving the
+    day removes the last one too. Hand-drawn zones and resized signal zones are never removed."""
+    sid = session["id"]
+    sig = lambda bar_ms, top: {"bar": 0, "bar_ms": bar_ms, "zone_top": top, "zone_bottom": top - 1.0, "rules": ["A"], "touches": 2,  # noqa: E731
+                               "touch_ms": [], "breakout_ms": bar_ms - 5 * H, "psych": None}
+    fake = [sig(START + 6 * H, 1e6), sig(START + 7 * H, 2e6), sig(START + DAY + 6 * H, 3e6)]
+    monkeypatch.setattr(day, "_strategy_signals", lambda s, js, p: fake)
+    own = day.add_zone(sid, "4h", 500.0, 400.0)                       # drawn by hand
+    first = day.next_signal(sid, "rline_retest")["events"][0]["zone_id"]
+    second = day.next_signal(sid, "rline_retest")["events"][0]["zone_id"]
+    ids = {z["id"]: z for z in day.zones(sid)}
+    assert set(ids) == {own["id"], second} and ids[second]["source"] == "signal" and ids[own["id"]]["source"] is None
+    price = day.state(sid)["price"]
+    day.buy(sid, second, take_profit=price * 3.0, stop=price * 0.5, confidence=5)   # a trade uses the second zone
+    day.sell(sid, "other", note="out")
+    day.review(sid, day.trades(sid)["trades"][-1]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    third = day.next_signal(sid, "rline_retest")["events"][0]["zone_id"]
+    assert {z["id"] for z in day.zones(sid)} == {own["id"], second, third}
+    day.update_zone(sid, third, 3e6 + 1.0, 3e6 - 2.0)                 # resized: now the trader's own
+    day.skip_day(sid)
+    assert {z["id"] for z in day.zones(sid)} == {own["id"], second, third}
+    assert first not in {z["id"] for z in day.zones(sid)}

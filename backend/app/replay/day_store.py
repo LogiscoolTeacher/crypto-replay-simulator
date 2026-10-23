@@ -169,6 +169,8 @@ MIGRATIONS = {
         "alts": "TEXT",
     },
     # the daily journal: notes, the end-of-day picture and how / when the day was left
+    # who made a zone: "signal" = the "Next signal" button (removed again while no trade uses it), NULL = drawn by hand
+    "day_zones": {"source": "TEXT"},
     "day_checks": {"notes": "TEXT", "image_path": "TEXT", "image_ms": "INTEGER", "left_ms": "INTEGER", "left_how": "TEXT"},
     # the open time of the last candle a twin was checked against (the settlement only reads newer ones)
     "day_auto_trades": {"checked_ms": "INTEGER"},
@@ -295,6 +297,13 @@ class DayStore:
 
     def delete_zone(self, conn: sqlite3.Connection, session_id: str, zone_id: int) -> bool:
         return conn.execute("DELETE FROM day_zones WHERE session_id=? AND id=?", (session_id, zone_id)).rowcount == 1
+
+    def delete_unused_signal_zones(self, conn: sqlite3.Connection, session_id: str, keep: int | None = None) -> int:
+        """Delete the session's "signal" zones that no trade (open or closed) uses, except `keep`."""
+        return conn.execute(
+            "DELETE FROM day_zones WHERE session_id=? AND source='signal' AND id IS NOT ? "
+            "AND id NOT IN (SELECT zone_id FROM day_trades WHERE session_id=? AND zone_id IS NOT NULL)",
+            (session_id, keep, session_id)).rowcount
 
     def delete_zones(self, conn: sqlite3.Connection, session_id: str) -> None:
         conn.execute("DELETE FROM day_zones WHERE session_id=?", (session_id,))
