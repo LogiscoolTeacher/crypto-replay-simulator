@@ -121,6 +121,9 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert mv["to_stop_pct"] < 0 < mv["to_tp_pct"] and "price_change_pct" in mv
     assert r.json()["state"]["day"]["trade"]["stop_used"] == pytest.approx(t["stop_used"] + 0.1)
 
+    # step back: not before the entry (nor its stop / target move)
+    assert client.post(f"{base}/step-back", json={}).status_code == 409
+
     # step, with and without a view; a bad view does not move the cursor
     r = client.post(f"{base}/step", json={"n": 2, "view": {"interval": "1h", "limit": 20, "indicators": [{"key": "atr"}]}})
     assert r.status_code == 200, r.text
@@ -129,6 +132,10 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert st["view"]["interval"] == "1h" and st["view"]["indicators"][0]["key"] == "atr" and st["day"]["trade"]["status"] == "open"
     assert client.post(f"{base}/step", json={"n": 1, "view": {"indicators": [{"key": "nope"}]}}).status_code == 422
     assert client.get(base).json()["cursor_ms"] == st["cursor_ms"]
+    r = client.post(f"{base}/step-back", json={"view": {"interval": "15m", "limit": 10}})
+    assert r.status_code == 200, r.text
+    assert r.json()["cursor_ms"] == st["cursor_ms"] - 900_000 and r.json()["view"]["interval"] == "15m"
+    st = client.post(f"{base}/step", json={"n": 1}).json()
 
     # early exit
     assert client.post(f"{base}/sell", json={"reason": "other"}).status_code == 422
@@ -139,8 +146,15 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert ev["kind"] == "exit" and ev["exit_type"] == "early exit" and r.json()["day"]["phase"] == "exited"
     tid = ev["trade"]["id"]
     assert ev["trade"]["exit_ms"] == st["cursor_ms"] and ev["trade"]["whatif_n"] > 0
-    assert r.json()["cursor_ms"] == ev["jumped_to_ms"] and r.json()["day"]["local_time"] == "2018-05-11 00:00"   # the jump to 24:00
+    assert r.json()["cursor_ms"] == st["cursor_ms"] and ev["choice"] is True and r.json()["day"]["exit_choice"] is True
+    assert r.json()["day"]["can_step_back"] is False                                               # the exit is the floor
+    assert client.post(f"{base}/step-back", json={}).status_code == 409
+    # end the day: the jump to 24:00, where the review is asked
+    r = client.post(f"{base}/end-day")
+    assert r.status_code == 200, r.text
+    assert r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["local_time"] == "2018-05-11 00:00"
     assert r.json()["day"]["review_pending"]["id"] == tid and r.json()["day"]["can_continue"] is False
+    assert client.post(f"{base}/end-day").status_code == 409
     assert client.post(f"{base}/sell", json={"reason": "stalls"}).status_code == 409
     # the review: required before anything moves, all three marks, true / false only
     assert client.post(f"{base}/continue").status_code == 409

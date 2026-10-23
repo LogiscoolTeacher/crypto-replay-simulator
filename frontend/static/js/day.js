@@ -7,6 +7,8 @@
 // Nothing here runs for a swing session: every entry point checks `active()` first.
 
 const ZONE_INTERVALS = ['1h', '4h'];
+// The next animation frame, or a short timer when none comes (a hidden tab paints no frames).
+const nextFrame = () => new Promise(r => { const id = setTimeout(r, 100); requestAnimationFrame(() => { clearTimeout(id); r(); }); });
 const PLAN_DEBOUNCE_MS = 150;
 const PLAN_MARGIN_BARS = 30;
 // The entry conditions saved with every trade (same keys and order as CONDITIONS in day_engine.py).
@@ -325,6 +327,7 @@ export class DayMode {
     $('btn-day-skip').classList.toggle('hidden', !!(ok && d.can_continue));   // both jump to the next 06:00: one button at a time
     $('btn-day-zone').disabled = !ok || busy;
     this.renderInlineReview(ok ? d.review_pending : null);
+    this.renderExitChoice(ok && d.exit_choice ? d.last_exit : null);
 
     // the open trade
     const t = ok ? d.trade : null;
@@ -444,6 +447,7 @@ export class DayMode {
     const key = `${this.session.id}:${d.date}`;
     if (this.askedDay === key || this.dialogOpen() || this.$('dlg-session').open) return;
     this.askedDay = key;
+    this.c.pause();   // playing runs through 06:00 now: stop for the new day's check
     this.openTrend();
   }
 
@@ -877,14 +881,49 @@ export class DayMode {
     const s = this.strategies.find(x => x.key === this.$('day-strategy').value);
     this.$('day-strategy-note').textContent = s ? s.description : 'No strategies available.';
   }
+  // After an exit: "End the day" jumps to 24:00 of the exit's day (the review is asked there; the
+  // day is not left, so no day picture yet); "Keep trading" goes on from the exit candle.
+  async endDay() {
+    if (!this.ready() || this.busy || !this.day.exit_choice) return;
+    await this.jump(() => this.c.api.dayEndDay(this.session.id), null, false);
+    this.reviewToast();
+  }
+  async keepTrading() {
+    if (!this.ready() || this.busy || !this.day.exit_choice) return;
+    this.busy = true;
+    this.render();
+    const t = this.c.token();
+    try {
+      const st = await this.c.api.dayKeepTrading(this.session.id);
+      if (!this.c.fresh(t)) return;
+      this.c.applyState(st);
+      this.c.toast('Keep trading: buy again or step on. The review comes at 24:00.');
+    } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
+    finally { this.busy = false; this.render(); }
+  }
+  renderExitChoice(t) {
+    const $ = this.$;
+    $('day-exit-choice').classList.toggle('hidden', !t);
+    if (!t) return;
+    $('dx-title').textContent = `Trade #${t.seq} closed (${t.exit_type}) \u00b7 ${this.signed(t.pnl)} USDT (${this.signed(t.r_multiple)} R)`;
+    $('dx-sub').textContent = 'End the day here, or keep trading as if no trade had happened today.';
+    const busy = this.busy || this.state.busy;
+    $('btn-dx-end').disabled = $('btn-dx-keep').disabled = busy;
+  }
+  exitChoiceOpen() { return !this.$('day-exit-choice').classList.contains('hidden'); }
   async continueDay() {
     if (!this.ready() || this.busy || !this.day.can_continue) return;
     await this.jump(() => this.c.api.dayContinue(this.session.id));
   }
-  async jump(call, after = null) {
+  // `leaving`: the jump leaves the trading day, so its journal picture is taken first.
+  async jump(call, after = null, leaving = true) {
     this.busy = true;
     this.render();
-    await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
+    if (leaving) {
+      try {
+        await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
+      } catch (e) { this.c.toast(`Day picture not saved: ${e.message}`, true); }
+    }
     const t = this.c.token();
     try {
       const st = await call();
@@ -895,33 +934,42 @@ export class DayMode {
       await this.c.refreshView();
       for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`);
       await this.refresh();   // the journal row of the day just left (how it ended) and the new day's row
+      await this.reviewPicture();   // a jump past an exit's 24:00 makes its review due
       if (after && this.c.fresh(t)) after(events);
     } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
     finally { this.busy = false; this.render(); }
   }
 
   // ----------------------------------------------------------------- events
-  // Events of a step or a sell: after an exit the replay jumps to 24:00 of the exit day; the trade's
-  // picture (15m, from the entry's 06:00 to that 24:00) and the day's picture are taken there. A
-  // night exit (already past 24:00) gets them at once. A jump is only announced.
+  // Events of a step or a sell. After an exit by day the replay stays on the exit candle and the
+  // side panel asks: end the day (jump to 24:00) or keep trading. The review and the trade's picture
+  // (15m, from the entry's 06:00 to that 24:00) come once the replay reaches that 24:00 (a 'review'
+  // event); a night exit gets them at once. A jump is only announced.
   async handleEvents(events) {
     if (!this.active()) return;
-    {
-      for (const ev of events || []) {
-        if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`); continue; }
-        if (ev.kind !== 'exit') continue;
-        this.c.pause();
-        const tr = ev.trade;
-        this.c.toast(`Trade #${tr.seq} closed (${tr.exit_type}) @ ${this.c.fmtPrice(tr.exit_price)}: ${this.signed(tr.pnl)} USDT (${this.pctText(tr.pnl_pct)}, ${this.signed(tr.r_multiple)} R)`, tr.pnl < 0);
-        if (ev.jumped_to_ms !== null && ev.jumped_to_ms !== undefined) await this.c.refreshView();   // the replay jumped to 24:00: the whole day is on the chart
-        await this.refresh();
-        await this.capturePicture(tr);   // at 24:00 of the exit day: 15m from the entry day's 06:00
-        await this.captureDayPicture();   // the day's own journal picture, with the closed trade drawn
-      }
+    for (const ev of events || []) {
+      if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`); continue; }
+      if (ev.kind === 'review') { this.c.pause(); await this.refresh(); continue; }
+      if (ev.kind !== 'exit') continue;
+      this.c.pause();
+      const tr = ev.trade;
+      this.c.toast(`Trade #${tr.seq} closed (${tr.exit_type}) @ ${this.c.fmtPrice(tr.exit_price)}: ${this.signed(tr.pnl)} USDT (${this.pctText(tr.pnl_pct)}, ${this.signed(tr.r_multiple)} R)`, tr.pnl < 0);
+      await this.refresh();
     }
+    await this.reviewPicture();
+    if (events.some(ev => ev.kind === 'exit' || ev.kind === 'review')) this.reviewToast();
+  }
+  reviewToast() {
     const d = this.day;
-    if (this.ready() && d.review_pending) this.c.toast(`Review trade #${d.review_pending.seq} in the side panel: keys 1, 2, 3 switch the marks, Enter saves. The replay waits.`);
-    else if (events.some(ev => ev.kind === 'exit')) this.c.toast('Trade closed. You can buy again, step on, or press Continue \u2192 06:00.');
+    if (!this.ready()) return;
+    if (d.review_pending) this.c.toast(`Review trade #${d.review_pending.seq} in the side panel: keys 1, 2, 3 switch the marks, Enter saves. The replay waits.`);
+    else if (d.exit_choice) this.c.toast('Trade closed. End the day (Enter) or keep trading (K) in the side panel.');
+  }
+  // The picture of the trade whose review just became due, taken once (at its 24:00 or later).
+  async reviewPicture() {
+    const d = this.day;
+    if (!this.ready() || !d.review_pending || d.review_pending.has_image) return;
+    await this.capturePicture(d.review_pending);
   }
 
   // ---------------------------------------------------------------- columns
@@ -1053,7 +1101,7 @@ export class DayMode {
       this.c.applyState(res.state);
       this.renderTrades();
       const tags = this.reviewTags(res.trade);
-      this.c.toast(`Review of trade #${res.trade.seq} saved: ${tags.length ? tags.join(', ') : 'no marks'}. You can buy again, step on, or press Continue \u2192 06:00.`);
+      this.c.toast(`Review of trade #${res.trade.seq} saved: ${tags.length ? tags.join(', ') : 'no marks'}. You can buy again, step on (also through the night), or press Continue \u2192 06:00.`);
       return res;
     } catch (e) { if (this.c.fresh(tok)) $(errId).textContent = e.message; return null; }
     finally { $(btnId).disabled = false; }
@@ -1067,7 +1115,7 @@ export class DayMode {
     if (!d || !d.review_pending) return;
     await this.submitReview(d.review_pending, this.reviewAnswers('dr-list'), 'dr-error', 'btn-dr-save');
   }
-  // The trade's picture, taken at 24:00 of the exit day: always the 15-minute chart from 06:00 of the
+  // The trade's picture, taken when its review becomes due (24:00 of the exit day): always the 15-minute chart from 06:00 of the
   // entry's trading day to 24:00 of the exit's (trade.frame; a night exit ends at the exit), with
   // zones, entry, stop, take-profit and the exit line, whatever the zoom on screen. A hold longer than
   // the loaded bars (~6 days) starts at the oldest one. The view and zoom come back afterwards.
@@ -1085,7 +1133,6 @@ export class DayMode {
       chart.setDayLines(trade);
       // the range applies on a later frame: wait until the chart shows it, then one more for the paint
       // (a frame falls back to a timer, so a hidden page cannot hang here)
-      const nextFrame = () => new Promise(r => { const id = setTimeout(r, 100); requestAnimationFrame(() => { clearTimeout(id); r(); }); });
       for (let k = 0; k < 10; k++) {
         await nextFrame();
         const v = chart.chart.timeScale().getVisibleLogicalRange();
@@ -1102,6 +1149,7 @@ export class DayMode {
     try {
       const row = await this.c.api.dayTradeImage(this.session.id, trade.id, image);
       if (!this.c.fresh(t)) return;
+      if (this.day && this.day.review_pending && this.day.review_pending.id === row.id) this.day.review_pending.has_image = true;
       this.trades = this.trades.map(x => (x.id === row.id ? row : x));
       this.renderTrades();
     } catch (e) { if (this.c.fresh(t)) this.c.toast(`Picture not saved: ${e.message}`, true); }
@@ -1124,7 +1172,7 @@ export class DayMode {
       if (prev !== '15m') await this.c.setInterval('15m');
       const closed = d.last_exit && d.last_exit.day_date === d.date ? d.last_exit : null;
       if (closed) this.c.chart.setDayLines(closed);
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));  // let the chart paint
+      await nextFrame(); await nextFrame();   // let the chart paint
       let image = null;
       try { image = this.c.chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
       if (closed) this.c.chart.setDayLines(d.trade);
@@ -1551,6 +1599,10 @@ export class DayMode {
     if (!this.active()) return false;
     if (this.dialogOpen()) return true;  // the dialogs handle their own keys
     const k = e.key.toLowerCase();
+    if (this.exitChoiceOpen()) {   // just closed: Enter ends the day, K keeps trading
+      if (e.key === 'Enter' && !(e.target && e.target.closest && e.target.closest('button'))) { e.preventDefault(); this.endDay(); return true; }
+      if (k === 'k') { e.preventDefault(); this.keepTrading(); return true; }
+    }
     if (this.inlineReviewOpen()) {   // the pending review in the side panel
       const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved' };
       if (keys[e.key]) { e.preventDefault(); this.toggleReview(keys[e.key]); return true; }
@@ -1602,6 +1654,8 @@ export class DayMode {
     this.buildColsMenu();
     document.addEventListener('click', (e) => { const m = $('day-cols'); if (m.open && !m.contains(e.target)) m.open = false; });
     $('btn-day-continue').addEventListener('click', () => this.continueDay());
+    $('btn-dx-end').addEventListener('click', () => this.endDay());
+    $('btn-dx-keep').addEventListener('click', () => this.keepTrading());
     $('btn-cal-prev').addEventListener('click', () => this.moveCal(-1));
     $('btn-cal-next').addEventListener('click', () => this.moveCal(1));
     $('btn-cal-now').addEventListener('click', () => { this.calMonth = null; this.renderCal(); });

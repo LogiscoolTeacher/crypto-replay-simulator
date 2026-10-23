@@ -435,6 +435,15 @@
           <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 06:00 (K)">Skip day &rarr; 06:00</button>
           <button type="button" id="btn-day-continue" class="btn small primary hidden" title="The trade has closed: jump to the next day at 06:00 (or buy again / step on instead)">Continue &rarr; 06:00</button>
         </div>
+        <div class="review-inline hidden" id="day-exit-choice" role="group" aria-labelledby="dx-title">
+          <b id="dx-title" class="small">Trade closed</b>
+          <p id="dx-sub" class="small muted"></p>
+          <div class="row-flex">
+            <button type="button" id="btn-dx-end" class="btn small primary" title="Jump to 24:00 of this day; the review is asked there">End the day &rarr; 24:00 <kbd>Enter</kbd></button>
+            <button type="button" id="btn-dx-keep" class="btn small" title="Go on from here as if no trade had happened; the review waits for 24:00">Keep trading <kbd>K</kbd></button>
+          </div>
+          <p class="small muted">A step or a new trade also keeps trading.</p>
+        </div>
         <form class="review-inline hidden" id="day-review" autocomplete="off" aria-labelledby="dr-title">
           <b id="dr-title" class="small">Review trade</b>
           <p id="dr-sub" class="small muted"></p>
@@ -579,6 +588,7 @@
 
   <footer class="controls">
     <button id="btn-reset" class="btn icon" title="Back to start (R)" aria-label="Back to start">&#x23EE;</button>
+    <button id="btn-step-back" class="btn icon hidden" title="Step one candle back (&larr;), never before the latest trade action or jump" aria-label="Step one candle back">&#x23F4;</button>
     <button id="btn-play" class="btn icon play" title="Play / pause (P)" aria-label="Play">&#x25B6;</button>
     <button id="btn-step" class="btn icon" title="Step one candle (&rarr;)" aria-label="Step one candle">&#x23ED;</button>
     <span class="zoom" role="group" aria-label="Chart zoom">

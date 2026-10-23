@@ -306,6 +306,8 @@ function renderState() {
   $('step-size').textContent = state.interval || '–';
   $('btn-reset').disabled = !ok;
   $('btn-step').disabled = !ok || s.finished;
+  $('btn-step-back').classList.toggle('hidden', !isDay());   // day trading only
+  $('btn-step-back').disabled = !ok || !isDay() || state.busy || !(s.day && s.day.can_step_back);
   $('btn-play').disabled = !ok || s.finished;
   $('btn-play').innerHTML = state.playing ? '&#x23F8;' : '&#x25B6;';
   $('btn-play').setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
@@ -1123,6 +1125,32 @@ async function step(n = 1) {
     if (fresh(t)) api.session(t.sid).then(st => { if (fresh(t)) applyState(st); }).catch(() => {});
   } finally {
     state.busy = false;
+    renderState();   // the day panel drew its buttons while busy: draw them again
+  }
+}
+
+// Day mode: one 15-minute candle back, never before the latest trade action or jump (the server
+// refuses; the button is disabled there).
+async function stepBack() {
+  const s = state.session;
+  if (!ready() || !isDay() || state.busy || !(s.day && s.day.can_step_back)) return;
+  pause();
+  state.busy = true;
+  const t = token();
+  try {
+    const res = await api.dayStepBack(s.id, { view: viewRequest() });
+    if (!fresh(t)) return;
+    const view = res.view;
+    delete res.view;
+    applyState(res);
+    if (state.peek) { await refreshView(); return; }
+    state.viewSeq++;
+    applyView(view);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    state.busy = false;
+    renderState();
   }
 }
 
@@ -2188,6 +2216,7 @@ function onKeydown(e) {
   else if (e.key === 'ArrowUp') { e.preventDefault(); chart.zoomIn(); }
   else if (e.key === 'ArrowDown') { e.preventDefault(); chart.zoomOut(); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+  else if (e.key === 'ArrowLeft') { if (isDay()) { e.preventDefault(); stepBack(); } }
   else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); state.playing ? pause() : play(); }
   else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); state.drawing ? cancelFibDraw() : startFibDraw(); }
   else if (e.key === 'g' || e.key === 'G') { e.preventDefault(); toggleFvg(); }
@@ -2238,6 +2267,7 @@ async function init() {
   $('session-select').addEventListener('change', (e) => loadSession(e.target.value || null).catch(err => toast(err.message, true)));
   $('btn-play').addEventListener('click', () => (state.playing ? pause() : play()));
   $('btn-step').addEventListener('click', () => step(1));
+  $('btn-step-back').addEventListener('click', () => stepBack());
   $('btn-zoom-in').addEventListener('click', () => chart.zoomIn());
   $('btn-zoom-out').addEventListener('click', () => chart.zoomOut());
   $('btn-zoom-reset').addEventListener('click', () => chart.fit());
@@ -2327,7 +2357,7 @@ init().catch(e => { console.error(e); toast(`Failed to start: ${e.message}`, tru
 // Exposed for automated UI tests.
 window.__app = {
   ageText,
-  state, chart, step, play, pause, loadSession, refreshView, setStrategy, buy, sell, doBuy, doSell, openReasons, confirmReasons, closeReasons, loadStats,
+  state, chart, step, stepBack, play, pause, loadSession, refreshView, setStrategy, buy, sell, doBuy, doSell, openReasons, confirmReasons, closeReasons, loadStats,
   selectBucket, selectTab, setSort, setRsiFilter, arm, showPlan, loadPerf, setPerfScope, get perf() { return perfCharts; },
   startFibDraw, cancelFibDraw, deleteFib, refreshFibs, selectFib, toggleFvg, toggleBollinger, setNearLevels, refreshJournal, openSnapshot,
   startPeek, endPeek, setSrTol, setWholeCoins, roundAmountToCoins,

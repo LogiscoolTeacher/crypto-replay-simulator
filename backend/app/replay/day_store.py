@@ -15,8 +15,8 @@ from typing import Any
 
 SCHEMA = """
 -- One row per day-trading session: the fixed risk per trade and where the replay stands.
--- phase: "trading" (stepping through candles) or "exited" (a trade has just closed; the next step
--- or "continue" jumps to the next 06:00). start_cursor_ms: the first 06:00 candle (set once).
+-- phase: "trading" (stepping through candles) or "exited" (a trade has just closed: end the day,
+-- keep trading, or "continue" to the next 06:00). start_cursor_ms: the first 06:00 candle (set once).
 CREATE TABLE IF NOT EXISTS day_sessions (
     session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     timezone         TEXT    NOT NULL,
@@ -167,7 +167,12 @@ MIGRATIONS = {
         "mae_pct": "REAL", "mfe_pct": "REAL", "mae_r": "REAL", "mfe_r": "REAL",
         # the two hands-off alternatives (JSON: end_ms, alt1, alt2), filled once the replay reached their 24:00
         "alts": "TEXT",
+        # 1 = the review is asked once the replay reaches 24:00 of the exit's trading day (exits from
+        # this rule on; older trades keep NULL and never hold the replay)
+        "review_due": "INTEGER",
     },
+    # the earliest candle "Step back" may return to, set by every jump (the candles jumped over were never seen)
+    "day_sessions": {"back_floor_ms": "INTEGER"},
     # the daily journal: notes, the end-of-day picture and how / when the day was left
     # who made a zone: "signal" = the "Next signal" button (removed again while no trade uses it), NULL = drawn by hand
     "day_zones": {"source": "TEXT"},
@@ -331,6 +336,13 @@ class DayStore:
             return [dict(r) for r in conn.execute("SELECT * FROM day_trades WHERE status='closed' ORDER BY exit_ms, id").fetchall()]
         return [dict(r) for r in conn.execute(
             "SELECT * FROM day_trades WHERE session_id=? AND status='closed' ORDER BY exit_ms, id", (session_id,)
+        ).fetchall()]
+
+    def due_reviews(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        """Closed trades whose review is still to be answered, oldest exit first."""
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM day_trades WHERE session_id=? AND status='closed' AND review_due=1 AND reviewed_at IS NULL"
+            " ORDER BY exit_ms, id", (session_id,)
         ).fetchall()]
 
     def trades_on_day(self, conn: sqlite3.Connection, session_id: str, day_date: str) -> int:

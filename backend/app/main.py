@@ -696,6 +696,33 @@ def day_step(session_id: str, req: DayStepRequest) -> dict:
     return st
 
 
+class DayStepBackRequest(BaseModel):
+    view: ViewRequest | None = Field(default=None, description="If given, the response also carries this view")
+
+
+@app.post("/api/day/sessions/{session_id}/step-back")
+def day_step_back(session_id: str, req: DayStepBackRequest) -> dict:
+    """One 15-minute candle back, never before the latest trade action or jump."""
+    if req.view is not None:
+        _validate_view(req.view)
+    st = day.step_back(session_id)
+    if req.view is not None:
+        st["view"] = _view(session_id, req.view)
+    return st
+
+
+@app.post("/api/day/sessions/{session_id}/end-day")
+def day_end_day(session_id: str) -> dict:
+    """After an exit before 24:00: jump to 24:00 of the exit's trading day (the review is asked there)."""
+    return day.end_day(session_id)
+
+
+@app.post("/api/day/sessions/{session_id}/keep-trading")
+def day_keep_trading(session_id: str) -> dict:
+    """After an exit: go on from the exit candle; the review waits for 24:00."""
+    return day.keep_trading(session_id)
+
+
 @app.post("/api/day/sessions/{session_id}/skip")
 def day_skip(session_id: str) -> dict:
     """Jump to the next day's 06:00 (no open trade)."""
