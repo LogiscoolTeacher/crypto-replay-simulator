@@ -2268,9 +2268,6 @@ async function init() {
   $('btn-play').addEventListener('click', () => (state.playing ? pause() : play()));
   $('btn-step').addEventListener('click', () => step(1));
   $('btn-step-back').addEventListener('click', () => stepBack());
-  $('btn-zoom-in').addEventListener('click', () => chart.zoomIn());
-  $('btn-zoom-out').addEventListener('click', () => chart.zoomOut());
-  $('btn-zoom-reset').addEventListener('click', () => chart.fit());
   $('btn-reset').addEventListener('click', reset);
   $('speed').addEventListener('input', (e) => {
     state.speed = parseInt(e.target.value, 10);

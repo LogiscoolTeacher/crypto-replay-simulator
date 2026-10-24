@@ -298,7 +298,6 @@ export class DayMode {
       $('btn-hh-yes').classList.remove('on');
       $('btn-hh-no').classList.remove('on');
     }
-    set('day-risk', ok ? `${this.n(d.risk_amount)} USDT (${d.risk_pct} %)` : '–');
     const gate = $('day-gate');
     gate.textContent = ok ? (d.entries_allowed
       ? (d.check.hh_hl === null ? 'Entries allowed. The trend check is not answered: a trade would save the trend as unknown.'
@@ -332,8 +331,6 @@ export class DayMode {
     // the open trade
     const t = ok ? d.trade : null;
     $('day-trade').classList.toggle('hidden', !t);
-    $('dt-move-row').classList.toggle('hidden', !t);
-    if (!t) this.closeMove();
     if (t) {
       const fp = this.c.fmtPrice;
       const away = (v, word) => (v === null || v === undefined ? '' : ` · ${Math.abs(v).toFixed(2)}% ${word}`);
@@ -351,9 +348,6 @@ export class DayMode {
       $('dt-stop').title = `${this.pctText(t.stop_pct)} from the entry${away(t.to_stop_pct, 'below the price now')}${stopMoved ? ` · at the buy ${fp(t.stop_initial)} (${this.pctText((t.stop_initial / t.entry_price - 1) * 100)}) · ${this.changesText(t)}` : ''}`;
       set('dt-tp', `${fp(t.take_profit)} · ${this.pctText(t.tp_pct)}`);
       $('dt-tp').title = `${this.pctText(t.tp_pct)} from the entry${away(t.to_tp_pct, 'above the price now')}${tpMoved ? ` · at the buy ${fp(t.tp_initial)} (${this.pctText((t.tp_initial / t.entry_price - 1) * 100)}) · ${this.changesText(t)}` : ''}`;
-      $('btn-dt-move').disabled = busy || !d.can_sell;
-      $('btn-mv-apply').disabled = busy || !d.can_sell;
-      if (this.moveOpen()) this.renderMoveHint(t);
       set('dt-size', `${this.c.qtyFmt(t.coins)} ${this.c.baseAsset()} = ${this.n(t.position_value)} USDT${t.capped ? ' · capped' : ''}`);
       const rrNow = t.rr_now === undefined ? t.rr : t.rr_now;
       set('dt-risk', `${this.n(t.risk_usdt)} USDT · R/R ${this.n(rrNow)}`);
@@ -365,56 +359,12 @@ export class DayMode {
   }
 
   // ------------------------------------------------- move the stop / target
-  moveOpen() { return !this.$('dt-move').classList.contains('hidden'); }
-  openMove() {
-    const t = this.day && this.day.trade;
-    if (!this.ready() || !t || !this.day.can_sell) return;
-    const $ = this.$;
-    $('mv-stop').value = this.roundPrice(t.stop_used);
-    $('mv-tp').value = this.roundPrice(t.take_profit);
-    $('mv-error').textContent = '';
-    $('dt-move').classList.remove('hidden');
-    $('btn-dt-move').setAttribute('aria-expanded', 'true');
-    this.renderMoveHint(t);
-    $('mv-stop').focus();
-    $('mv-stop').select();
-  }
-  closeMove() {
-    const $ = this.$;
-    if (!this.moveOpen()) return;
-    $('dt-move').classList.add('hidden');
-    $('btn-dt-move').setAttribute('aria-expanded', 'false');
-    $('mv-error').textContent = '';
-  }
-  renderMoveHint(t) {
-    const price = this.session.price;
-    const stop = parseFloat(this.$('mv-stop').value), tp = parseFloat(this.$('mv-tp').value);
-    const parts = [`Price now ${this.c.fmtPrice(price)}.`];
-    if (Number.isFinite(stop) && stop > 0) parts.push(`Stop ${this.pctText((stop / t.entry_price - 1) * 100)} from the entry${stop >= price ? ' (must be below the price now)' : ''}.`);
-    if (Number.isFinite(tp) && tp > 0) parts.push(`Target ${this.pctText((tp / t.entry_price - 1) * 100)} from the entry${tp <= price ? ' (must be above the price now)' : ''}.`);
-    if (Number.isFinite(stop) && stop > 0 && stop < t.entry_price) parts.push(`Risk from here ${this.n((t.entry_price - stop) * t.coins)} USDT (${this.n((t.entry_price - stop) * t.coins / t.risk_amount)} R of the risk at the buy).`);
-    else if (Number.isFinite(stop) && stop >= t.entry_price && stop < price) parts.push('The stop is above the entry: the trade can no longer lose on the price.');
-    this.$('mv-hint').textContent = parts.join(' ');
-  }
+  // (by dragging the dotted lines on the chart; see onDragLine)
   // One line per saved move, oldest first.
   changesText(t) {
     const fp = this.c.fmtPrice;
     const pe = (v) => this.pctText((v / t.entry_price - 1) * 100);
     return (t.changes || []).map(c => `${c.at_local.slice(11)} ${c.field === 'stop' ? 'stop' : 'target'} ${pe(c.from)} \u2192 ${pe(c.to)}`).join(' · ') || 'no moves';
-  }
-  async applyMove() {
-    if (!this.ready() || this.busy) return;
-    const t = this.day.trade;
-    if (!t) return;
-    const $ = this.$;
-    const stop = parseFloat($('mv-stop').value), tp = parseFloat($('mv-tp').value);
-    const body = {};
-    // a field left as it was filled in (the rounded current level) is no move
-    if (Number.isFinite(stop) && stop > 0 && $('mv-stop').value !== this.roundPrice(t.stop_used)) body.stop = stop;
-    if (Number.isFinite(tp) && tp > 0 && $('mv-tp').value !== this.roundPrice(t.take_profit)) body.take_profit = tp;
-    if (!Object.keys(body).length) { $('mv-error').textContent = 'Nothing changed.'; return; }
-    const ok = await this.moveTrade(body, (msg) => { $('mv-error').textContent = msg; });
-    if (ok) this.closeMove();
   }
   // Send a move to the server; `onError` shows the message (default: a toast). Returns true when saved.
   async moveTrade(body, onError = null) {
@@ -1613,9 +1563,7 @@ export class DayMode {
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); this.moveStop(e.key === 'ArrowUp' ? 1 : -1, e.shiftKey); return true; }
       if (['n', 'b', 'x', 'k', 'z'].includes(k)) return true;
     }
-    if (k === 'escape' && this.moveOpen()) { this.closeMove(); return true; }
     if (k === 'escape' && (this.drawing || this.draft !== null)) { this.cancelDraw(); return true; }
-    if (k === 'm') { e.preventDefault(); this.moveOpen() ? this.closeMove() : this.openMove(); return true; }
     if (k === 'n' || k === 'b') { e.preventDefault(); this.openNewTrade(); return true; }
     if (k === 'x') { e.preventDefault(); this.openExit(); return true; }
     if (k === 'k') { e.preventDefault(); this.skipDay(); return true; }
@@ -1660,12 +1608,7 @@ export class DayMode {
     $('btn-cal-next').addEventListener('click', () => this.moveCal(1));
     $('btn-cal-now').addEventListener('click', () => { this.calMonth = null; this.renderCal(); });
     $('btn-day-zone').addEventListener('click', () => (this.drawing ? this.cancelDraw() : this.startDraw()));
-    // move the stop / target of the open trade: the form and the dragged chart lines
-    $('btn-dt-move').addEventListener('click', () => (this.moveOpen() ? this.closeMove() : this.openMove()));
-    $('btn-mv-cancel').addEventListener('click', () => this.closeMove());
-    $('dt-move').addEventListener('submit', (e) => { e.preventDefault(); this.applyMove(); });
-    for (const id of ['mv-stop', 'mv-tp']) $(id).addEventListener('input', () => { if (this.day && this.day.trade) this.renderMoveHint(this.day.trade); });
-    $('dt-move').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); this.closeMove(); } e.stopPropagation(); });
+    // move the stop / target of the open trade by dragging its dotted chart lines
     this.c.chart.onDragLine = (key, price) => {
       const t = this.day && this.day.trade;
       if (!t) return;

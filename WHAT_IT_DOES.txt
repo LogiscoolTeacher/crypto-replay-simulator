@@ -117,7 +117,7 @@ Centre:
 Right side panel, top to bottom: Strategy (with the ENTER and EXIT lights), Readings,
 Highs & lows, Account, Buy a bucket.
 
-Footer: Back to start, Play/Pause, Step, zoom out, zoom in, default zoom, the step size,
+Footer: Back to start, Play/Pause, Step, the step size,
 the speed slider (1 to 10 candles per second), a progress bar through the session, and a
 status badge while data is downloading.
 
@@ -232,9 +232,9 @@ Marks on the chart:
     target/stop preview while the mouse is over the Buy button (section 17).
 
 Zoom: the default view shows the last 160 candles with the newest at the right edge. Up
-arrow or the "+" button zooms in and Down arrow or "-" zooms out, each step by a factor of
-1.25, between 10 and 3,000 visible candles; hold the key to keep zooming. Space or the
-"default zoom" button returns to the last 160 candles. Zooming keeps the newest candle at
+arrow zooms in and Down arrow zooms out, each step by a factor of
+1.25, between 10 and 3,000 visible candles; hold the key to keep zooming. Space
+returns to the last 160 candles. Zooming keeps the newest candle at
 the right edge. Mouse wheel and dragging the chart work as usual. Opening a session or
 switching the timeframe resets the view to the default zoom.
 

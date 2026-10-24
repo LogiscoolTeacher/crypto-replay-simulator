@@ -56,7 +56,7 @@ night. Crossing 06:00 leaves the day: its journal row records how (`No trade`, `
 new day's trend check opens.
 
 **Session**: 100 000 USDT start, risk fixed at 0.1 % of the start (100 USDT) per trade, fee 0.1 %
-per side. Base interval 15m; the chart shows 15m / 1h / 4h / 1D. Zones are drawn on 1h / 4h.
+per side (the side panel no longer shows the risk row). Base interval 15m; the chart shows 15m / 1h / 4h / 1D. Zones are drawn on 1h / 4h.
 
 **Trend check** per day: "daily close above EMA 200" (computed) + "higher highs and higher lows"
 (the user's Yes/No). Only saved with the trade; it doesn't block buying.
@@ -64,7 +64,8 @@ per side. Base interval 15m; the chart shows 15m / 1h / 4h / 1D. Zones are drawn
 **New trade**: entry at the close of the current 15m candle. Default stop = middle of the chosen
 zone; ATR stop (zone lower edge − 0.5 × ATR 14) offered; any stop below entry allowed. Target by
 price or ratio (R:R < 2 only warns). Size = risk / (entry − stop), capped by cash. Confidence 0–10
-is saved once. Stop / target can be moved while open (every move is logged).
+is saved once. Stop / target can be moved while open by dragging their dotted chart lines (every
+move is logged; the old Move form and the M key are gone).
 
 **Exits**: on each new 15m candle the low ≤ stop exits at the stop, the high ≥ target at the
 target; both in one candle count as the stop. Fills are exactly at the level, with no gap model.
@@ -104,13 +105,13 @@ Both are stored under `data/snapshots/<session>/`.
 - Next signal (E): jumps to the next RLine_Retest signal and adds its zone as a temporary
   "signal" zone, removed when unused and the day is left
 
-**Step back** (⏴ button between Back to start and Play, key ←; day mode only): one 15m candle back,
+**Step back** (⏮ button between Back to start ⏴ and Play, key ←; day mode only): one 15m candle back,
 never before the latest of: the first 06:00, the landing candle of the latest jump
 (`day_sessions.back_floor_ms`), the open trade's entry or its last stop/target move, the latest
 exit. Nothing is undone. Crossing 06:00 backwards clears that day's "left" mark. Code:
 `_back_floor`, `_step_back_target`, `step_back`.
 
-**Keys** (day mode): N/B new trade, X sell, M move stop/target, K skip (keep trading while the exit
+**Keys** (day mode): N/B new trade, X sell, K skip (keep trading while the exit
 choice shows), Enter (end the day / save review), 1-2-3 review marks, Z draw zone, J, E, → step,
 ← step back, P play.
 
@@ -162,6 +163,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- UI declutter 1: no zoom buttons (keys only), no Risk row and no Move stop/target form in the
+  day panel (drag the dotted lines), date above time, Back to start ⏴ / Step back ⏮ glyphs swapped.
 - 2026-10-24 Handoff file, CLAUDE.md, offline-friendly candle cache.
 - `e128c09` Day trading: night trading, end-the-day choice, step back, stuck panel fix (the panel
   drew its buttons while a step was busy and wasn't redrawn).

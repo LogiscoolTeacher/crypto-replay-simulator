@@ -140,7 +140,6 @@
           <dl class="keys compact day-only">
             <dt><kbd>N</kbd> <kbd>B</kbd></dt><dd>New trade</dd>
             <dt><kbd>X</kbd></dt><dd>Sell</dd>
-            <dt><kbd>M</kbd></dt><dd>Move stop / target</dd>
             <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Move the stop (panel open)</dd>
             <dt><kbd>Z</kbd></dt><dd>Draw zone</dd>
             <dt><kbd>K</kbd></dt><dd>Skip day</dd>
@@ -420,12 +419,11 @@
     <aside class="side" id="side">
       <section class="card day-only" id="day-card">
         <h2>Day trading</h2>
-        <div class="row-flex day-head"><b id="day-date" class="mono">&ndash;</b><span id="day-time" class="mono muted small"></span><span class="spacer"></span><span id="day-phase" class="badge"></span></div>
+        <div class="row-flex day-head"><div class="day-when"><b id="day-date" class="mono">&ndash;</b><span id="day-time" class="mono muted small"></span></div><span class="spacer"></span><span id="day-phase" class="badge"></span></div>
         <dl class="kv mtf">
           <dt title="Close of the last completed daily candle (UTC day) against the EMA 200 of the completed days; computed by the program">Close &gt; EMA 200</dt><dd id="day-ema" class="mono gauge small">&ndash;</dd>
           <dt title="Higher highs and higher lows on the daily chart: your own judgment, once per day">Higher highs &amp; lows</dt><dd class="hh"><button type="button" id="btn-hh-yes" class="btn small chip">Yes</button> <button type="button" id="btn-hh-no" class="btn small chip">No</button></dd>
           <dt title="Both answers yes">Uptrend</dt><dd id="day-uptrend" class="gauge">&ndash;</dd>
-          <dt title="Fixed: 0.1 % of the starting capital (100 USDT at 100 000), fees come on top">Risk per trade</dt><dd id="day-risk" class="mono">&ndash;</dd>
         </dl>
         <p id="day-gate" class="small muted" role="status"></p>
         <div class="row-flex">
@@ -469,20 +467,6 @@
           <dt title="The automatic-exit twin of this trade: original stop and target, closed only when one of them is hit (see the Auto exits tab)">Auto twin</dt><dd id="dt-auto" class="mono small">&ndash;</dd>
           <dt>P&amp;L now</dt><dd id="dt-pnl" class="mono gauge">&ndash;</dd>
         </dl>
-        <div class="row-flex hidden" id="dt-move-row">
-          <button type="button" id="btn-dt-move" class="btn small" title="Move the stop and / or the target of the open trade; every move is saved with the trade (M). You can also drag the dotted stop and target lines on the chart." aria-expanded="false">Move stop / target (M)</button>
-          <span class="small muted">or drag the dotted lines on the chart</span>
-        </div>
-        <form class="dt-move hidden" id="dt-move" autocomplete="off">
-          <label for="mv-stop" class="small muted">New stop</label><input type="number" id="mv-stop" step="any" min="0" inputmode="decimal" aria-label="New stop price">
-          <label for="mv-tp" class="small muted">New target</label><input type="number" id="mv-tp" step="any" min="0" inputmode="decimal" aria-label="New take-profit price">
-          <p id="mv-hint" class="small muted"></p>
-          <p id="mv-error" class="error small" role="alert"></p>
-          <div class="row-flex">
-            <button type="submit" id="btn-mv-apply" class="btn small primary">Apply</button>
-            <button type="button" id="btn-mv-cancel" class="btn small">Cancel</button>
-          </div>
-        </form>
         <div class="row-flex mtf">
           <h2 style="margin:0">Zones <span id="day-zone-count" class="pill">0</span></h2>
           <span class="spacer"></span>
@@ -587,15 +571,10 @@
   </main>
 
   <footer class="controls">
-    <button id="btn-reset" class="btn icon" title="Back to start (R)" aria-label="Back to start">&#x23EE;</button>
-    <button id="btn-step-back" class="btn icon hidden" title="Step one candle back (&larr;), never before the latest trade action or jump" aria-label="Step one candle back">&#x23F4;</button>
+    <button id="btn-reset" class="btn icon" title="Back to start (R)" aria-label="Back to start">&#x23F4;</button>
+    <button id="btn-step-back" class="btn icon hidden" title="Step one candle back (&larr;), never before the latest trade action or jump" aria-label="Step one candle back">&#x23EE;</button>
     <button id="btn-play" class="btn icon play" title="Play / pause (P)" aria-label="Play">&#x25B6;</button>
     <button id="btn-step" class="btn icon" title="Step one candle (&rarr;)" aria-label="Step one candle">&#x23ED;</button>
-    <span class="zoom" role="group" aria-label="Chart zoom">
-      <button id="btn-zoom-out" class="btn icon" title="Zoom out (&darr;)" aria-label="Zoom out">&minus;</button>
-      <button id="btn-zoom-in" class="btn icon" title="Zoom in (&uarr;)" aria-label="Zoom in">+</button>
-      <button id="btn-zoom-reset" class="btn icon" title="Default zoom (Space)" aria-label="Default zoom">&#x2922;</button>
-    </span>
     <span class="step-info">step: <span id="step-size" class="mono">&ndash;</span></span>
     <button type="button" id="btn-day-ema" class="btn small day-only" title="Jump to the next day whose daily close is above the EMA 200, at 06:00 (J)">Next day &gt; EMA</button>
     <label class="speed">Speed
