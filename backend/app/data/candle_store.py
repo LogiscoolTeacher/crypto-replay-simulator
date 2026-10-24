@@ -158,6 +158,11 @@ class CandleStore:
         symbol = validate_symbol(symbol)
         step = interval_ms(interval)
         with self._series_lock(symbol, interval):
+            # Nothing missing by the local clock: no network at all (preparing works offline). A
+            # clock running ahead only shows a gap, which the server time below then settles.
+            local_latest = last_closed_open_time(int(time.time() * 1000) - 2000, step)
+            if not self.missing_ranges(symbol, interval, start_ms, local_latest if end_ms is None else min(int(end_ms), local_latest)):
+                return 0
             now_ms = self._now_ms()
             latest = last_closed_open_time(now_ms, step)
             end_ms = latest if end_ms is None else min(int(end_ms), latest)

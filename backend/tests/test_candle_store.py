@@ -39,6 +39,22 @@ def test_download_drops_forming_candle_and_pages(db):
     assert client.calls == []
 
 
+def test_covered_range_needs_no_network(db, monkeypatch):
+    """A range already downloaded is served without asking Binance anything, not even the server
+    time, so preparing an old session works offline."""
+    client = FakeClient(LISTING + 50 * H)
+    store = CandleStore(db, client)
+    assert store.ensure_range("BTCUSDT", "1h", LISTING, LISTING + 40 * H) == 41
+    client.calls.clear()
+
+    def offline():
+        raise AssertionError("no server time needed")
+    monkeypatch.setattr(client, "server_time_ms", offline)
+    assert store.ensure_range("BTCUSDT", "1h", LISTING, LISTING + 40 * H) == 0
+    assert store.ensure_range("BTCUSDT", "1h", LISTING + 10 * H, LISTING + 20 * H) == 0
+    assert client.calls == []
+
+
 def test_pre_listing_window_is_marked_covered(db):
     now = LISTING + 50 * H
     client = FakeClient(now)
