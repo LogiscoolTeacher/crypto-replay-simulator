@@ -110,7 +110,7 @@ export class ChartView {
       timeScale: { borderColor: AXIS, timeVisible: true, secondsVisible: false, rightOffset: 6, barSpacing: 8 },
       localization: { locale: 'en-US', timeFormatter: (t) => this.crosshairLabel(t) },
     });
-    this.tz = null;  // IANA zone for axis and legend labels (day-trading mode: Europe/Malta); null = UTC
+    this.tz = null;  // IANA zone for axis and legend labels; null = UTC (both modes run on UTC now)
     this.chart.timeScale().applyOptions({ tickMarkFormatter: (t, type) => this.tickLabel(t, type) });
     this.precision = 2;
     this.candles = this.chart.addSeries(LWC.CandlestickSeries, {
@@ -752,7 +752,7 @@ export class ChartView {
     const cls = c >= o ? 'up' : 'down';
     const partial = p.partial_last && i === p.count - 1;
     const rows = [];
-    const when = `<span class="mono">${fmtTime(p.time[i], this.intraday, this.tz)} ${this.tz ? 'Malta' : 'UTC'}</span>`;
+    const when = `<span class="mono">${fmtTime(p.time[i], this.intraday, this.tz)} ${this.tz || 'UTC'}</span>`;
     if (this.legendMin) {   // one line: what, when, the close and its change
       this.legendBody.innerHTML = `<div class="row"><b>${p.symbol}</b> · ${p.interval} · ${when} · <span class="mono">C <b class="${cls}">${fmtPrice(c)}</b> ` +
         `<span class="${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span></span>${partial ? ' <span class="partial">forming</span>' : ''}</div>`;

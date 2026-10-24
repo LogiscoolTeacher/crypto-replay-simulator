@@ -1,4 +1,4 @@
-"""Day-trading mode: the spec's section 14 numbers, the Malta clock, and the engine against a
+"""Day-trading mode: the spec's section 14 numbers, the UTC day clock, and the engine against a
 15-minute fake exchange (no network)."""
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ from app.indicators.registry import validate_params
 from app.strategies.rline import RLINE_PARAMS, get_jump_strategy
 from tests.fakes import DAY, H, LISTING, Q, FineFakeClient, quarter_candle
 
-START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC (Malta summer time: 06:00 local = 04:00 UTC)
+START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC (the day clock is UTC: 06:00 = START + 6 h)
 END = START + 6 * DAY
 NOW = START + 10 * DAY + 1
-FIRST_CURSOR = START + 3 * H + 45 * 60_000   # the 15m candle closing at 06:00 local on 2018-05-10
+FIRST_CURSOR = START + 5 * H + 45 * 60_000   # the 15m candle closing at 06:00 UTC on 2018-05-10
 PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 16).decode()
 
 
@@ -130,15 +130,15 @@ def test_atr_is_wilder_smoothed_true_range():
 
 # ------------------------------------------------------------------ the clock
 def test_trading_day_and_entry_window_in_winter_and_summer():
-    six = utc_ms(2024, 1, 15, 5, 0)                    # 06:00 Malta in winter (UTC+1)
+    six = utc_ms(2024, 1, 15, 6, 0)                    # 06:00 UTC: the day clock is UTC (was Malta)
     assert trading_day(six) == date(2024, 1, 15)
     start, end = day_bounds(date(2024, 1, 15))
-    assert start == six and end == utc_ms(2024, 1, 15, 23, 0)
+    assert start == six and end == utc_ms(2024, 1, 16, 0, 0)
     assert trading_day(six - 1) == date(2024, 1, 14)   # 05:59:59 still belongs to the day before
     assert in_entry_window(end) and trading_day(end) == date(2024, 1, 15)          # 24:00 counts
     assert not in_entry_window(end + Q) and trading_day(end + Q) == date(2024, 1, 15)  # 00:15: the night
-    assert local_ms(date(2024, 7, 15), 6) == utc_ms(2024, 7, 15, 4, 0)             # summer (UTC+2)
-    assert day_bounds(date(2024, 7, 15))[1] == utc_ms(2024, 7, 15, 22, 0)
+    assert local_ms(date(2024, 7, 15), 6) == utc_ms(2024, 7, 15, 6, 0)             # summer: no daylight-saving shift
+    assert day_bounds(date(2024, 7, 15))[1] == utc_ms(2024, 7, 16, 0, 0)
 
 
 # ----------------------------------------------------------------- the engine
@@ -150,7 +150,7 @@ def test_prepare_puts_the_cursor_on_the_first_0600_candle(day: DayEngine, sessio
     assert session["price"] == pytest.approx(quarter_candle(FIRST_CURSOR)[3])
     d = session["day"]
     assert d["date"] == "2018-05-10" and d["in_window"] and not d["night"] and d["phase"] == "trading"
-    assert d["risk_amount"] == 100.0 and d["timezone"] == "Europe/Malta" and d["utc_offset_min"] == 120
+    assert d["risk_amount"] == 100.0 and d["timezone"] == "UTC" and d["utc_offset_min"] == 0
     assert d["check"]["ema_above"] is True and d["check"]["ema200"] is not None and d["check"]["hh_hl"] is None
     assert d["check"]["daily_close_iso"].startswith("2018-05-09")   # yesterday's completed UTC day
     assert d["entries_allowed"] is True and d["block_reason"] is None   # the trend check never blocks
@@ -811,9 +811,9 @@ def test_next_signal(day: DayEngine, session: dict, monkeypatch):
                                "touch_ms": [], "breakout_ms": bar_ms - 5 * H, "psych": None}
     fake = [sig(START - H, 1e6), sig(START + 6 * H, 1e6), sig(START + 6 * H + H, 1e6), sig(START + 3 * DAY, 1e6)]
     monkeypatch.setattr(day, "_strategy_signals", lambda s, js, p: fake)
-    st = day.next_signal(sid, "rline_retest")       # the first signal after the cursor, the same day, 08:00 local
+    st = day.next_signal(sid, "rline_retest")       # the first signal after the cursor, the same day, 06:00 UTC
     ev = st["events"][0]
-    assert st["cursor_ms"] == START + 6 * H and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 8, 15)
+    assert st["cursor_ms"] == START + 6 * H and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 6, 15)
     assert ev["kind"] == "jump" and ev["reason"].startswith("RLine_Retest: retest of") and "night" not in ev["reason"]
     zones = day.zones(sid)
     assert len(zones) == 1 and zones[0]["id"] == ev["zone_id"] and zones[0]["interval"] == "1h" and zones[0]["upper"] == 1e6

@@ -104,7 +104,7 @@ export class DayMode {
     this.cancelDraw();
     this.c.chart.setUserZones([]);
     this.c.chart.setDayLines(null);
-    this.c.chart.setTimeZone(on ? (s.day && s.day.timezone) || 'Europe/Malta' : null);
+    this.c.chart.setTimeZone(null);   // the day clock is UTC, like the exchange (was Europe/Malta)
     for (const id of ['dlg-trend', 'dlg-exit', 'dlg-review']) if (this.$(id).open) this.$(id).close();
     this.inlineReviewId = null;
     if (this.panelOpen()) this.closeNewTrade();
@@ -140,7 +140,7 @@ export class DayMode {
   // One month, a week per row from Monday to Sunday: the P&L (after fees) and the trades of every
   // day the replay has seen, the week's and the month's total. A past day opens its journal; a
   // later day inside the replay jumps there (06:00).
-  localDate(ms) { return ms === null || ms === undefined ? null : new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'Europe/Malta' }); }
+  localDate(ms) { return ms === null || ms === undefined ? null : new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'UTC' }); }
   calShown() {
     if (this.calMonth) return this.calMonth;
     return this.day && this.day.date ? this.day.date.slice(0, 7) : null;
@@ -244,10 +244,10 @@ export class DayMode {
   // Top-bar time of the cursor candle's close in the local zone.
   cursorText() {
     const d = this.day;
-    return d && d.local_time ? `${d.local_time} Malta` : null;
+    return d && d.local_time ? `${d.local_time} UTC` : null;
   }
 
-  // The bar at the top right: how much of the trading day (06:00-24:00 Malta) has passed at the
+  // The bar at the top right: how much of the trading day (06:00-24:00 UTC) has passed at the
   // cursor candle's close, and the hours still left; full once the day is over (the night).
   renderProgress(s) {
     const bar = this.$('day-progress'), fill = this.$('day-progress-fill'), text = this.$('day-progress-text');
@@ -259,7 +259,7 @@ export class DayMode {
     fill.style.width = `${((total - left) / total * 100).toFixed(1)}%`;
     bar.classList.toggle('over', left <= 0);
     text.textContent = left <= 0 ? 'day over' : `${Number(left.toFixed(2))} h left`;
-    bar.title = `Trading day ${d.day_start_local.slice(11)}–24:00 Malta · now ${d.local_time.slice(11)} · ${left <= 0 ? 'over' : `${Number(left.toFixed(2))} hours left`}`;
+    bar.title = `Trading day ${d.day_start_local.slice(11)}–24:00 UTC · now ${d.local_time.slice(11)} · ${left <= 0 ? 'over' : `${Number(left.toFixed(2))} hours left`}`;
   }
 
   // ---------------------------------------------------------------- panel
@@ -272,7 +272,7 @@ export class DayMode {
     const ok = this.ready();
     const set = (id, text, cls) => { const el = $(id); el.textContent = text; if (cls !== undefined) el.className = cls; };
     set('day-date', ok ? d.date : '–');
-    set('day-time', ok ? `${d.local_time.slice(11)} Malta${d.night ? ' · night' : ''}` : '');
+    set('day-time', ok ? `${d.local_time.slice(11)}${d.night ? ' · night' : ''}` : '');
     const phase = $('day-phase');
     phase.className = 'badge';
     if (!ok) phase.textContent = '';
@@ -595,7 +595,7 @@ export class DayMode {
   }
   setPanelTitle() {
     const d = this.day;
-    this.$('nt-title').textContent = `New trade · ${this.c.baseAsset()} @ ${this.c.fmtPrice(this.session.price)} · ${d.local_time.slice(11)} Malta`;
+    this.$('nt-title').textContent = `New trade · ${this.c.baseAsset()} @ ${this.c.fmtPrice(this.session.price)} · ${d.local_time.slice(11)}`;
   }
   // The stop moves in steps of 0.05 % of the entry price (Shift: five steps).
   stopStep(big) {
@@ -813,7 +813,7 @@ export class DayMode {
       const ev = events.find(x => x.kind === 'jump' && x.signal);
       if (!ev) return;
       if (this.zones.some(z => z.id === ev.zone_id)) { this.selectedZone = ev.zone_id; this.renderZones(); }
-      this.$('day-signal-last').textContent = `${ev.to_local} Malta · ${ev.reason}`;
+      this.$('day-signal-last').textContent = `${ev.to_local} · ${ev.reason}`;
     });
   }
   async loadStrategies() {
@@ -883,7 +883,7 @@ export class DayMode {
       delete st.events;
       this.c.applyState(st);
       await this.c.refreshView();
-      for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`);
+      for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local}.`);
       await this.refresh();   // the journal row of the day just left (how it ended) and the new day's row
       await this.reviewPicture();   // a jump past an exit's 24:00 makes its review due
       if (after && this.c.fresh(t)) after(events);
@@ -899,7 +899,7 @@ export class DayMode {
   async handleEvents(events) {
     if (!this.active()) return;
     for (const ev of events || []) {
-      if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`); continue; }
+      if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local}.`); continue; }
       if (ev.kind === 'review') { this.c.pause(); await this.refresh(); continue; }
       if (ev.kind !== 'exit') continue;
       this.c.pause();
@@ -1494,7 +1494,7 @@ export class DayMode {
       ['Conditions at the buy', [...COND_LABELS.map(([k, label]) => [label, this.flag(t.conditions ? t.conditions[k] : null)]),
         ['RSI 14 (15m) at the buy', t.entry_rsi === null || t.entry_rsi === undefined ? 'n/a' : t.entry_rsi.toFixed(2)],
         ['RSI 14 (1h) at the buy', t.entry_rsi_1h === null || t.entry_rsi_1h === undefined ? 'n/a' : t.entry_rsi_1h.toFixed(2)]]],
-      ['Entry', [['Time (Malta)', t.entry_local], ['Time (UTC)', t.entry_iso], ['Price', fp(t.entry_price)], ['RSI 14 (15m)', t.entry_rsi === null ? 'n/a' : t.entry_rsi.toFixed(2)],
+      ['Entry', [['Time (UTC)', t.entry_local], ['Price', fp(t.entry_price)], ['RSI 14 (15m)', t.entry_rsi === null ? 'n/a' : t.entry_rsi.toFixed(2)],
         ['ATR 14 (15m)', t.entry_atr === null ? 'n/a' : fp(t.entry_atr)], ['Zone upper edge', fp(t.zone_upper)], ['Zone lower edge', fp(t.zone_lower)]]],
       ['Plan', [['Default stop (zone middle)', t.stop_suggested === null ? 'n/a' : fp(t.stop_suggested)], ['ATR stop (zone low − 0.5 × ATR)', t.stop_atr === null || t.stop_atr === undefined ? 'n/a' : fp(t.stop_atr)],
         ['Stop at the buy', fp(t.stop_initial === undefined ? t.stop_used : t.stop_initial)], ['Take-profit at the buy', fp(t.tp_initial === undefined ? t.take_profit : t.tp_initial)], ['Reward-to-risk at the buy', `${this.n(t.rr)} : 1`],
@@ -1503,7 +1503,7 @@ export class DayMode {
         ? t.changes.map(c => [`${c.at_local.slice(0, 10) === t.day_date ? c.at_local.slice(11) : c.at_local} · ${c.field === 'stop' ? 'stop' : 'target'} (price ${fp(c.price)})`, `${this.pctText((c.from / t.entry_price - 1) * 100)} \u2192 ${this.pctText((c.to / t.entry_price - 1) * 100)} (${fp(c.to)})`])
         : [['Moves', 'none']]],
       ['Position', [['Coins', this.c.qtyFmt(t.coins)], ['Position value', `${this.n(t.position_value)} USDT`], ['Risk', `${this.n(t.risk_usdt)} USDT`], ['Capped', t.capped ? 'yes' : 'no'], ['Buy fee', `${this.n(t.buy_fee)} USDT`]]],
-      ['Exit', [['Time (Malta)', t.exit_local || '–'], ['Held', this.holdText(this.holdHours(t.entry_ms, t.exit_ms))], ['Price', t.exit_price === null || t.exit_price === undefined ? '–' : fp(t.exit_price)], ['Type', t.exit_type || 'open'],
+      ['Exit', [['Time (UTC)', t.exit_local || '–'], ['Held', this.holdText(this.holdHours(t.entry_ms, t.exit_ms))], ['Price', t.exit_price === null || t.exit_price === undefined ? '–' : fp(t.exit_price)], ['Type', t.exit_type || 'open'],
         ['Reason', t.exit_reason_label || '–'], ['Note', t.exit_note || '–'], ['Overnight', t.overnight ? 'yes' : 'no']]],
       ['Result', [['P&L (after fees)', `${this.signed(t.pnl)} USDT`], ['P&L % of position', this.pctText(t.pnl_pct)], ['Fees', t.fees === null || t.fees === undefined ? '–' : `${this.n(t.fees)} USDT`], ['R', this.signed(t.r_multiple)]]],
       ['MAE / MFE (between the entry and the exit)', x

@@ -3,7 +3,7 @@
 The mode shares the session row, the candle data, the view endpoint and the chart with the swing
 (bucket) mode, but has its own clock, rules and trades:
 
-Clock (all local times in Europe/Malta)
+Clock (all times in UTC; until 2026-10-24 it was Europe/Malta)
 * The session's base interval is 15 minutes; the chart may show 15m, 1h, 4h or 1D.
 * A trading day runs from 06:00 to 06:00 the next morning and is named after the local date of
   its start. 06:00 to 24:00 is the entry window of the checklist, 00:00 to 06:00 the night; both
@@ -79,9 +79,9 @@ log = logging.getLogger(__name__)
 BASE_INTERVAL = "15m"
 VIEW_INTERVALS = ("15m", "1h", "4h", "1D")
 ZONE_INTERVALS = ("1h", "4h")      # the user draws zones on these charts (they show on all)
-TIMEZONE = "Europe/Malta"
+TIMEZONE = "UTC"                   # the day clock (was Europe/Malta): no daylight-saving shifts, same as the exchange
 TZ = ZoneInfo(TIMEZONE)
-DAY_START_HOUR = 6                 # the trading day starts at 06:00 local time
+DAY_START_HOUR = 6                 # the trading day starts at 06:00 UTC
 RISK_PCT = 0.1                     # of the starting capital, fixed for the session (was 1 % on 10k)
 DAY_START_BALANCE = 100_000.0      # default starting capital: 0.1 % = 100 USDT risk, no leverage needed down to a ~0.1 % stop
 ATR_PERIOD = 14

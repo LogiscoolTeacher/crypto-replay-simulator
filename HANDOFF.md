@@ -48,7 +48,8 @@ data/                               gitignored: replay.db, snapshots/ (pictures)
 
 ## Day-trading mode as it stands
 
-**Clock**: Europe/Malta. A trading day runs 06:00 → 06:00 and is named after its start date.
+**Clock**: UTC (Europe/Malta until 2026-10-24; `TIMEZONE` in day_engine.py). A trading day runs
+06:00 → 06:00 UTC and is named after its start date.
 06:00–24:00 is the entry window, 00:00–06:00 the night; both are labels only. Buying is allowed
 whenever no trade is open, also at night and several times a day. Stepping and Play run through the
 night. Crossing 06:00 leaves the day: its journal row records how (`No trade`, `Trade closed`,
@@ -163,6 +164,9 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- UI declutter 3: the day clock is UTC (`TIMEZONE = "UTC"`), "Malta" is gone from every text. Old day
+  sessions keep their stored days; from the cursor on, days start at 06:00 UTC. API names `*_local`
+  stay (they now hold UTC).
 - UI declutter 2: every side card (and the day panel's Notes / Zones) folds to its title with a
   one-line summary (`[data-fold]`, `initFolds` / `renderCardSums` in app.js, remembered per mode in
   localStorage; day mode starts with Highs & lows and Account folded). The chart legend folds to one

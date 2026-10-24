@@ -245,7 +245,7 @@ class SellRequest(BaseModel):
 
 class DaySessionCreate(BaseModel):
     symbol: str = Field(examples=["BTCUSDT"])
-    start: str = Field(description="Replay start date (ISO, UTC); the first trading day begins at the next 06:00 Europe/Malta", examples=["2025-01-01"])
+    start: str = Field(description="Replay start date (ISO, UTC); the first trading day begins at the next 06:00 UTC", examples=["2025-01-01"])
     end: str | None = Field(default=None, description="Replay end (ISO, UTC); default = latest closed candle")
     start_balance: float = Field(default=day_rules.DAY_START_BALANCE, gt=0, le=1e12, allow_inf_nan=False, description="Starting capital; the risk per trade is 0.1 % of it")
     name: str | None = Field(default=None, max_length=80)

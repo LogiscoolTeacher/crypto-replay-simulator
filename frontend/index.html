@@ -31,7 +31,7 @@
     <div class="spacer"></div>
 
     <div class="readout">
-      <div id="day-progress" class="day-progress day-only" title="The trading day 06:00–24:00 Malta: how much has passed, and the hours left" aria-label="Hours left in the trading day">
+      <div id="day-progress" class="day-progress day-only" title="The trading day 06:00–24:00 UTC: how much has passed, and the hours left" aria-label="Hours left in the trading day">
         <div id="day-progress-fill" class="fill"></div>
         <span id="day-progress-text" class="mono">&ndash;</span>
       </div>
@@ -209,7 +209,7 @@
               <summary class="btn small" title="Choose the columns of this table">Hide cols</summary>
               <div class="cols-list" id="day-cols-list"></div>
             </details>
-            <span class="muted small hint">Times are Europe/Malta. Click a row for the picture and every saved field. Click a column header to sort.</span>
+            <span class="muted small hint">Times are UTC. Click a row for the picture and every saved field. Click a column header to sort.</span>
           </div>
           <table class="buckets lined" id="day-trade-table">
             <thead><tr>
@@ -295,7 +295,7 @@
           <table class="buckets" id="day-days-table">
             <thead><tr>
               <th>Chart</th><th>Day</th><th title="Daily close above EMA 200 (computed)">Close &gt; EMA 200</th><th title="Higher highs and higher lows (your answer)">Higher H/L</th><th>Uptrend</th>
-              <th title="How the day ended: no trade by 24:00, skipped, or a trade">Outcome</th><th title="When the replay left the day (Malta)">Left at</th>
+              <th title="How the day ended: no trade by 24:00, skipped, or a trade">Outcome</th><th title="When the replay left the day (UTC)">Left at</th>
               <th title="The day's trade">Trade</th><th class="num" title="P&amp;L after fees">P&amp;L</th><th class="num">%</th><th class="num" title="P&amp;L divided by the risk amount">R</th><th>Notes</th>
             </tr></thead>
             <tbody id="day-days-list"></tbody>
@@ -682,7 +682,7 @@
       <div class="form-grid">
         <label class="wide">Mode <select name="mode" id="f-mode">
           <option value="swing">Swing trading (buckets)</option>
-          <option value="day">Day trading (15-minute candles, Europe/Malta, 0.1 % risk per trade)</option>
+          <option value="day">Day trading (15-minute candles, UTC day clock, 0.1 % risk per trade)</option>
         </select></label>
         <label>Coin <select name="symbol" id="f-symbol" required></select></label>
         <label id="f-base-wrap">Base timeframe <select name="base_interval" id="f-base"></select></label>
@@ -700,7 +700,7 @@
         <label class="wide">Name <span class="muted">(optional)</span> <input name="name" id="f-name" type="text" maxlength="80" placeholder="e.g. BTC summer 2025"></label>
       </div>
       <p class="muted small" id="f-note-swing">The base timeframe is the finest you can view in this session. Finer timeframes mean more data to download.</p>
-      <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 0.1 % of the start balance per trade (100 USDT at the default 100 000), trading day 06:00 to 24:00 Europe/Malta. The first day begins at the first 06:00 after the start date.</p>
+      <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 0.1 % of the start balance per trade (100 USDT at the default 100 000), trading day 06:00 to 24:00 UTC. The first day begins at the first 06:00 after the start date.</p>
       <p id="form-error" class="error hidden"></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="btn-cancel-session">Cancel</button>

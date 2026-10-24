@@ -12,7 +12,7 @@ from tests.fakes import DAY, H, LISTING, FineFakeClient
 START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC
 END = START + 6 * DAY
 NOW = START + 10 * DAY + 1
-FIRST_CURSOR = START + 3 * H + 45 * 60_000   # closes at 06:00 Europe/Malta (summer time)
+FIRST_CURSOR = START + 5 * H + 45 * 60_000   # closes at 06:00 UTC
 SYMBOL = "SOLUSDT"   # a coin no other test module downloads, so their stored candles stay untouched
 PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
