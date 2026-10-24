@@ -91,8 +91,8 @@
         </div>
         <label class="nt-row"><span class="lbl">Notes</span> <input id="nt-notes" type="text" maxlength="500" autocomplete="off" placeholder="optional"></label>
         <div class="dialog-actions">
-          <span class="muted small">Fills at the close of this 15-min candle. &uarr;/&darr; move the stop.</span>
-          <button type="button" class="btn buy" id="btn-nt-buy" disabled>Buy</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn buy" id="btn-nt-buy" title="Fills at the close of this 15-min candle. &uarr;/&darr; move the stop." disabled>Buy</button>
         </div>
       </div>
 
@@ -209,7 +209,7 @@
               <summary class="btn small" title="Choose the columns of this table">Hide cols</summary>
               <div class="cols-list" id="day-cols-list"></div>
             </details>
-            <span class="muted small hint">Times are UTC. Click a row for the picture and every saved field. Click a column header to sort.</span>
+            <span class="info hint" tabindex="0" role="note" title="Times are UTC. Click a row for the picture and every saved field. Click a column header to sort." aria-label="Times are UTC. Click a row for the picture and every saved field. Click a column header to sort.">i</span>
           </div>
           <table class="buckets lined" id="day-trade-table">
             <thead><tr>
@@ -237,7 +237,7 @@
           <div class="table-tools">
             <span id="auto-summary" class="small mono"></span>
             <span class="spacer"></span>
-            <span class="small muted">Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash.</span>
+            <span class="info" tabindex="0" role="note" title="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash." aria-label="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash.">i</span>
           </div>
           <table class="buckets" id="day-auto-table" aria-label="Automatic exits">
             <thead><tr>
@@ -259,7 +259,7 @@
             <button type="button" id="btn-cal-now" class="btn small" title="The month of the replay's current day">Now</button>
             <span id="cal-summary" class="small muted"></span>
             <span class="spacer"></span>
-            <span class="small muted">Click a past day for its journal, a later day to jump there (06:00). P&amp;L after fees.</span>
+            <span class="info" tabindex="0" role="note" title="Click a past day for its journal, a later day to jump there (06:00). P&amp;L after fees." aria-label="Click a past day for its journal, a later day to jump there (06:00). P&amp;L after fees.">i</span>
           </div>
           <table class="cal" id="cal-table" aria-label="Trading calendar">
             <thead><tr><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th><th class="week" title="P&amp;L of the week">Week</th></tr></thead>
@@ -288,7 +288,7 @@
         </div>
         <div class="tab-panel hidden" id="panel-days" role="tabpanel" aria-labelledby="tab-days">
           <div class="table-tools">
-            <span class="muted small hint">One row per trading day, with or without a trade. The picture is taken when the replay leaves the day. Click a row for the picture and the notes.</span>
+            <span class="info hint" tabindex="0" role="note" title="One row per trading day, with or without a trade. The picture is taken when the replay leaves the day. Click a row for the picture and the notes." aria-label="One row per trading day, with or without a trade. The picture is taken when the replay leaves the day. Click a row for the picture and the notes.">i</span>
             <span class="spacer"></span>
             <a id="btn-days-csv" class="btn small-btn" href="#" download>Export CSV</a>
           </div>
@@ -308,7 +308,7 @@
             <button type="button" class="chip on" data-f="all">All</button>
             <button type="button" class="chip" data-f="below">below 30</button>
             <button type="button" class="chip" data-f="above">above 30</button>
-            <span class="muted small hint">Click a column header to sort.</span>
+            <span class="info hint" tabindex="0" role="note" title="Click a column header to sort." aria-label="Click a column header to sort.">i</span>
           </div>
           <table class="buckets" id="bucket-table">
             <thead><tr>
@@ -332,7 +332,7 @@
             <button type="button" class="chip on" data-f="all">All</button>
             <button type="button" class="chip" data-f="below">below 30</button>
             <button type="button" class="chip" data-f="above">above 30</button>
-            <span class="muted small hint">Click a column header to sort.</span>
+            <span class="info hint" tabindex="0" role="note" title="Click a column header to sort." aria-label="Click a column header to sort.">i</span>
           </div>
           <table class="buckets" id="history-table">
             <thead><tr>
@@ -354,7 +354,7 @@
             <button type="button" class="chip" data-side="buy">Buys</button>
             <button type="button" class="chip" data-side="sell">Sells</button>
             <a id="btn-journal-csv" class="btn small-btn" href="#" download>Export CSV</a>
-            <span class="muted small hint">Click a picture to open it. Click a column header to sort.</span>
+            <span class="info hint" tabindex="0" role="note" title="Click a picture to open it. Click a column header to sort." aria-label="Click a picture to open it. Click a column header to sort.">i</span>
           </div>
           <table class="buckets" id="journal-table">
             <thead><tr>
@@ -522,9 +522,8 @@
       </section>
 
       <section class="card" id="extremes-card" data-fold>
-        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Highs &amp; lows</button></h2><span class="card-sum mono small"></span></div>
-        <p class="muted small ex-legend" title="Daily candles known at the replay time, wicks included; the forming day counts. All-time starts at the coin's Binance listing.">Daily wicks. Left: above the low. Right: below the high.</p>
-        <div class="extremes" id="extremes">
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Highs &amp; lows</button></h2><span class="info" tabindex="0" role="note" title="Daily wicks. Left: how far the price is above the low. Right: how far below the high. Daily candles known at the replay time, wicks included; the forming day counts. All-time starts at the coin&#39;s Binance listing." aria-label="Daily wicks. Left: how far the price is above the low. Right: how far below the high. Daily candles known at the replay time, wicks included; the forming day counts. All-time starts at the coin&#39;s Binance listing.">i</span><span class="card-sum mono small"></span></div>
+                <div class="extremes" id="extremes">
           <div class="extreme" data-key="all"><span class="ex-label">All-time</span><span class="ex-low mono gauge">&ndash;</span><div class="ex-bar"><span class="ex-fill"></span><span class="ex-marker"></span></div><span class="ex-high mono gauge">&ndash;</span></div>
           <div class="extreme" data-key="1y"><span class="ex-label">1 year</span><span class="ex-low mono gauge">&ndash;</span><div class="ex-bar"><span class="ex-fill"></span><span class="ex-marker"></span></div><span class="ex-high mono gauge">&ndash;</span></div>
           <div class="extreme" data-key="6m"><span class="ex-label">6 months</span><span class="ex-low mono gauge">&ndash;</span><div class="ex-bar"><span class="ex-fill"></span><span class="ex-marker"></span></div><span class="ex-high mono gauge">&ndash;</span></div>

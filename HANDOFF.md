@@ -168,6 +168,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- UI declutter 5: long grey hint sentences (table toolbars, Highs & lows, New trade footer) are
+  (i) tooltips (`.info`) now.
 - UI declutter 4: Volume delta indicator (`vdelta`: 2 × taker buy − volume per candle, own pane,
   green/red bars). Candles keep `taker_buy` (column added on open); candles stored before get it in
   the background when the indicator is on (`CandleStore.fill_taker_buy_soon`, called from `view`).

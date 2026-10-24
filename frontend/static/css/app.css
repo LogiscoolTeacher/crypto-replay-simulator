@@ -356,6 +356,13 @@ table.buckets td.rsi.low { color: var(--good); font-weight: 700; }
 table.buckets td.rsi.high { color: var(--critical); font-weight: 700; }
 .table-tools { display: flex; align-items: center; gap: 6px; padding: 6px 8px 2px; flex-wrap: wrap; }
 .table-tools .hint { margin-left: auto; }
+/* (i): a long explanation kept as a tooltip instead of a grey sentence */
+.info {
+  display: inline-grid; place-items: center; width: 15px; height: 15px; flex: none; border-radius: 50%;
+  border: 1px solid var(--border); color: var(--muted); font: italic 600 10px/1 Georgia, serif; cursor: help; user-select: none;
+}
+.info:hover, .info:focus-visible { color: var(--ink); border-color: var(--accent); }
+.card-head .info { align-self: center; }
 .chip { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px; font-size: 12px; cursor: pointer; }
 .chip:hover { color: var(--text); }
 .chip.on { background: #2563b8; border-color: #2563b8; color: #fff; }
@@ -370,7 +377,6 @@ table.buckets tr.now td.vs .sep { color: var(--muted); padding: 0 8px; }
 }
 
 /* Highs & lows card: label | above low | range bar with price marker | below high */
-.ex-legend { margin: -4px 0 8px; }
 .extremes { display: grid; grid-template-columns: auto auto minmax(60px, 1fr) auto; gap: 8px 8px; align-items: center; }
 .extreme { display: contents; }
 .ex-label { color: var(--ink-2); }
