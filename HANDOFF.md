@@ -163,6 +163,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- UI declutter 2: every side card (and the day panel's Notes / Zones) folds to its title with a
+  one-line summary (`[data-fold]`, `initFolds` / `renderCardSums` in app.js, remembered per mode in
+  localStorage; day mode starts with Highs & lows and Account folded). The chart legend folds to one
+  line (`ChartView.setLegendMin`).
 - UI declutter 1: no zoom buttons (keys only), no Risk row and no Move stop/target form in the
   day panel (drag the dotted lines), date above time, Back to start ⏴ / Step back ⏮ glyphs swapped.
 - 2026-10-24 Handoff file, CLAUDE.md, offline-friendly candle cache.

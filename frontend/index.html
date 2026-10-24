@@ -417,8 +417,8 @@
     </section>
 
     <aside class="side" id="side">
-      <section class="card day-only" id="day-card">
-        <h2>Day trading</h2>
+      <section class="card day-only" id="day-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Day trading</button></h2><span class="card-sum mono small"></span></div>
         <div class="row-flex day-head"><div class="day-when"><b id="day-date" class="mono">&ndash;</b><span id="day-time" class="mono muted small"></span></div><span class="spacer"></span><span id="day-phase" class="badge"></span></div>
         <dl class="kv mtf">
           <dt title="Close of the last completed daily candle (UTC day) against the EMA 200 of the completed days; computed by the program">Close &gt; EMA 200</dt><dd id="day-ema" class="mono gauge small">&ndash;</dd>
@@ -454,8 +454,10 @@
           <p id="dr-error" class="error small" role="alert"></p>
           <div class="row-flex"><button type="submit" id="btn-dr-save" class="btn small primary">Save review <kbd>Enter</kbd></button><span class="small muted">Continue, step and Buy wait for the answers.</span></div>
         </form>
-        <label class="day-notes-label small muted" for="day-notes">Notes for this day <span id="day-notes-state" class="mono"></span></label>
-        <textarea id="day-notes" rows="3" maxlength="4000" placeholder="What you saw, why you traded or did not&hellip; (saved by itself)"></textarea>
+        <div class="sub" id="day-notes-sub" data-fold>
+          <div class="sub-head"><button type="button" class="fold small muted" aria-expanded="true">Notes for this day</button> <span id="day-notes-state" class="mono small muted"></span></div>
+          <textarea id="day-notes" rows="3" maxlength="4000" aria-label="Notes for this day" placeholder="What you saw, why you traded or did not&hellip; (saved by itself)"></textarea>
+        </div>
         <dl class="kv mtf hidden" id="day-trade">
           <dt class="total">Open trade</dt><dd id="dt-seq" class="total small"></dd>
           <dt>Entry</dt><dd id="dt-entry" class="mono">&ndash;</dd>
@@ -467,17 +469,19 @@
           <dt title="The automatic-exit twin of this trade: original stop and target, closed only when one of them is hit (see the Auto exits tab)">Auto twin</dt><dd id="dt-auto" class="mono small">&ndash;</dd>
           <dt>P&amp;L now</dt><dd id="dt-pnl" class="mono gauge">&ndash;</dd>
         </dl>
-        <div class="row-flex mtf">
-          <h2 style="margin:0">Zones <span id="day-zone-count" class="pill">0</span></h2>
-          <span class="spacer"></span>
-          <button type="button" id="btn-day-zone" class="btn small" title="Two clicks on the 1h or 4h chart: one edge, then the other (Z)">Draw zone (Z)</button>
+        <div class="sub" id="day-zones-sub" data-fold>
+          <div class="row-flex mtf sub-head">
+            <h2 style="margin:0"><button type="button" class="fold" aria-expanded="true">Zones <span id="day-zone-count" class="pill">0</span></button></h2>
+            <span class="spacer"></span>
+            <button type="button" id="btn-day-zone" class="btn small" title="Two clicks on the 1h or 4h chart: one edge, then the other (Z)">Draw zone (Z)</button>
+          </div>
+          <ul id="day-zones" class="indicator-list zones" aria-label="Support / resistance zones"></ul>
+          <p id="day-zones-empty" class="muted small">No zones yet. Switch to 1h or 4h and press Z.</p>
         </div>
-        <ul id="day-zones" class="indicator-list zones" aria-label="Support / resistance zones"></ul>
-        <p id="day-zones-empty" class="muted small">No zones yet. Switch to 1h or 4h and press Z.</p>
       </section>
 
-      <section class="card day-only" id="day-signal-card">
-        <h2>Strategy signals</h2>
+      <section class="card day-only" id="day-signal-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Strategy signals</button></h2><span class="card-sum mono small"></span></div>
         <div class="row-flex">
           <select id="day-strategy" aria-label="Jump strategy"></select>
           <span class="spacer"></span>
@@ -487,8 +491,8 @@
         <p id="day-signal-last" class="small" role="status"></p>
       </section>
 
-      <section class="card swing-only" id="strategy-card">
-        <h2>Strategy</h2>
+      <section class="card swing-only" id="strategy-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Strategy</button></h2><span class="card-sum mono small"></span></div>
         <div class="row-flex">
           <select id="strategy-key" aria-label="Strategy"><option value="">None</option></select>
           <button id="btn-strategy-params" class="btn icon" title="Strategy parameters" aria-label="Strategy parameters" aria-expanded="false">&#x2699;</button>
@@ -502,8 +506,8 @@
         <p id="strategy-note" class="muted small">No strategy selected.</p>
       </section>
 
-      <section class="card" id="gauge-card" aria-live="polite">
-        <h2>Readings</h2>
+      <section class="card" id="gauge-card" aria-live="polite" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Readings</button></h2><span class="card-sum mono small"></span></div>
         <dl class="kv" id="gauges">
           <dt id="gauge-rsi-label" title="RSI(14) of the timeframe on screen, latest candle">RSI 14</dt><dd id="gauge-rsi" class="mono gauge">&ndash;</dd>
           <dt title="EMA 200 of daily candles, including the forming day">EMA 200 (1D)</dt><dd id="gauge-ema" class="mono">&ndash;</dd>
@@ -517,8 +521,8 @@
         </dl>
       </section>
 
-      <section class="card" id="extremes-card">
-        <h2>Highs &amp; lows</h2>
+      <section class="card" id="extremes-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Highs &amp; lows</button></h2><span class="card-sum mono small"></span></div>
         <p class="muted small ex-legend" title="Daily candles known at the replay time, wicks included; the forming day counts. All-time starts at the coin's Binance listing.">Daily wicks. Left: above the low. Right: below the high.</p>
         <div class="extremes" id="extremes">
           <div class="extreme" data-key="all"><span class="ex-label">All-time</span><span class="ex-low mono gauge">&ndash;</span><div class="ex-bar"><span class="ex-fill"></span><span class="ex-marker"></span></div><span class="ex-high mono gauge">&ndash;</span></div>
@@ -528,8 +532,8 @@
         </div>
       </section>
 
-      <section class="card" id="account-card">
-        <h2>Account</h2>
+      <section class="card" id="account-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Account</button></h2><span class="card-sum mono small"></span></div>
         <dl class="kv" id="account">
           <dt>Cash</dt><dd id="acc-cash" class="mono">&ndash;</dd>
           <dt>Invested</dt><dd id="acc-invested" class="mono">&ndash;</dd>
@@ -542,8 +546,8 @@
         </dl>
       </section>
 
-      <section class="card swing-only" id="trade-card">
-        <h2>Buy a bucket</h2>
+      <section class="card swing-only" id="trade-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Buy a bucket</button></h2><span class="card-sum mono small"></span></div>
         <div class="row-flex">
           <input id="buy-amount" type="number" min="1" step="any" placeholder="USDT" aria-label="Amount in USDT">
           <button id="btn-buy" class="btn buy">Buy</button>
@@ -571,7 +575,7 @@
   </main>
 
   <footer class="controls">
-    <button id="btn-reset" class="btn icon" title="Back to start (R)" aria-label="Back to start">&#x23F4;</button>
+    <button id="btn-reset" class="btn icon" title="Back to start (R)" aria-label="Back to start">&#x25C0;&#xFE0E;</button>
     <button id="btn-step-back" class="btn icon hidden" title="Step one candle back (&larr;), never before the latest trade action or jump" aria-label="Step one candle back">&#x23EE;</button>
     <button id="btn-play" class="btn icon play" title="Play / pause (P)" aria-label="Play">&#x25B6;</button>
     <button id="btn-step" class="btn icon" title="Step one candle (&rarr;)" aria-label="Step one candle">&#x23ED;</button>

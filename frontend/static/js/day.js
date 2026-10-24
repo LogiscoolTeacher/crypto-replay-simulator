@@ -355,6 +355,7 @@ export class DayMode {
       set('dt-pnl', `${this.signed(t.unrealized_pnl)} (${this.pctText(t.unrealized_pnl_pct)}) · ${this.signed(t.r_now, 2)} R`, `mono gauge ${this.cls(t.unrealized_pnl)}`);
     }
     this.c.chart.setDayLines(t);
+    this.c.renderCardSums();   // the summary of the minimized card
     this.maybeAskTrend();
   }
 

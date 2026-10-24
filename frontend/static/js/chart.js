@@ -142,7 +142,24 @@ export class ChartView {
     this.targetRange = null;   // range requested but not yet applied by the library
     this.appliedRange = null;  // last range the library reported as applied
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => { this.appliedRange = r; this.targetRange = null; });
-    this.chart.subscribeCrosshairMove((p) => this.renderLegend(p));
+    this.chart.subscribeCrosshairMove((p) => { this.legendParam = p; this.renderLegend(p); });
+    // The legend box folds to one short line with its arrow button; the app remembers the choice.
+    // The button lives outside the rows that every crosshair move rewrites (a click on a button
+    // replaced between mousedown and mouseup would be lost).
+    this.legendMin = false;
+    this.legendParam = null;
+    this.onLegendFold = null;
+    this.legendFold = document.createElement('button');
+    this.legendFold.type = 'button';
+    this.legendFold.className = 'legend-fold';
+    this.legendBody = document.createElement('div');
+    this.legendBody.className = 'legend-body';
+    legendEl.replaceChildren(this.legendFold, this.legendBody);
+    this.setLegendMin(false);
+    this.legendFold.addEventListener('click', () => {
+      this.setLegendMin(!this.legendMin);
+      if (this.onLegendFold) this.onLegendFold(this.legendMin);
+    });
     // Fibonacci retracements live in one primitive on the candle series; clicks go to the app.
     this.fib = new FibPrimitive(fmtPrice);
     this.candles.attachPrimitive(this.fib);
@@ -712,9 +729,19 @@ export class ChartView {
   visibleBars() { const r = this.appliedRange || this.chart.timeScale().getVisibleLogicalRange(); return r ? r.to - r.from : null; }
 
   // ---------------------------------------------------------------- legend
+  setLegendMin(min) {
+    this.legendMin = !!min;
+    const label = this.legendMin ? 'Show the full chart box' : 'Make the chart box small';
+    this.legendFold.textContent = this.legendMin ? '\u25B8' : '\u25BE';
+    this.legendFold.setAttribute('aria-expanded', String(!this.legendMin));
+    this.legendFold.setAttribute('aria-label', label);
+    this.legendFold.title = label;
+    this.renderLegend(this.legendParam);
+  }
   renderLegend(param) {
     const p = this.payload;
-    if (!p || !p.count) { this.legendEl.innerHTML = ''; return; }
+    this.legendEl.classList.toggle('blank', !p || !p.count);
+    if (!p || !p.count) { this.legendBody.innerHTML = ''; return; }
     let i = p.count - 1;
     if (param && param.time !== undefined) {
       const idx = p.time.indexOf(param.time);
@@ -725,7 +752,13 @@ export class ChartView {
     const cls = c >= o ? 'up' : 'down';
     const partial = p.partial_last && i === p.count - 1;
     const rows = [];
-    rows.push(`<div class="row"><b>${p.symbol}</b> · ${p.interval} · <span class="mono">${fmtTime(p.time[i], this.intraday, this.tz)} ${this.tz ? 'Malta' : 'UTC'}</span>` +
+    const when = `<span class="mono">${fmtTime(p.time[i], this.intraday, this.tz)} ${this.tz ? 'Malta' : 'UTC'}</span>`;
+    if (this.legendMin) {   // one line: what, when, the close and its change
+      this.legendBody.innerHTML = `<div class="row"><b>${p.symbol}</b> · ${p.interval} · ${when} · <span class="mono">C <b class="${cls}">${fmtPrice(c)}</b> ` +
+        `<span class="${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span></span>${partial ? ' <span class="partial">forming</span>' : ''}</div>`;
+      return;
+    }
+    rows.push(`<div class="row"><b>${p.symbol}</b> · ${p.interval} · ${when}` +
       (partial ? ' <span class="partial">forming</span>' : '') + '</div>');
     rows.push(`<div class="row mono">O <b>${fmtPrice(o)}</b> H <b>${fmtPrice(h)}</b> L <b>${fmtPrice(l)}</b> C <b class="${cls}">${fmtPrice(c)}</b> ` +
       `<span class="${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span> Vol <b>${fmtNum(p.volume[i], 2)}</b></div>`);
@@ -749,6 +782,6 @@ export class ChartView {
       }).join(' ');
       rows.push(`<div class="row mono"><span>RSI 14</span> ${vals}</div>`);
     }
-    this.legendEl.innerHTML = rows.join('');
+    this.legendBody.innerHTML = rows.join('');
   }
 }

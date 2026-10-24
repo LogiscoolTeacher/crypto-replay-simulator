@@ -364,6 +364,7 @@ function renderState() {
   renderReferenceGauges();
   updateEstimate();
   day.render();
+  renderCardSums();
 }
 
 // "#5" for a bucket, "#5.2" for the second part sold of bucket 5.
@@ -942,6 +943,7 @@ function renderLevelGauges(lv) {
 // Side-panel readings: RSI of the timeframe on screen (green at or below 30, red above),
 // daily EMA 200 and where the price sits relative to it.
 function renderGauges(g) {
+  queueMicrotask(renderCardSums);   // the Readings summary, once the values below are in
   renderExtremes(g ? g.extremes : null);
   const rsi = $('gauge-rsi'), ema = $('gauge-ema'), pctEl = $('gauge-ema-pct'), bbEl = $('gauge-bb'), bbw = $('gauge-bbw');
   const paint = (el, text, cls) => { el.textContent = text; el.classList.remove('up', 'down'); if (cls) el.classList.add(cls); };
@@ -1014,6 +1016,7 @@ async function loadSession(id, { fit = true } = {}) {
     state.session = null;
     state.interval = null;
     day.onSession(null);
+    renderFolds();
     renderTimeframes();
     renderSessions();
     renderState();
@@ -1026,6 +1029,7 @@ async function loadSession(id, { fit = true } = {}) {
   const modeChanged = state.bottomMode !== s.mode;
   state.bottomMode = s.mode;
   day.onSession(s);
+  renderFolds();
   if (modeChanged) setBottom(s.mode !== 'day');   // day trading starts with the trades window small
   try { localStorage.setItem('replay.lastSession', id); } catch { /* ignore */ }
   state.interval = getPref('interval', s.base_interval);
@@ -1787,6 +1791,49 @@ function renderBottom() {
 }
 function setBottom(open) { state.bottomOpen = open; renderBottom(); }
 
+// Minimizable side cards and sub-sections: every element with `data-fold` folds to its head when
+// its title button is clicked. The choice is remembered per mode (not per session); without one,
+// day trading starts with the cards it hardly uses minimized. A minimized card shows a one-line
+// summary next to its title, read from the values the card itself shows.
+const FOLDED_BY_DEFAULT = { day: ['extremes-card', 'account-card'], swing: [] };
+const foldKey = (el) => `replay.ui.fold.${isDay() ? 'day' : 'swing'}.${el.id}`;
+const txt = (id) => ($(id).textContent || '').trim();
+const CARD_SUMS = {
+  'day-card': () => [txt('day-date'), txt('day-time'), txt('day-phase'), $('day-trade').classList.contains('hidden') ? '' : txt('dt-pnl')],
+  'day-signal-card': () => [$('day-strategy').selectedOptions[0] ? $('day-strategy').selectedOptions[0].textContent : ''],
+  'strategy-card': () => [$('strategy-key').selectedOptions[0] ? $('strategy-key').selectedOptions[0].textContent : ''],
+  'gauge-card': () => [`${txt('gauge-rsi-label')} ${txt('gauge-rsi')}`, `vs EMA ${txt('gauge-ema-pct')}`],
+  'account-card': () => [`Equity ${txt('acc-equity')}`],
+};
+function renderCardSums() {
+  for (const [id, parts] of Object.entries(CARD_SUMS)) {
+    const card = $(id);
+    if (!card.classList.contains('min')) continue;
+    card.querySelector('.card-sum').textContent = parts().filter(p => p && p !== '–').join(' · ');
+  }
+}
+function setFold(el, min, remember = true) {
+  el.classList.toggle('min', min);
+  el.querySelector('.fold').setAttribute('aria-expanded', String(!min));
+  if (remember) { try { localStorage.setItem(foldKey(el), min ? '1' : '0'); } catch { /* no storage */ } }
+  renderCardSums();
+}
+// After a session switch (the mode may have changed): every fold as remembered for this mode.
+function renderFolds() {
+  const defaults = FOLDED_BY_DEFAULT[isDay() ? 'day' : 'swing'];
+  for (const el of document.querySelectorAll('[data-fold]')) {
+    let v = null;
+    try { v = localStorage.getItem(foldKey(el)); } catch { /* no storage */ }
+    setFold(el, v === null ? defaults.includes(el.id) : v === '1', false);
+  }
+}
+function initFolds() {
+  for (const el of document.querySelectorAll('[data-fold]')) {
+    el.querySelector('.fold').addEventListener('click', () => setFold(el, !el.classList.contains('min')));
+  }
+  renderFolds();
+}
+
 // -------------------------------------------------------------------- init
 // ------------------------------------------------------------------ fibs
 function openFibPopover(open) {
@@ -2247,9 +2294,12 @@ async function init() {
 
   day = new DayMode({
     $, api, chart, state, toast, fmtPrice, qtyFmt, baseAsset, token, fresh, pause, applyState, refreshView, selectTab, showHint, cancelFibDraw,
-    setInterval: setInterval_, intervalMs,
+    setInterval: setInterval_, intervalMs, renderCardSums,
   });
   day.init();
+  initFolds();
+  try { chart.setLegendMin(localStorage.getItem('replay.ui.legendMin') === '1'); } catch { /* no storage */ }
+  chart.onLegendFold = (min) => { try { localStorage.setItem('replay.ui.legendMin', min ? '1' : '0'); } catch { /* no storage */ } };
   $('f-mode').addEventListener('change', renderSessionMode);
   $('f-length').addEventListener('change', applySessionLength);
   $('f-start').addEventListener('change', applySessionLength);
