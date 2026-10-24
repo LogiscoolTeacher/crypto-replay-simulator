@@ -151,7 +151,7 @@ def test_prepare_puts_the_cursor_on_the_first_0600_candle(day: DayEngine, sessio
     d = session["day"]
     assert d["date"] == "2018-05-10" and d["in_window"] and not d["night"] and d["phase"] == "trading"
     assert d["risk_amount"] == 100.0 and d["timezone"] == "UTC" and d["utc_offset_min"] == 0
-    assert d["check"]["ema_above"] is True and d["check"]["ema200"] is not None and d["check"]["hh_hl"] is None
+    assert d["check"]["ema_above"] is True and d["check"]["ema200"] is not None and "hh_hl" not in d["check"] and "uptrend" not in d
     assert d["check"]["daily_close_iso"].startswith("2018-05-09")   # yesterday's completed UTC day
     assert d["entries_allowed"] is True and d["block_reason"] is None   # the trend check never blocks
     assert d["can_skip"] is True and d["can_sell"] is False and d["trade"] is None
@@ -168,25 +168,21 @@ def test_prepare_puts_the_cursor_on_the_first_0600_candle(day: DayEngine, sessio
         day.state(sw["id"])
 
 
-def test_trend_check_is_saved_but_never_blocks(day: DayEngine, session: dict):
+def test_trend_check_has_no_answer_and_never_blocks(day: DayEngine, session: dict):
+    """The daily "higher highs and higher lows" answer is gone: the trend check is the computed EMA 200 line alone."""
     sid = session["id"]
-    st = day.set_trend_check(sid, False)
-    assert st["day"]["uptrend"] is False and st["day"]["check"]["hh_hl"] is False
-    assert st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None
-    st = day.set_trend_check(sid, True)
-    assert st["day"]["uptrend"] is True and st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None
+    st = day.state(sid)
+    assert st["day"]["check"]["ema_above"] is True and st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None
+    assert not hasattr(day, "set_trend_check")
     with pytest.raises(Invalid):
         day.plan(sid, None)
-    with pytest.raises(Invalid):
-        day.set_trend_check(sid, "yes")  # type: ignore[arg-type]
 
 
 def test_plan_and_buy(day: DayEngine, session: dict):
     sid, price = session["id"], session["price"]
     tight = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
-    p = day.plan(sid, tight["id"])   # before the trend check: no block, only a warning
-    assert p["blocked"] is None and p["signals"]["uptrend"] is None and any("not answered" in w for w in p["warnings"])
-    day.set_trend_check(sid, True)
+    p = day.plan(sid, tight["id"])   # the daily close is above the EMA 200: no trend warning
+    assert p["blocked"] is None and p["signals"]["ema_above"] is True and not any("EMA 200" in w for w in p["warnings"])
     # the default stop is the middle of the zone; here the middle is the price itself, so it is refused
     p = day.plan(sid, tight["id"])
     assert p["stop_suggested"] == pytest.approx(price) and p["errors"] == ["The stop must be below the entry price."]
@@ -205,7 +201,7 @@ def test_plan_and_buy(day: DayEngine, session: dict):
     assert p["position_value"] == pytest.approx(p["coins"] * price) and p["buy_fee"] == pytest.approx(p["position_value"] * 0.001)
     assert p["risk_usdt"] == pytest.approx(100.0) and p["capped"] is False
     assert p["take_profit"] is None and p["rr"] is None and p["can_buy"] is False
-    assert p["signals"]["price_in_zone"] is True and p["signals"]["uptrend"] is True
+    assert p["signals"]["price_in_zone"] is True and p["signals"]["ema_above"] is True
     assert p["signals"]["rsi"] is not None and p["signals"]["rsi_day_min"] == pytest.approx(p["signals"]["rsi"])  # first candle of the day
     assert p["signals"]["close_above_prev_high"] == (price > quarter_candle(FIRST_CURSOR - Q)[1])
     tp = price + 1.5 * (price - p["stop_used"])
@@ -237,7 +233,7 @@ def test_plan_and_buy(day: DayEngine, session: dict):
     assert t["take_profit"] == pytest.approx(tp) and t["rr"] == pytest.approx(1.5) and t["notes"] == "first try"
     assert t["confidence"] == 8 and day.state(sid)["day"]["trade"]["confidence"] == 8 and day.trades(sid)["trades"][0]["confidence"] == 8
     assert t["coins"] == pytest.approx(p["coins"])
-    assert t["ema_above"] is True and t["hh_hl"] is True and t["day_date"] == "2018-05-10" and t["capped"] is False
+    assert t["ema_above"] is True and "hh_hl" not in t and "uptrend" not in t and t["day_date"] == "2018-05-10" and t["capped"] is False
     assert t["zone_upper"] == z["upper"] and t["zone_lower"] == z["lower"] and t["entry_atr"] == pytest.approx(p["atr"])
     assert t["stop_suggested"] == pytest.approx(price - 1.25) and t["stop_atr"] == pytest.approx(p["stop_atr"]) and t["stop_used"] == t["stop_suggested"]
     assert t["entry_local"] == "2018-05-10 06:00" and t["overnight"] is False
@@ -258,7 +254,6 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     day = make(db, {nxt: (price, price + 5.0, price - 0.1, price + 1.0)})  # the next candle spikes up
     sid = day.create_session("BTCUSDT", START, END)["id"]
     day.prepare(sid)
-    day.set_trend_check(sid, True)
     z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
     res = day.buy(sid, z["id"], take_profit=price + 4.0, stop=price - 2.0)
     t = res["trade"]
@@ -305,7 +300,7 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     st2 = day.resume(sid)   # Continue after an exit is the jump to the next 06:00 (a step would go on with the day)
     assert st2["events"][0]["kind"] == "jump" and local_hm(st2["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0)
     assert st2["day"]["phase"] == "trading" and st2["day"]["date"] == "2018-05-11"
-    assert st2["day"]["check"]["hh_hl"] is None and st2["day"]["traded_today"] == 0 and st2["day"]["last_exit"] is None
+    assert st2["day"]["traded_today"] == 0 and st2["day"]["last_exit"] is None
     rows = day.trades(sid)["trades"]
     assert len(rows) == 1 and rows[0]["exit_type"] == "take-profit" and rows[0]["exit_local"] == "2018-05-10 06:15"
 
@@ -319,10 +314,10 @@ def test_conditions_are_saved_and_evaluated(db: Path):
     sid = day.create_session("BTCUSDT", START, END)["id"]
     day.prepare(sid)
     z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
-    t = day.buy(sid, z["id"], take_profit=price + 4.0, stop=price - 2.0)["trade"]   # no trend check answered
+    t = day.buy(sid, z["id"], take_profit=price + 4.0, stop=price - 2.0)["trade"]
     c = t["conditions"]
-    assert t["uptrend"] is None and t["price_in_zone"] is True and t["zone_interval"] == "4h"
-    assert c["uptrend"] is None and c["ema_above"] is True and c["hh_hl"] is None
+    assert t["price_in_zone"] is True and t["zone_interval"] == "4h"
+    assert c["ema_above"] is True and "uptrend" not in c and "hh_hl" not in c
     assert c["price_in_zone"] is True and c["rr_ok"] is True and c["zone_4h"] is True
     assert c["stop_middle"] is False and c["stop_atr"] is False and c["stop_own"] is True
     assert c["morning"] is True and c["afternoon"] is False and c["evening"] is False
@@ -332,20 +327,19 @@ def test_conditions_are_saved_and_evaluated(db: Path):
     assert st["events"][0]["kind"] == "exit"
     day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
     st = day.resume(sid)                    # Continue: the jump to the next day
-    day.set_trend_check(sid, False)
     st = day.state(sid)
     z2 = day.add_zone(sid, "1h", st["price"] + 0.5, st["price"] - 3.0)
-    t2 = day.buy(sid, z2["id"], None, ratio=2.0)["trade"]   # the default stop (zone middle), no uptrend
-    assert t2["conditions"]["uptrend"] is False and t2["conditions"]["stop_middle"] is True and t2["conditions"]["stop_own"] is False
+    t2 = day.buy(sid, z2["id"], None, ratio=2.0)["trade"]   # the default stop (zone middle)
+    assert t2["conditions"]["ema_above"] is True and t2["conditions"]["stop_middle"] is True and t2["conditions"]["stop_own"] is False
     day.sell(sid, "stalls")                 # the second closed trade
     rows = day.trades(sid)["trades"]
     ev = day.conditions(sid)
     assert ev["scope"] == "session" and ev["trades"] == 2 and ev["sessions"] == 1 and ev["all"]["trades"] == 2
     by = {c["key"]: c for c in ev["conditions"]}
     assert [c["key"] for c in ev["conditions"]] == [k for k, _ in CONDITIONS]
-    up = by["uptrend"]
-    assert up["unknown"] == 1 and up["with"]["trades"] == 0 and up["without"]["trades"] == 1
-    assert up["with"]["win_rate"] is None and up["with"]["avg_r"] is None and up["with"]["pnl"] == 0.0
+    ema = by["ema_above"]   # the fake market rises slowly: both trades above the EMA 200
+    assert ema["unknown"] == 0 and ema["with"]["trades"] == 2 and ema["without"]["trades"] == 0
+    assert ema["without"]["win_rate"] is None and ema["without"]["avg_r"] is None and ema["without"]["pnl"] == 0.0
     rr = by["rr_ok"]
     assert rr["with"]["trades"] == 2 and rr["without"]["trades"] == 0 and rr["unknown"] == 0
     assert rr["with"]["wins"] == sum(1 for x in rows if x["pnl"] > 0)
@@ -360,7 +354,7 @@ def test_conditions_are_saved_and_evaluated(db: Path):
         day.conditions(sid, "week")
     lines = day.conditions_csv(sid).splitlines()
     assert lines[0].startswith("condition,label,with_trades,with_wins") and len(lines) == 1 + len(CONDITIONS)
-    assert lines[1].startswith("uptrend,") and lines[1].endswith(",1")
+    assert lines[1].startswith("ema_above,") and lines[1].endswith(",0")
 
 
 def test_move_stop_and_target_is_tracked(db: Path):
@@ -463,7 +457,6 @@ def test_stop_wins_when_both_levels_are_hit_in_one_candle(db: Path):
     day = make(db, {nxt: (price, price + 10.0, price - 10.0, price)})
     sid = day.create_session("BTCUSDT", START, END)["id"]
     day.prepare(sid)
-    day.set_trend_check(sid, True)
     z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 4.0, stop=price - 2.0)
     st = day.step(sid, 5)   # stops at the exit, the remaining steps are not taken
@@ -710,7 +703,6 @@ def test_step_back_stops_at_the_latest_action(db: Path):
 
 def test_early_exit_needs_a_reason_and_fills_at_the_close(day: DayEngine, session: dict):
     sid, price = session["id"], session["price"]
-    day.set_trend_check(sid, True)
     z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0)   # far away: nothing fires
     st = day.step(sid, 2)
@@ -736,7 +728,6 @@ def test_stepping_runs_through_the_night(day: DayEngine, session: dict):
     assert st["events"] == [] and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 0, 0)
     assert st["day"]["date"] == "2018-05-10" and st["day"]["in_window"] is True and st["day"]["night"] is False
     # an entry at the 24:00 close is still allowed; an exit in that candle has no "what if" window
-    day.set_trend_check(sid, True)
     price = st["price"]
     z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0)
@@ -851,7 +842,6 @@ def test_default_balance_and_risk(day: DayEngine):
 
 def test_upgrade_old_risk_sessions(db: Path, day: DayEngine, session: dict):
     sid = session["id"]
-    day.set_trend_check(sid, True)
     price = day.state(sid)["price"]
     z = day.add_zone(sid, "1h", price + 0.5, price - 3.0)
     day.buy(sid, z["id"], take_profit=price + 50.0, confidence=5)
@@ -880,14 +870,13 @@ def test_skip_day(day: DayEngine, session: dict):
     sid = session["id"]
     st = day.skip_day(sid)
     assert st["events"][0]["kind"] == "jump" and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0)
-    assert st["day"]["can_skip"] is True and st["day"]["check"]["hh_hl"] is None
+    assert st["day"]["can_skip"] is True
 
 
 def test_overnight_trade_runs_through_the_night(day: DayEngine, session: dict):
     sid = session["id"]
     st = day.step(sid, 71)   # the candle closing at 23:45
     assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 23, 45)
-    day.set_trend_check(sid, True)
     price = st["price"]
     z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0)
@@ -915,8 +904,7 @@ def test_ema_not_available_leaves_the_trend_unknown(db: Path):
     assert st["start_note"] and "100 daily candles" in st["start_note"]
     assert st["day"]["check"]["ema_above"] is None and st["day"]["check"]["ema200"] is None
     assert st["day"]["check"]["daily_close"] is not None
-    st = day.set_trend_check(sid, True)
-    assert st["day"]["uptrend"] is None and st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None
+    assert st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None
     z = day.add_zone(sid, "1h", st["price"] + 0.5, st["price"] - 3.0)
     p = day.plan(sid, z["id"])
     assert any("EMA 200 not available" in w for w in p["warnings"]) and p["can_buy"] is False   # no take-profit yet
@@ -946,7 +934,6 @@ def test_zones(day: DayEngine, session: dict):
 
 def test_picture_of_a_trade(day: DayEngine, session: dict):
     sid, price = session["id"], session["price"]
-    day.set_trend_check(sid, True)
     z = day.add_zone(sid, "1h", price + 0.5, price - 2.5)   # default stop = the middle = price - 1.0
     tid = day.buy(sid, z["id"], take_profit=price + 4.0)["trade"]["id"]
     with pytest.raises(NotFound):
@@ -962,14 +949,13 @@ def test_picture_of_a_trade(day: DayEngine, session: dict):
 
 def test_reset_and_delete(day: DayEngine, session: dict):
     sid, price = session["id"], session["price"]
-    day.set_trend_check(sid, True)
     z = day.add_zone(sid, "1h", price + 0.5, price - 2.5)   # default stop = the middle = price - 1.0
     tid = day.buy(sid, z["id"], take_profit=price + 4.0)["trade"]["id"]
     day.attach_image(sid, tid, PNG)
     day.step(sid, 3)
     st = day.reset(sid)
     assert st["cursor_ms"] == FIRST_CURSOR and st["cash"] == 100_000 and st["day"]["phase"] == "trading"
-    assert day.trades(sid)["trades"] == [] and day.zones(sid) == [] and st["day"]["check"]["hh_hl"] is None
+    assert day.trades(sid)["trades"] == [] and day.zones(sid) == []
     assert not (day.replay._snapshot_dir() / sid).exists()
     day.delete_session(sid)
     with pytest.raises(NotFound):
@@ -1022,7 +1008,6 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     d2 = day.days(sid)["days"][1]
     assert d2["outcome"] == "no trade" and d2["left_how"] == "end" and d2["left_local"] == "2018-05-12 05:45" and d2["notes"] is None
     # day 3: a trade; after the exit leaving_next is on (the continue is the jump), the row shows the trade
-    day.set_trend_check(sid, True)
     z = day.add_zone(sid, "1h", price + 0.5, price - 3.0)   # middle = price - 1.25, below the day-3 price
     day.buy(sid, z["id"], take_profit=None, ratio=2.0)
     assert day.state(sid)["day"]["leaving_next"] is False
@@ -1043,7 +1028,7 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     assert [r["date"] for r in rows] == ["2018-05-10", "2018-05-11", "2018-05-12", "2018-05-13"]
     csv_text = day.days_csv(sid)
     lines = csv_text.splitlines()
-    assert lines[0].startswith("date,daily_close,ema200,ema_above,hh_hl,uptrend,outcome,left_label") and len(lines) == 5
+    assert lines[0].startswith("date,daily_close,ema200,ema_above,outcome,left_label") and len(lines) == 5
     assert lines[1].startswith("2018-05-10,") and ",skipped,Skipped,2018-05-10 06:00,,,,,,,True,2018-05-10 06:00,quiet morning" in lines[1]
     assert ",trade,Trade closed," in lines[3] and ",1,early exit,Price stalls at resistance," in lines[3]
     # reset wipes the journal and its pictures

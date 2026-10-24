@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS day_sessions (
 );
 
 -- The trend check of one trading day (06:00 to 06:00, local date of its start).
--- ema_above is computed (1/0, NULL = EMA 200 not available), hh_hl is the user's answer (NULL = not yet).
+-- ema_above is computed (1/0, NULL = EMA 200 not available); hh_hl was the user's daily answer
+-- (retired 2026-10-24, old rows keep it, nothing reads it).
 CREATE TABLE IF NOT EXISTS day_checks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id    TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

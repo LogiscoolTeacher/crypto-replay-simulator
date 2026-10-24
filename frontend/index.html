@@ -215,7 +215,7 @@
             <thead><tr>
               <th data-col="pic">Chart</th><th class="sortable" data-col="seq" data-key="seq">#</th><th class="sortable" data-col="day" data-key="day_date">Day</th><th class="sortable" data-col="entry" data-key="entry_ms">Entry</th><th class="sortable" data-col="exit" data-key="exit_ms">Exit</th>
               <th class="sortable" data-col="type" data-key="exit_type" title="stop, take-profit or early exit">Type</th><th class="num sortable" data-col="held" data-key="hold_hours" title="Hours between the buy and the exit (an open trade counts up to now)">Held</th><th data-col="reason" title="Reason of an early exit (hover for the note)">Reason</th>
-              <th data-col="trend" title="Trend check: daily close above EMA 200 / higher highs and higher lows">Trend</th>
+              <th data-col="trend" title="Trend check: daily close above EMA 200">Trend</th>
               <th data-col="cond" title="The entry conditions at the buy (hover for the full list); evaluated in the Conditions tab">Conditions</th>
               <th class="num sortable" data-col="conf" data-key="confidence" title="Your confidence at the buy, 0 to 10">Conf.</th>
               <th class="sortable" data-col="review" data-key="review_n" title="Your review at 24:00 of the exit day: stop too tight, price later over the target, stop saved me">Review</th>
@@ -280,7 +280,7 @@
               <th>Condition</th>
               <th class="num first" title="Closed trades where the condition was met">With: trades</th><th class="num" title="Share of those trades with a positive P&amp;L after fees">With: win %</th><th class="num" title="Average R of those trades (P&amp;L divided by the risk amount)">With: avg R</th><th class="num" title="P&amp;L of those trades after fees, USDT">With: P&amp;L</th>
               <th class="num first" title="Closed trades where the condition was not met">Without: trades</th><th class="num">Without: win %</th><th class="num">Without: avg R</th><th class="num">Without: P&amp;L</th>
-              <th class="num first" title="Trades where the condition could not be told (for example no trend check answered)">Unknown</th>
+              <th class="num first" title="Trades where the condition could not be told (for example EMA 200 not available)">Unknown</th>
             </tr></thead>
             <tbody id="cond-list"></tbody>
           </table>
@@ -294,7 +294,7 @@
           </div>
           <table class="buckets" id="day-days-table">
             <thead><tr>
-              <th>Chart</th><th>Day</th><th title="Daily close above EMA 200 (computed)">Close &gt; EMA 200</th><th title="Higher highs and higher lows (your answer)">Higher H/L</th><th>Uptrend</th>
+              <th>Chart</th><th>Day</th><th title="Daily close above EMA 200 (computed)">Close &gt; EMA 200</th>
               <th title="How the day ended: no trade by 24:00, skipped, or a trade">Outcome</th><th title="When the replay left the day (UTC)">Left at</th>
               <th title="The day's trade">Trade</th><th class="num" title="P&amp;L after fees">P&amp;L</th><th class="num">%</th><th class="num" title="P&amp;L divided by the risk amount">R</th><th>Notes</th>
             </tr></thead>
@@ -422,8 +422,6 @@
         <div class="row-flex day-head"><div class="day-when"><b id="day-date" class="mono">&ndash;</b><span id="day-time" class="mono muted small"></span></div><span class="spacer"></span><span id="day-phase" class="badge"></span></div>
         <dl class="kv mtf">
           <dt title="Close of the last completed daily candle (UTC day) against the EMA 200 of the completed days; computed by the program">Close &gt; EMA 200</dt><dd id="day-ema" class="mono gauge small">&ndash;</dd>
-          <dt title="Higher highs and higher lows on the daily chart: your own judgment, once per day">Higher highs &amp; lows</dt><dd class="hh"><button type="button" id="btn-hh-yes" class="btn small chip">Yes</button> <button type="button" id="btn-hh-no" class="btn small chip">No</button></dd>
-          <dt title="Both answers yes">Uptrend</dt><dd id="day-uptrend" class="gauge">&ndash;</dd>
         </dl>
         <p id="day-gate" class="small muted" role="status"></p>
         <div class="row-flex">
@@ -623,20 +621,6 @@
         <button type="submit" class="btn primary" id="btn-confirm-reasons">Confirm</button>
       </div>
     </form>
-  </dialog>
-
-  <dialog id="dlg-trend" class="dialog" aria-labelledby="trend-title">
-    <h2 id="trend-title">Trend check for <span id="trend-date" class="mono"></span></h2>
-    <dl class="kv">
-      <dt>Daily close above EMA 200 <span class="muted small" id="trend-close-day"></span></dt><dd id="trend-ema" class="mono">&ndash;</dd>
-      <dt>Higher highs and higher lows?</dt><dd class="muted small">your own judgment on the daily chart</dd>
-    </dl>
-    <p class="muted small">Uptrend = both yes. Without an uptrend, Buy is blocked for this day; you can skip to the next day at 06:00.</p>
-    <div class="dialog-actions">
-      <button type="button" class="btn" id="btn-trend-later">Later</button>
-      <button type="button" class="btn" id="btn-trend-no">No</button>
-      <button type="button" class="btn primary" id="btn-trend-yes">Yes</button>
-    </div>
   </dialog>
 
   <dialog id="dlg-review" class="dialog review-dialog" aria-labelledby="review-title">

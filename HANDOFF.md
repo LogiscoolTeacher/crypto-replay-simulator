@@ -53,14 +53,14 @@ data/                               gitignored: replay.db, snapshots/ (pictures)
 06:00–24:00 is the entry window, 00:00–06:00 the night; both are labels only. Buying is allowed
 whenever no trade is open, also at night and several times a day. Stepping and Play run through the
 night. Crossing 06:00 leaves the day: its journal row records how (`No trade`, `Trade closed`,
-`Trade held past 06:00`, `Skipped`), and the day picture is taken just before. Play pauses when the
-new day's trend check opens.
+`Trade held past 06:00`, `Skipped`), and the day picture is taken just before.
 
 **Session**: 100 000 USDT start, risk fixed at 0.1 % of the start (100 USDT) per trade, fee 0.1 %
 per side (the side panel no longer shows the risk row). Base interval 15m; the chart shows 15m / 1h / 4h / 1D. Zones are drawn on 1h / 4h.
 
-**Trend check** per day: "daily close above EMA 200" (computed) + "higher highs and higher lows"
-(the user's Yes/No). Only saved with the trade; it doesn't block buying.
+**Trend check** per day: "daily close above EMA 200" (computed). Only saved with the trade; it
+doesn't block buying. The daily "higher highs and higher lows" Yes/No and its 06:00 popup were
+removed on 2026-10-24; old rows keep `hh_hl` / `uptrend` in the database, nothing reads them.
 
 **New trade**: entry at the close of the current 15m candle. Default stop = middle of the chosen
 zone; ATR stop (zone lower edge − 0.5 × ATR 14) offered; any stop below entry allowed. Target by
@@ -168,6 +168,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- No more "higher highs and higher lows": the Yes/No buttons, the Uptrend row, the 06:00 trend
+  popup, the `/check` route, the `hh_hl` / `uptrend` conditions and columns are gone.
 - UI declutter 5: long grey hint sentences (table toolbars, Highs & lows, New trade footer) are
   (i) tooltips (`.info`) now.
 - UI declutter 4: Volume delta indicator (`vdelta`: 2 × taker buy − volume per candle, own pane,

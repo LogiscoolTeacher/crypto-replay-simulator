@@ -390,8 +390,6 @@ body.day-mode .swing-only { display: none !important; }
 body:not(.day-mode) .day-only { display: none !important; }
 .day-head { gap: 8px; }
 .day-when { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }   /* date above the time */
-.kv dd.hh .chip { padding: 1px 10px; }
-.kv dd.hh .chip.on { background: #2563b8; border-color: #2563b8; color: #fff; }
 .kv dd.small { font-size: 12px; }
 .indicator-list.zones li .sw { background: #0ca30c; }
 .indicator-list.zones li.selected { outline: 1px solid var(--accent); }

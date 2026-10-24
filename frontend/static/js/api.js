@@ -56,7 +56,6 @@ export const api = {
   createDaySession: (body) => request('POST', '/api/day/sessions', body),
   daySession: (id) => request('GET', `/api/day/sessions/${id}`),
   dayPrepare: (id) => request('POST', `/api/day/sessions/${id}/prepare`),
-  dayCheck: (id, hh_hl) => request('POST', `/api/day/sessions/${id}/check`, { hh_hl }),
   dayZones: (id) => request('GET', `/api/day/sessions/${id}/zones`),
   dayAddZone: (id, body) => request('POST', `/api/day/sessions/${id}/zones`, body),
   dayUpdateZone: (id, zoneId, body) => request('PUT', `/api/day/sessions/${id}/zones/${zoneId}`, body),

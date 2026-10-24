@@ -251,10 +251,6 @@ class DaySessionCreate(BaseModel):
     name: str | None = Field(default=None, max_length=80)
 
 
-class TrendCheckRequest(BaseModel):
-    hh_hl: StrictBool = Field(description="Higher highs and higher lows on the daily chart, by your own judgment")
-
-
 class ZoneCreate(BaseModel):
     interval: str = Field(description="Chart the zone was drawn on: 1h or 4h", examples=["1h"])
     p1: float = Field(gt=0, allow_inf_nan=False, description="One edge of the zone (price); the order does not matter")
@@ -635,12 +631,6 @@ def day_prepare(session_id: str, background: BackgroundTasks) -> dict:
         st["status"] = "preparing"
         st["error"] = None
     return st
-
-
-@app.post("/api/day/sessions/{session_id}/check")
-def day_trend_check(session_id: str, req: TrendCheckRequest) -> dict:
-    """The user's "higher highs and higher lows" answer for the current trading day."""
-    return day.set_trend_check(session_id, req.hh_hl)
 
 
 @app.get("/api/day/sessions/{session_id}/zones")

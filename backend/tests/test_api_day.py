@@ -44,7 +44,7 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     base = f"/api/day/sessions/{sid}"
     st = session
     assert st["base_interval"] == "15m" and st["cursor_ms"] == FIRST_CURSOR and st["fee_rate"] == 0.001
-    assert st["day"]["date"] == "2018-05-10" and st["day"]["risk_amount"] == 100 and st["day"]["check"]["hh_hl"] is None
+    assert st["day"]["date"] == "2018-05-10" and st["day"]["risk_amount"] == 100 and "hh_hl" not in st["day"]["check"]
     assert st["day"]["entries_allowed"] is True and st["prepare_progress"] is None   # the trend check never blocks
     assert st["name"] == f"Day {SYMBOL} from 2018-05-10"
     # the shared listing shows the mode; the bucket controls refuse the session; the swing state still answers
@@ -55,10 +55,10 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert client.get(f"/api/sessions/{sid}").json()["mode"] == "day"
     assert client.post(f"{base}/prepare").json()["status"] == "ready"
 
-    # trend check
-    assert client.post(f"{base}/check", json={"hh_hl": "yes"}).status_code == 422
-    st = client.post(f"{base}/check", json={"hh_hl": True}).json()
-    assert st["day"]["check"]["hh_hl"] is True and st["day"]["uptrend"] is True and st["day"]["entries_allowed"] is True
+    # the daily "higher highs and higher lows" answer is gone: no /check route any more
+    assert client.post(f"{base}/check", json={"hh_hl": True}).status_code in (404, 405)
+    st = client.get(f"/api/day/sessions/{sid}").json()
+    assert st["day"]["check"]["ema_above"] is True and st["day"]["entries_allowed"] is True
     price = st["price"]
 
     # zones
@@ -181,7 +181,7 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     # continue -> next 06:00; skip -> the day after; reset -> back to the start
     r = client.post(f"{base}/continue")
     assert r.status_code == 200 and r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["date"] == "2018-05-11"
-    assert r.json()["day"]["phase"] == "trading" and r.json()["day"]["check"]["hh_hl"] is None
+    assert r.json()["day"]["phase"] == "trading"
     r = client.post(f"{base}/skip")
     assert r.status_code == 200 and r.json()["day"]["date"] == "2018-05-12"
     r = client.post(f"{base}/reset")
@@ -303,11 +303,11 @@ def test_next_signal_routes(client: TestClient, session: dict):
 def test_conditions_routes(client: TestClient, session: dict):
     sid = session["id"]
     r = client.get(f"/api/day/sessions/{sid}/trades")
-    assert r.status_code == 200 and all("conditions" in t and "uptrend" in t for t in r.json()["trades"])
+    assert r.status_code == 200 and all("conditions" in t and "ema_above" in t for t in r.json()["trades"])
     r = client.get(f"/api/day/sessions/{sid}/conditions")
     assert r.status_code == 200, r.text
     ev = r.json()
-    assert ev["scope"] == "session" and len(ev["conditions"]) == 16 and {"with", "without", "unknown", "key", "label"} <= set(ev["conditions"][0])
+    assert ev["scope"] == "session" and len(ev["conditions"]) == 14 and {"with", "without", "unknown", "key", "label"} <= set(ev["conditions"][0])
     assert client.get(f"/api/day/sessions/{sid}/conditions", params={"scope": "all"}).json()["scope"] == "all"
     assert client.get(f"/api/day/sessions/{sid}/conditions", params={"scope": "week"}).status_code == 422
     r = client.get(f"/api/day/sessions/{sid}/conditions.csv", params={"scope": "all"})

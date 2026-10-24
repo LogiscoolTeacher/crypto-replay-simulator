@@ -17,9 +17,10 @@ Clock (all times in UTC; until 2026-10-24 it was Europe/Malta)
   exit's trading day (at once after a night exit); nothing moves on until they are answered.
 * "Step back" moves one 15-minute candle back, never before the latest trade action (entry, exit,
   stop / target move) or the landing candle of the latest jump; nothing is undone.
-* The trend check of a day: "daily close above EMA 200" is computed from the completed daily
-  candles (UTC days, the exchange's boundary) known at the cursor; "higher highs and higher lows"
-  is the user's answer. Uptrend = both yes; otherwise Buy is blocked for the day.
+* The trend check of a day: "daily close above EMA 200", computed from the completed daily
+  candles (UTC days, the exchange's boundary) known at the cursor. It never blocks a buy; it is
+  saved with the trade. (Until 2026-10-24 the user also answered "higher highs and higher lows"
+  once a day; old rows keep that answer in `hh_hl` / `uptrend`, nothing reads it any more.)
 
 Trading
 * Risk per trade = 0.1 % of the STARTING capital (100 USDT at the default 100 000), fixed. Fee 0.1 % of the trade value on every buy
@@ -99,9 +100,7 @@ LEFT_LABELS = {LEFT_END: "No trade", LEFT_SKIP: "Skipped", LEFT_EXIT: "Trade clo
 # The entry conditions saved with every trade and evaluated afterwards (key, label). Each is
 # yes / no / unknown for a trade; see `trade_conditions`.
 CONDITIONS: tuple[tuple[str, str], ...] = (
-    ("uptrend", "Trend check: uptrend (EMA 200 and higher highs/lows)"),
     ("ema_above", "Daily close above EMA 200"),
-    ("hh_hl", "Higher highs and higher lows (your answer)"),
     ("price_in_zone", "Price inside the support zone"),
     ("rsi_dipped", f"RSI 14 (15m) dipped to {RSI_DIP_MAX:.0f} or below that day"),
     ("close_above_prev_high", "Entry candle closed above the previous high"),
@@ -124,10 +123,7 @@ CONDITION_SCOPES = ("session", "all")
 def trade_conditions(t: dict) -> dict[str, bool | None]:
     """The yes / no / unknown of every condition in CONDITIONS for one trade row."""
     flag = lambda v: None if v is None else bool(v)  # noqa: E731
-    ema, hh = flag(t.get("ema_above")), flag(t.get("hh_hl"))
-    uptrend = flag(t.get("uptrend"))
-    if uptrend is None and ema is not None and hh is not None:
-        uptrend = ema and hh
+    ema = flag(t.get("ema_above"))
     rr = t.get("rr")
     tol = abs(float(t["entry_price"])) * STOP_MATCH_PCT / 100.0
     stop0 = t["stop_used"] if t.get("stop_initial") is None else t["stop_initial"]
@@ -137,9 +133,7 @@ def trade_conditions(t: dict) -> dict[str, bool | None]:
     hour = to_local(int(t["entry_ms"]) + config.interval_ms(BASE_INTERVAL)).hour
     zone_iv = t.get("zone_interval")
     return {
-        "uptrend": uptrend,
         "ema_above": ema,
-        "hh_hl": hh,
         "price_in_zone": flag(t.get("price_in_zone")),
         "rsi_dipped": flag(t.get("rsi_dipped")),
         "close_above_prev_high": flag(t.get("close_above_prev_high")),
@@ -440,7 +434,6 @@ class DayEngine:
                 self._fill_alternatives(st, conn, pending)   # its 24:00 has passed: the alternatives can be settled
         # just closed before its 24:00: end the day there or keep trading
         exit_choice = last_exit is not None and close < self._review_end(last_exit)
-        uptrend = None if check["hh_hl"] is None or check["ema_above"] is None else bool(check["ema_above"] == 1 and check["hh_hl"] == 1)
         allowed, reason = self._entry_gate(st, ds, close, end, trade, traded, pending)
         loc = to_local(close)
         out.update({
@@ -450,7 +443,7 @@ class DayEngine:
             "local_time": local_str(close), "local_iso": loc.isoformat(),
             "utc_offset_min": int((loc.utcoffset() or timedelta()).total_seconds() // 60),
             "in_window": start <= close <= end, "night": close > end,
-            "check": self._public_check(check), "uptrend": uptrend,
+            "check": self._public_check(check),
             "entries_allowed": allowed, "block_reason": reason,
             "trade": self._public_trade(trade, st["fee_rate"], st["price"]) if trade else None,
             "auto": self._auto_of(sid, trade["id"], trade) if trade else None,   # the open trade's automatic twin
@@ -527,7 +520,7 @@ class DayEngine:
         try:
             with self.store.tx() as conn:
                 return self.store.add_check(conn, session_id=s["id"], day_date=d.isoformat(), day_start_ms=start, day_end_ms=end,
-                                            hh_hl=None, updated_at=_now_iso(), **ema)
+                                            updated_at=_now_iso(), **ema)
         except sqlite3.IntegrityError:  # created meanwhile by a parallel request
             with self.store.tx() as conn:
                 return self.store.get_check(conn, s["id"], d.isoformat())  # type: ignore[return-value]
@@ -549,20 +542,6 @@ class DayEngine:
             ema = v if math.isfinite(v) else None
         return {"daily_close": close, "daily_close_ms": close_ms, "ema200": ema, "ema_above": None if ema is None else int(close > ema)}
 
-    def set_trend_check(self, session_id: str, hh_hl: bool) -> dict:
-        """The user's answer to "higher highs and higher lows" for the current trading day."""
-        if not isinstance(hh_hl, bool):
-            raise Invalid("hh_hl must be true or false")
-        with self._lock:
-            s = self._ready(session_id)
-            close = s["cursor_ms"] + self._base_ms
-            d = trading_day(close)
-            start, end = day_bounds(d)
-            check = self._trend_check(s, d, start, end)
-            with self.store.tx() as conn:
-                self.store.update_check(conn, check["id"], hh_hl=int(hh_hl), updated_at=_now_iso())
-        return self.state(session_id)
-
     @staticmethod
     def _public_check(c: dict) -> dict:
         flag = lambda v: None if v is None else bool(v)  # noqa: E731
@@ -573,8 +552,6 @@ class DayEngine:
             "daily_close_iso": _iso(c["daily_close_ms"]) if c["daily_close_ms"] is not None else None,
             "ema200": c["ema200"],
             "ema_above": flag(c["ema_above"]),
-            "hh_hl": flag(c["hh_hl"]),
-            "uptrend": None if c["hh_hl"] is None else bool(c["ema_above"] == 1 and c["hh_hl"] == 1),
             "notes": c.get("notes"),
             "has_image": bool(c.get("image_path")),
             "image_local": local_str(c["image_ms"] + config.interval_ms(BASE_INTERVAL)) if c.get("image_ms") is not None else None,
@@ -712,13 +689,13 @@ class DayEngine:
                 rr = reward_to_risk(price, stop_used, tp)
                 if rr < RR_WARN_BELOW:
                     warnings.append(f"Reward-to-risk {rr:.2f} is below {RR_WARN_BELOW:.1f}.")
-        if day["uptrend"] is None:
-            warnings.append("Trend check not answered: the trend is saved as unknown with the trade."
-                            if day["check"]["hh_hl"] is None else "EMA 200 not available: the trend is saved as unknown with the trade.")
-        elif not day["uptrend"]:
-            warnings.append("No uptrend by the trend check (saved with the trade).")
+        ema_above = day["check"]["ema_above"]
+        if ema_above is None:
+            warnings.append("EMA 200 not available: the trend is saved as unknown with the trade.")
+        elif not ema_above:
+            warnings.append("The daily close is below the EMA 200 (saved with the trade).")
         signals = {
-            "uptrend": day["uptrend"],
+            "ema_above": ema_above,
             "price_in_zone": zone["lower"] <= price <= zone["upper"],
             "rsi": rsi,
             "rsi_1h": rsi_1h,
@@ -775,10 +752,8 @@ class DayEngine:
                 t = self.store.add_trade(
                     conn, session_id=session_id, status="open", day_date=day["date"],
                     ema_above=None if check["ema_above"] is None else int(check["ema_above"]),
-                    hh_hl=None if check["hh_hl"] is None else int(check["hh_hl"]),
                     entry_ms=s["cursor_ms"], entry_price=p["entry_price"], entry_rsi=p["signals"]["rsi"], entry_rsi_1h=sg["rsi_1h"], entry_atr=p["atr"],
                     zone_id=p["zone"]["id"], zone_upper=p["zone"]["upper"], zone_lower=p["zone"]["lower"], zone_interval=p["zone"]["interval"],
-                    uptrend=None if sg["uptrend"] is None else int(sg["uptrend"]),
                     price_in_zone=int(bool(sg["price_in_zone"])), rsi_dipped=None if sg["rsi_dipped"] is None else int(sg["rsi_dipped"]),
                     rsi_day_min=sg["rsi_day_min"], prev_high=sg["prev_high"],
                     close_above_prev_high=None if sg["close_above_prev_high"] is None else int(sg["close_above_prev_high"]),
@@ -1621,7 +1596,7 @@ class DayEngine:
         return {"days": [self._public_day(c, by_day.get(c["day_date"], []), st["fee_rate"], st["price"]) for c in checks]}
 
     def days_csv(self, session_id: str) -> str:
-        cols = ["date", "daily_close", "ema200", "ema_above", "hh_hl", "uptrend", "outcome", "left_label", "left_local",
+        cols = ["date", "daily_close", "ema200", "ema_above", "outcome", "left_label", "left_local",
                 "trade_seq", "exit_type", "exit_reason", "pnl", "pnl_pct", "r_multiple", "has_image", "image_local", "notes"]
         out = io.StringIO()
         w = csv.DictWriter(out, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
@@ -1743,8 +1718,9 @@ class DayEngine:
         out["capped"] = bool(t["capped"])
         out["overnight"] = bool(t["overnight"])
         out["ema_above"] = flag(t["ema_above"])
-        out["hh_hl"] = flag(t["hh_hl"])
-        for key in ("uptrend", "price_in_zone", "rsi_dipped", "close_above_prev_high"):
+        for key in ("hh_hl", "uptrend"):   # the retired daily answer (see the module docstring)
+            out.pop(key, None)
+        for key in ("price_in_zone", "rsi_dipped", "close_above_prev_high"):
             out[key] = flag(t.get(key))
         out["conditions"] = trade_conditions(t)
         out["confidence"] = t.get("confidence")   # 0..10 at the buy; None for trades from before the score existed
