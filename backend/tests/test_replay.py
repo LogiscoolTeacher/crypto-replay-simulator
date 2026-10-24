@@ -902,6 +902,25 @@ def test_view_partial_candle_is_aggregated_from_base(engine: ReplayEngine, sessi
     assert v["close"][-1] == close_at(START + 3 * H) and v["volume"][-1] == 40.0
 
 
+def test_aggregate_taker_buy_is_unknown_when_one_base_candle_lacks_it():
+    from app.replay.engine import aggregate
+    base = pd.DataFrame({"open": [1.0, 2.0], "high": [2.0, 3.0], "low": [0.5, 1.5], "close": [2.0, 2.5],
+                         "volume": [4.0, 6.0], "taker_buy": [3.0, 1.0]})
+    assert aggregate(base, 0)["taker_buy"] == 4.0
+    base.loc[1, "taker_buy"] = float("nan")
+    assert math.isnan(aggregate(base, 0)["taker_buy"])
+
+
+def test_view_volume_delta_also_on_the_forming_candle(engine: ReplayEngine, session: dict):
+    """The vdelta indicator: 2 x taker buy - volume per bar, the forming 4h candle summed from its
+    base candles (the fake's taker buys are 60 % of the volume: delta = 20 % of it)."""
+    sid = session["id"]
+    v = engine.view(sid, "4h", limit=3, indicators=[("vdelta", {})])
+    assert v["partial_last"] is True and v["volume"][-1] == 10.0
+    assert v["indicators"][0]["key"] == "vdelta"
+    assert v["indicators"][0]["outputs"]["delta"] == pytest.approx([8.0, 8.0, 2.0])
+
+
 def test_view_indicators_are_stable_as_cursor_advances(engine: ReplayEngine, session: dict):
     sid = session["id"]
     engine.step(sid, n=30)

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS candles (
     low        REAL    NOT NULL,
     close      REAL    NOT NULL,
     volume     REAL    NOT NULL,
+    taker_buy  REAL,              -- taker-buy base volume; NULL for candles stored before it was kept
     PRIMARY KEY (symbol, interval, open_time)
 ) WITHOUT ROWID;
 
@@ -68,8 +69,15 @@ class CandleStore:
         self.client = client or BinanceClient()
         self._locks: dict[tuple[str, str], threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # Volume delta backfill (see fill_taker_buy_soon): the series being filled, and when a fill
+        # of a series last failed, so a view never waits for it and offline it isn't retried at every step.
+        self._fill_running: set[tuple[str, str]] = set()
+        self._fill_failed: dict[tuple[str, str], float] = {}
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # additive migration: databases from before the volume delta lack the column
+            if "taker_buy" not in {r[1] for r in conn.execute("PRAGMA table_info(candles)")}:
+                conn.execute("ALTER TABLE candles ADD COLUMN taker_buy REAL")
 
     # ------------------------------------------------------------ connections
     @contextmanager
@@ -222,10 +230,73 @@ class CandleStore:
     def _insert(self, symbol: str, interval: str, klines: list[Kline]) -> None:
         with self._conn() as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO candles(symbol, interval, open_time, open, high, low, close, volume) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                [(symbol, interval, k.open_time, k.open, k.high, k.low, k.close, k.volume) for k in klines],
+                "INSERT OR REPLACE INTO candles(symbol, interval, open_time, open, high, low, close, volume, taker_buy) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                [(symbol, interval, k.open_time, k.open, k.high, k.low, k.close, k.volume, k.taker_buy) for k in klines],
             )
+
+    # ------------------------------------------------------- volume delta backfill
+    def missing_taker_buy(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> tuple[int, int] | None:
+        """(first, last) open time of the stored candles in [start_ms, end_ms] without a taker-buy
+        volume (downloaded before it was kept), or None when every candle has one."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MIN(open_time), MAX(open_time) FROM candles WHERE symbol=? AND interval=? "
+                "AND open_time BETWEEN ? AND ? AND taker_buy IS NULL",
+                (symbol, interval, int(start_ms), int(end_ms)),
+            ).fetchone()
+        return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
+
+    def fill_taker_buy(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> int:
+        """Download the candles of [start_ms, end_ms] again that have no taker-buy volume yet and
+        store them with it (prices and volumes are the same). Returns the candles rewritten."""
+        span = self.missing_taker_buy(symbol, interval, start_ms, end_ms)
+        if span is None:
+            return 0
+        step = interval_ms(interval)
+        cursor, last = span
+        done = 0
+        with self._series_lock(symbol, interval):
+            while cursor <= last:
+                rows = self.client.klines(symbol, BINANCE_INTERVAL[interval], start_ms=cursor, end_ms=last + step - 1)
+                # only candles already stored (closed), so the coverage stays as it is
+                keep = [k for k in rows if cursor <= k.open_time <= last and k.taker_buy is not None]
+                if keep:
+                    with self._conn() as conn:
+                        conn.executemany(
+                            "UPDATE candles SET taker_buy=? WHERE symbol=? AND interval=? AND open_time=?",
+                            [(k.taker_buy, symbol, interval, k.open_time) for k in keep],
+                        )
+                    done += len(keep)
+                if len(rows) < MAX_KLINES_PER_REQUEST:
+                    break
+                cursor = rows[-1].open_time + step
+        return done
+
+    def fill_taker_buy_soon(self, symbol: str, interval: str, start_ms: int, end_ms: int, retry_s: float = 600.0) -> bool:
+        """Start `fill_taker_buy` in a background thread when the window lacks taker-buy volumes,
+        so the chart never waits for the exchange (offline it only logs). After a failed fill the
+        series waits `retry_s` before the next try. Returns True when a fill was started."""
+        key = (symbol, interval)
+        failed = self._fill_failed.get(key)
+        if key in self._fill_running or (failed is not None and time.monotonic() - failed < retry_s):
+            return False
+        if self.missing_taker_buy(symbol, interval, start_ms, end_ms) is None:
+            return False
+        self._fill_running.add(key)
+
+        def run() -> None:
+            try:
+                n = self.fill_taker_buy(symbol, interval, start_ms, end_ms)
+                log.info("Volume delta: taker-buy volume added to %d %s %s candles", n, symbol, interval)
+            except Exception as exc:  # offline or rate limited: the delta stays empty for now
+                self._fill_failed[key] = time.monotonic()
+                log.warning("Volume delta backfill of %s %s failed: %s", symbol, interval, exc)
+            finally:
+                self._fill_running.discard(key)
+
+        threading.Thread(target=run, name=f"taker-fill-{symbol}-{interval}", daemon=True).start()
+        return True
 
     def _now_ms(self) -> int:
         try:
@@ -243,11 +314,12 @@ class CandleStore:
         end_ms: int | None = None,
         limit: int | None = None,
     ) -> pd.DataFrame:
-        """Candles ordered by time. Columns: time (unix SECONDS), open, high, low, close, volume.
+        """Candles ordered by time. Columns: time (unix SECONDS), open, high, low, close, volume,
+        taker_buy (NaN where not stored yet).
 
         With `limit`, the most recent `limit` candles of the window are returned.
         """
-        sql = "SELECT open_time, open, high, low, close, volume FROM candles WHERE symbol=? AND interval=?"
+        sql = "SELECT open_time, open, high, low, close, volume, taker_buy FROM candles WHERE symbol=? AND interval=?"
         params: list = [symbol, interval]
         if start_ms is not None:
             sql += " AND open_time >= ?"
@@ -263,7 +335,8 @@ class CandleStore:
         with self._conn() as conn:
             df = pd.read_sql_query(sql, conn, params=params)
         df["time"] = (df["open_time"] // 1000).astype("int64")
-        return df[["time", "open", "high", "low", "close", "volume"]]
+        df["taker_buy"] = df["taker_buy"].astype(float)   # NULL -> NaN, also in an all-NULL window
+        return df[["time", "open", "high", "low", "close", "volume", "taker_buy"]]
 
     def first_at_or_after(self, symbol: str, interval: str, ms: int) -> int | None:
         """Open time of the first stored candle with open_time >= ms, or None."""

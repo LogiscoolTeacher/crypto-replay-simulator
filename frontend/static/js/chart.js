@@ -12,7 +12,7 @@ import { PlanPrimitive } from './plan.js';
 import { RsiZonePrimitive } from './rsi.js';
 
 // Short indicator names for the legend box (the full names stay in the Indicators panel).
-const SHORT_NAMES = { ema: 'EMA', sma: 'SMA', bbands: 'BB', rsi: 'RSI', macd: 'MACD', atr: 'ATR', vwap: 'VWAP', stoch: 'Stoch', obv: 'OBV' };
+const SHORT_NAMES = { ema: 'EMA', sma: 'SMA', bbands: 'BB', rsi: 'RSI', macd: 'MACD', atr: 'ATR', vdelta: 'Vol \u0394', vwap: 'VWAP', stoch: 'Stoch', obv: 'OBV' };
 
 export const SERIES_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
 export const UP = '#0ca30c';
@@ -598,9 +598,10 @@ export class ChartView {
 
   // Bounded oscillators (RSI) read fine with 2 decimals; price-derived ones (MACD) need the
   // price precision plus two, otherwise a 0.63 USDT coin shows "0.00" everywhere.
-  paneDecimals(spec) { return spec.range ? 2 : this.precision + 2; }
+  paneDecimals(spec) { return spec.range || spec.key === 'vdelta' ? 2 : this.precision + 2; }
 
   paneFormat(spec) {
+    if (spec.key === 'vdelta') return { type: 'volume', precision: 1 };   // base-coin volume: 1.2K, 3.4M on the axis
     const d = this.paneDecimals(spec);
     return { type: 'price', precision: d, minMove: Math.pow(10, -d) };
   }
@@ -766,7 +767,8 @@ export class ChartView {
       const ind = view.data;
       if (!ind) continue;
       const key = view.instance ? view.instance.key : '';
-      const label = `${SHORT_NAMES[key] || view.spec.name} (${Object.values(ind.params).join(', ')})`;
+      const args = Object.values(ind.params);
+      const label = `${SHORT_NAMES[key] || view.spec.name}${args.length ? ` (${args.join(', ')})` : ''}`;
       const vals = view.outputs.map(out => {
         const v = (ind.outputs[out.name] || [])[i];
         return `<span class="sw" style="background:${out.color}"></span>${out.label} <b>${v === null || v === undefined ? '–' : fmtNum(v, view.spec.overlay ? undefined : this.paneDecimals(view.spec))}</b>`;

@@ -342,7 +342,7 @@ def fib_levels(p1: float, p2: float) -> list[dict]:
 
 
 def aggregate(base: pd.DataFrame, open_time_s: int) -> dict[str, float]:
-    """Aggregate base candles (DataFrame with open/high/low/close/volume) into one candle."""
+    """Aggregate base candles (DataFrame with open/high/low/close/volume/taker_buy) into one candle."""
     return {
         "time": int(open_time_s),
         "open": float(base["open"].iloc[0]),
@@ -350,6 +350,8 @@ def aggregate(base: pd.DataFrame, open_time_s: int) -> dict[str, float]:
         "low": float(base["low"].min()),
         "close": float(base["close"].iloc[-1]),
         "volume": float(base["volume"].sum()),
+        # NaN as soon as one base candle lacks it (stored before taker-buy volumes were kept)
+        "taker_buy": float(base["taker_buy"].sum(min_count=len(base))) if "taker_buy" in base else float("nan"),
     }
 
 
@@ -965,6 +967,14 @@ class ReplayEngine:
         df = self.candles.get_candles(s["symbol"], iv, anchor, cur_close - iv_ms, limit=limit + COMPUTE_WARMUP_BARS)
         partial_open = floor_to_slot(cursor, iv_ms)
         partial = partial_open + iv_ms > cur_close
+        if any(key == "vdelta" for key, _ in indicators or []):
+            # candles stored before taker-buy volumes were kept get them in the background; their
+            # delta bars stay empty until a later view (a step) picks them up
+            if len(df):
+                shown = df["time"].tail(limit)
+                self.candles.fill_taker_buy_soon(s["symbol"], iv, int(shown.iloc[0]) * 1000, int(shown.iloc[-1]) * 1000)
+            if partial:
+                self.candles.fill_taker_buy_soon(s["symbol"], s["base_interval"], partial_open, cursor)
         if partial:
             base = self.candles.get_candles(s["symbol"], s["base_interval"], partial_open, cursor)
             if len(base):

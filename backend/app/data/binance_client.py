@@ -32,6 +32,7 @@ class Kline(NamedTuple):
     close: float
     volume: float  # base asset units
     close_time: int  # ms since epoch, UTC; equals open_time + interval - 1
+    taker_buy: float | None = None  # base volume bought by takers (market buys); volume delta = 2 x this - volume
 
 
 class BinanceClient:
@@ -86,7 +87,8 @@ class BinanceClient:
             raise BinanceError(f"Unexpected klines payload: {raw!r}")
         out: list[Kline] = []
         for row in raw:
-            # Row layout documented by Binance: [openTime, o, h, l, c, v, closeTime, ...]
+            # Row layout documented by Binance: [openTime, o, h, l, c, v, closeTime, quoteVolume,
+            # trades, takerBuyBaseVolume, ...]
             out.append(
                 Kline(
                     open_time=int(row[0]),
@@ -96,6 +98,7 @@ class BinanceClient:
                     close=float(row[4]),
                     volume=float(row[5]),
                     close_time=int(row[6]),
+                    taker_buy=float(row[9]) if len(row) > 9 else None,
                 )
             )
         return out

@@ -136,6 +136,10 @@ from breakout to retest (was 519 / 2 with the wick rule).
 
 ## Candle data
 
+Each candle also stores `taker_buy` (Binance's taker-buy base volume, for the volume delta). Rows
+from before 2026-10-24 have NULL there until a view with the Volume delta indicator fills the
+window on screen in a background thread (offline: logged, retried after 10 minutes).
+
 `CandleStore` caches every closed candle in `data/replay.db` and keeps a `coverage` table of the
 ranges already requested, so only gaps are downloaded (real exchange gaps aren't re-requested). A
 request returns 1000 candles in ~0.4 s. A day session's first prepare takes seconds; the full
@@ -164,6 +168,9 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- UI declutter 4: Volume delta indicator (`vdelta`: 2 × taker buy − volume per candle, own pane,
+  green/red bars). Candles keep `taker_buy` (column added on open); candles stored before get it in
+  the background when the indicator is on (`CandleStore.fill_taker_buy_soon`, called from `view`).
 - UI declutter 3: the day clock is UTC (`TIMEZONE = "UTC"`), "Malta" is gone from every text. Old day
   sessions keep their stored days; from the cursor on, days start at 06:00 UTC. API names `*_local`
   stay (they now hold UTC).
