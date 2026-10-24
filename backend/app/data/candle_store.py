@@ -273,10 +273,13 @@ class CandleStore:
                 cursor = rows[-1].open_time + step
         return done
 
-    def fill_taker_buy_soon(self, symbol: str, interval: str, start_ms: int, end_ms: int, retry_s: float = 600.0) -> bool:
-        """Start `fill_taker_buy` in a background thread when the window lacks taker-buy volumes,
-        so the chart never waits for the exchange (offline it only logs). After a failed fill the
-        series waits `retry_s` before the next try. Returns True when a fill was started."""
+    def fill_taker_buy_soon(self, symbol: str, interval: str, start_ms: int, end_ms: int,
+                            fill_end_ms: int | None = None, retry_s: float = 600.0) -> bool:
+        """Start `fill_taker_buy` in a background thread when [start_ms, end_ms] lacks taker-buy
+        volumes, so the chart never waits for the exchange (offline it only logs). The fill runs to
+        `fill_end_ms` (default `end_ms`): ahead of what is checked, so a replay stepping forward
+        finds its next candles filled already. After a failed fill the series waits `retry_s`
+        before the next try. Returns True when a fill was started."""
         key = (symbol, interval)
         failed = self._fill_failed.get(key)
         if key in self._fill_running or (failed is not None and time.monotonic() - failed < retry_s):
@@ -287,7 +290,7 @@ class CandleStore:
 
         def run() -> None:
             try:
-                n = self.fill_taker_buy(symbol, interval, start_ms, end_ms)
+                n = self.fill_taker_buy(symbol, interval, start_ms, max(end_ms, fill_end_ms or end_ms))
                 log.info("Volume delta: taker-buy volume added to %d %s %s candles", n, symbol, interval)
             except Exception as exc:  # offline or rate limited: the delta stays empty for now
                 self._fill_failed[key] = time.monotonic()

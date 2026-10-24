@@ -138,7 +138,8 @@ from breakout to retest (was 519 / 2 with the wick rule).
 
 Each candle also stores `taker_buy` (Binance's taker-buy base volume, for the volume delta). Rows
 from before 2026-10-24 have NULL there until a view with the Volume delta indicator fills the
-window on screen in a background thread (offline: logged, retried after 10 minutes).
+window on screen and the next 1000 candles in a background thread (offline: logged, retried after
+10 minutes).
 
 `CandleStore` caches every closed candle in `data/replay.db` and keeps a `coverage` table of the
 ranges already requested, so only gaps are downloaded (real exchange gaps aren't re-requested). A
@@ -168,6 +169,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- Volume delta: the background fill of old candles runs 1000 bars past the cursor (`TAKER_FILL_AHEAD`
+  in engine.py); filling only up to the cursor left the newest bar empty after every step.
 - No more "higher highs and higher lows": the Yes/No buttons, the Uptrend row, the 06:00 trend
   popup, the `/check` route, the `hh_hl` / `uptrend` conditions and columns are gone.
 - UI declutter 5: long grey hint sentences (table toolbars, Highs & lows, New trade footer) are

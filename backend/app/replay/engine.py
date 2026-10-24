@@ -54,6 +54,13 @@ WARMUP_BARS = 1000  # bars of history downloaded before the session start, per v
 # bar 3000 back a weight of e^-30), so values equal a full-history computation to within
 # floating-point noise, while the per-step cost stays constant on long 1-minute sessions.
 COMPUTE_WARMUP_BARS = 3000
+# Volume delta of candles stored before taker-buy volumes were kept: the view fills them in the
+# background (CandleStore.fill_taker_buy_soon). Filling only up to the cursor left the newest bar
+# empty after every step (the step's view answers before its fill lands), so the fill runs
+# TAKER_FILL_AHEAD bars past the cursor (one exchange request) as soon as one of the next
+# TAKER_CHECK_AHEAD bars lacks the volume: every few hundred steps one request, well in time.
+TAKER_CHECK_AHEAD = 200
+TAKER_FILL_AHEAD = 1000
 MIN_ORDER_QUOTE = 1.0
 RSI_PERIOD = 14          # RSI recorded with every buy and sell
 RSI_WARMUP_BARS = 600    # bars fed to that RSI; far beyond where the seed stops mattering
@@ -968,13 +975,16 @@ class ReplayEngine:
         partial_open = floor_to_slot(cursor, iv_ms)
         partial = partial_open + iv_ms > cur_close
         if any(key == "vdelta" for key, _ in indicators or []):
-            # candles stored before taker-buy volumes were kept get them in the background; their
-            # delta bars stay empty until a later view (a step) picks them up
+            # candles stored before taker-buy volumes were kept get them in the background, also
+            # the coming ones (see TAKER_FILL_AHEAD); bars on screen stay empty until a later view
             if len(df):
                 shown = df["time"].tail(limit)
-                self.candles.fill_taker_buy_soon(s["symbol"], iv, int(shown.iloc[0]) * 1000, int(shown.iloc[-1]) * 1000)
-            if partial:
-                self.candles.fill_taker_buy_soon(s["symbol"], s["base_interval"], partial_open, cursor)
+                last = int(shown.iloc[-1]) * 1000
+                self.candles.fill_taker_buy_soon(s["symbol"], iv, int(shown.iloc[0]) * 1000, last + TAKER_CHECK_AHEAD * iv_ms,
+                                                 fill_end_ms=last + TAKER_FILL_AHEAD * iv_ms)
+            if partial:   # the forming candle is summed from base candles: fill those ahead as well
+                self.candles.fill_taker_buy_soon(s["symbol"], s["base_interval"], partial_open,
+                                                 cursor + TAKER_CHECK_AHEAD * base_ms, fill_end_ms=cursor + TAKER_FILL_AHEAD * base_ms)
         if partial:
             base = self.candles.get_candles(s["symbol"], s["base_interval"], partial_open, cursor)
             if len(base):
