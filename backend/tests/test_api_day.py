@@ -140,7 +140,11 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     # early exit
     assert client.post(f"{base}/sell", json={"reason": "other"}).status_code == 422
     assert client.post(f"{base}/sell", json={"reason": "nonsense"}).status_code == 422
-    r = client.post(f"{base}/sell", json={"reason": "stalls"})
+    assert client.post(f"{base}/sell", json={"reason": "stalls", "exits": "B"}).status_code == 422
+    r = client.post(f"{base}/sell", json={"reason": "stalls", "exits": "A"})   # exit A only: the trade stays open
+    assert r.status_code == 200 and r.json()["events"][0]["kind"] == "exit_leg" and r.json()["day"]["open_exits"] == ["C"]
+    assert client.post(f"{base}/sell", json={"reason": "stalls", "exits": "A"}).status_code == 409
+    r = client.post(f"{base}/sell", json={"reason": "stalls"})                  # "both": closes what is left (C)
     assert r.status_code == 200, r.text
     ev = r.json()["events"][0]
     assert ev["kind"] == "exit" and ev["exit_type"] == "early exit" and r.json()["day"]["phase"] == "exited"

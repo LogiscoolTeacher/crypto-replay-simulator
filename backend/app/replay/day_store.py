@@ -168,6 +168,9 @@ MIGRATIONS = {
         "mae_pct": "REAL", "mfe_pct": "REAL", "mae_r": "REAL", "mfe_r": "REAL",
         # the two hands-off alternatives (JSON: end_ms, alt1, alt2), filled once the replay reached their 24:00
         "alts": "TEXT",
+        # exits A and C (JSON: {"A": leg | null, "C": leg | null}, null = still open; NULL column = both
+        # open), each a whole-size version of the exit; the trade closes with the later one (see DayEngine.sell)
+        "exits_ac": "TEXT",
         # 1 = the review is asked once the replay reaches 24:00 of the exit's trading day (exits from
         # this rule on; older trades keep NULL and never hold the replay)
         "review_due": "INTEGER",

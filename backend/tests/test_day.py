@@ -15,6 +15,7 @@ from app.replay.day_engine import (
     DAY_NOTES_MAX_CHARS,
     STOP_ATR_MULT,
     DayEngine,
+    ac_public,
     alt_window_end,
     day_bounds,
     in_entry_window,
@@ -653,6 +654,88 @@ def test_old_trades_without_a_due_review_never_block(db: Path):
     st = day.end_day(sid)
     assert st["day"]["review_pending"] is None and st["day"]["can_continue"] is True
     assert day.step(sid)["events"] == []
+
+
+def test_exits_a_and_c_close_the_trade_with_the_later_one(db: Path):
+    """A sell closes exit A, C or both. While one is open the trade stays open and the cash is
+    untouched; the sell of the last one closes the trade at its candle, price and reason. Each
+    exit keeps its own whole-size result, like the alternatives."""
+    day = make(db)
+    sid = day.create_session("BTCUSDT", START, END)["id"]
+    day.prepare(sid)
+    p = day.state(sid)["price"]
+    z = day.add_zone(sid, "1h", p + 0.5, p - 0.5)
+    t = day.buy(sid, z["id"], take_profit=p + 50.0, stop=p - 50.0)["trade"]
+    assert t["exits_ac"] == {"A": {"status": "open"}, "C": {"status": "open"}}
+    cash = day.state(sid)["cash"]
+    day.step(sid, 2)
+    st = day.sell(sid, "stalls", exits="A")
+    ev = st["events"][0]
+    assert ev["kind"] == "exit_leg" and ev["closed"] == ["A"] and ev["open"] == ["C"]
+    assert st["day"]["trade"] is not None and st["day"]["phase"] == "trading" and st["cash"] == cash
+    a = st["day"]["trade"]["exits_ac"]["A"]
+    a_price = st["price"]
+    assert a["status"] == "closed" and a["exit_price"] == a_price and a["exit_type"] == "early exit" and a["reason"] == "stalls"
+    assert a["exit_ms"] == st["cursor_ms"] and a["diff"] is None and st["day"]["trade"]["exits_ac"]["C"] == {"status": "open"}
+    assert a["pnl"] == pytest.approx(trade_result(t["entry_price"], a_price, t["coins"], t["position_value"], t["buy_fee"], 0.001, t["risk_amount"])["pnl"])
+    assert st["day"]["open_exits"] == ["C"] and st["day"]["can_step_back"] is False   # A's close is the floor
+    with pytest.raises(Conflict):
+        day.sell(sid, "stalls", exits="A")
+    day.step(sid, 3)
+    st = day.sell(sid, "other", note="done", exits="C")                # the later exit: the real one
+    ev = st["events"][0]
+    assert ev["kind"] == "exit" and st["day"]["phase"] == "exited"
+    tr = ev["trade"]
+    assert tr["exit_ms"] == st["cursor_ms"] and tr["exit_price"] == st["price"] and tr["exit_reason"] == "other"
+    c = tr["exits_ac"]["C"]
+    assert c["exit_price"] == tr["exit_price"] and c["pnl"] == pytest.approx(tr["pnl"]) and c["diff"] == pytest.approx(0.0)
+    assert tr["exits_ac"]["A"]["exit_price"] == a_price and tr["exits_ac"]["A"]["diff"] == pytest.approx(tr["exits_ac"]["A"]["pnl"] - tr["pnl"])
+    assert st["cash"] == pytest.approx(cash + tr["coins"] * tr["exit_price"] - tr["sell_fee"])  # booked once, at C
+    auto = day.auto_trades(sid)
+    row = auto["trades"][0]
+    assert row["exits_ac"]["A"]["status"] == "closed" and row["exits_ac"]["C"]["status"] == "closed"
+    assert auto["summary"]["A"]["count"] == 1 and auto["summary"]["C"]["count"] == 1
+    assert auto["summary"]["A"]["by_type"]["early exit"] == 1 and auto["summary"]["C"]["diff"] == pytest.approx(0.0)
+
+
+def test_exits_a_and_c_stop_hit_closes_what_is_open(db: Path):
+    """A stop hit closes the exits still open at the stop, then the trade; a sell of "both" closes
+    both exits at once with the same price and reason."""
+    price = quarter_candle(FIRST_CURSOR)[3]
+    hit = FIRST_CURSOR + 2 * Q
+    day = make(db, {hit: (price, price + 0.1, price - 10.0, price)})
+    sid = day.create_session("BTCUSDT", START, END)["id"]
+    day.prepare(sid)
+    z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
+    day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 2.0)
+    day.step(sid)
+    a_price = day.state(sid)["price"]
+    day.sell(sid, "adverse_move", exits="A")
+    st = day.step(sid)                                                  # the stop candle
+    ev = st["events"][0]
+    assert ev["kind"] == "exit" and ev["exit_type"] == "stop"
+    legs = ev["trade"]["exits_ac"]
+    assert legs["A"]["exit_type"] == "early exit" and legs["A"]["exit_price"] == a_price
+    assert legs["C"]["exit_type"] == "stop" and legs["C"]["exit_price"] == pytest.approx(price - 2.0) and legs["C"]["exit_ms"] == hit
+    assert legs["C"]["reason"] is None and ev["trade"]["exit_price"] == legs["C"]["exit_price"]
+
+
+def test_exits_a_and_c_of_old_trades():
+    """A trade closed before the exits existed has none (not two open ones); an open one has both open."""
+    base = {"entry_ms": FIRST_CURSOR, "exits_ac": None}
+    assert ac_public({**base, "status": "closed", "pnl": 1.0}) is None
+    assert ac_public({**base, "status": "open"}) == {"A": {"status": "open"}, "C": {"status": "open"}}
+
+
+def test_exits_a_and_c_both_at_once(day: DayEngine, session: dict):
+    sid, p = session["id"], session["price"]
+    z = day.add_zone(sid, "1h", p + 0.5, p - 3.0)
+    day.buy(sid, z["id"], None, ratio=2.0)
+    day.step(sid)
+    tr = day.sell(sid, "news")["events"][0]["trade"]                    # the default: both
+    a, c = tr["exits_ac"]["A"], tr["exits_ac"]["C"]
+    assert a["exit_price"] == c["exit_price"] == tr["exit_price"] and a["reason"] == c["reason"] == "news"
+    assert a["pnl"] == pytest.approx(tr["pnl"]) and a["exit_ms"] == c["exit_ms"] == tr["exit_ms"]
 
 
 def test_step_back_stops_at_the_latest_action(db: Path):

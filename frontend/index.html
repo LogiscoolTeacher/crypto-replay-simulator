@@ -237,7 +237,7 @@
           <div class="table-tools">
             <span id="auto-summary" class="small mono"></span>
             <span class="spacer"></span>
-            <span class="info" tabindex="0" role="note" title="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash." aria-label="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash.">i</span>
+            <span class="info" tabindex="0" role="note" title="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. Exit A / C: your two exit versions (whole position each); the later one is the real exit. P&amp;L after fees, no effect on your cash." aria-label="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash.">i</span>
           </div>
           <table class="buckets" id="day-auto-table" aria-label="Automatic exits">
             <thead><tr>
@@ -246,6 +246,8 @@
               <th title="How your manual trade ended">Manual exit</th><th class="num" title="Hours your manual trade was held">Manual held</th><th class="num" title="P&amp;L of your manual trade after fees">Manual P&amp;L</th><th class="num" title="Twin minus manual: positive = hands-off would have done better">Difference</th>
               <th title="Alternative 1: the stop and target of the buy, closed with the 24:00 candle when neither was hit (a night buy runs to the next 24:00)">Alt 1 exit</th><th class="num" title="P&amp;L of Alt 1 after fees">Alt 1 P&amp;L</th><th class="num" title="Alt 1 P&amp;L divided by the risk amount">Alt 1 R</th>
               <th class="num" title="Alternative 2: the stop of the buy and a target 2 x the risk above the entry">Alt 2 target</th><th title="How Alt 2 ended: stop, take-profit or the 24:00 close">Alt 2 exit</th><th class="num" title="P&amp;L of Alt 2 after fees">Alt 2 P&amp;L</th><th class="num" title="Alt 2 P&amp;L divided by the risk amount">Alt 2 R</th>
+              <th title="Exit A: how and when it closed (hover for the price, reason and the difference to the real exit)">A exit</th><th class="num" title="P&amp;L of exit A after fees (whole position)">A P&amp;L</th><th class="num" title="Exit A P&amp;L divided by the risk amount">A R</th>
+              <th title="Exit C: how and when it closed (hover for the price, reason and the difference to the real exit)">C exit</th><th class="num" title="P&amp;L of exit C after fees (whole position)">C P&amp;L</th><th class="num" title="Exit C P&amp;L divided by the risk amount">C R</th>
             </tr></thead>
             <tbody id="day-auto-list"></tbody>
           </table>
@@ -426,7 +428,7 @@
         <p id="day-gate" class="small muted" role="status"></p>
         <div class="row-flex">
           <button type="button" id="btn-day-new" class="btn buy" title="Open the New trade panel (N)">New trade</button>
-          <button type="button" id="btn-day-sell" class="btn sell" title="Early exit at the close of this candle, with a reason (X)">Sell</button>
+          <button type="button" id="btn-day-sell" class="btn sell" title="Early exit at the close of this candle, with a reason: exit A, C or both (X)">Sell</button>
           <span class="spacer"></span>
           <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 06:00 (K)">Skip day &rarr; 06:00</button>
           <button type="button" id="btn-day-continue" class="btn small primary hidden" title="The trade has closed: jump to the next day at 06:00 (or buy again / step on instead)">Continue &rarr; 06:00</button>
@@ -465,6 +467,7 @@
           <dt>Size</dt><dd id="dt-size" class="mono small">&ndash;</dd>
           <dt title="Risk of the trade in USDT and the reward-to-risk with the current stop and target">Risk · R/R</dt><dd id="dt-risk" class="mono">&ndash;</dd>
           <dt title="The automatic-exit twin of this trade: original stop and target, closed only when one of them is hit (see the Auto exits tab)">Auto twin</dt><dd id="dt-auto" class="mono small">&ndash;</dd>
+          <dt title="Exits A and C: two versions of the exit, each for the whole position. The trade closes once both are closed, at the later one.">Exits A / C</dt><dd id="dt-ac" class="mono small">&ndash;</dd>
           <dt>P&amp;L now</dt><dd id="dt-pnl" class="mono gauge">&ndash;</dd>
         </dl>
         <div class="sub" id="day-zones-sub" data-fold>
@@ -649,6 +652,13 @@
         <button type="button" id="btn-exit-cancel" class="btn icon" aria-label="Close">&times;</button>
       </div>
       <p class="muted small">Early exit at the close of this candle. One reason is required.</p>
+      <div class="exit-legs" id="exit-legs" role="radiogroup" aria-label="Which exit to close">
+        <span class="small muted">Close</span>
+        <label class="chip"><input type="radio" name="exit-legs" value="A"> A</label>
+        <label class="chip"><input type="radio" name="exit-legs" value="C"> C</label>
+        <label class="chip"><input type="radio" name="exit-legs" value="both"> Both</label>
+        <span class="info" tabindex="0" role="note" title="A and C are two versions of the exit, each for the whole position. The trade stays open until both are closed and then closes at the later one (that one books the cash). A stop or target hit closes whatever is still open." aria-label="About exits A and C">i</span>
+      </div>
       <div id="exit-reasons" class="reasons-grid exit-grid" role="radiogroup" aria-label="Exit reason"></div>
       <label class="reasons-note">Note <span class="muted">(required for "Other")</span>
         <input id="exit-note" type="text" maxlength="500" autocomplete="off"></label>

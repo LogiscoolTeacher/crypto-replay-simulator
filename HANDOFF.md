@@ -72,6 +72,14 @@ move is logged; the old Move form and the M key are gone).
 target; both in one candle count as the stop. Fills are exactly at the level, with no gap model.
 Early exit by hand needs a reason (`EXIT_REASONS`).
 
+**Exits A and C**: two whole-size versions of the exit, recorded like Alt 1 / Alt 2
+(`day_trades.exits_ac` JSON, `ac_legs` / `ac_public`, `DayEngine._close_legs`). The Sell dialog
+closes A, C or both (`exits` on POST …/sell; "both" = whatever is still open). While one is open
+the trade stays open and the cash is untouched (event `exit_leg`); the sell that closes the last
+one is the real exit (its time, price and reason book the cash). A stop / target hit closes
+whatever is still open at that level. A closed exit is a step-back floor. Trades closed before
+this have no A / C (`exits_ac` is None in the API).
+
 **After an exit by day** the replay stays on the exit candle and the side panel asks:
 - **End the day → 24:00** (`POST …/end-day`): jumps to the candle closing at 24:00 of the exit's
   trading day.
@@ -169,6 +177,9 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- Exits A and C: a sell closes exit A, C or both; the trade stays open until both are closed and
+  then closes at the later one. Stored as JSON in `day_trades.exits_ac`, shown in the Sell dialog,
+  the day panel, the Auto exits tab (columns + summary) and the trade detail.
 - Volume delta: the background fill of old candles runs 1000 bars past the cursor (`TAKER_FILL_AHEAD`
   in engine.py); filling only up to the cursor left the newest bar empty after every step.
 - No more "higher highs and higher lows": the Yes/No buttons, the Uptrend row, the 06:00 trend

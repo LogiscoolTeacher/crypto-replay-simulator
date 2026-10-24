@@ -10,7 +10,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -277,6 +277,7 @@ class DayBuyRequest(DayPlanRequest):
 
 class DaySellRequest(BaseModel):
     reason: str = Field(description="Exit reason key (state.day.exit_reasons)")
+    exits: Literal["A", "C", "both"] = Field(default="both", description="Which exit to close; the trade closes once A and C are both closed")
     note: str | None = Field(default=None, max_length=day_rules.NOTE_MAX_CHARS, description="Free text; required for the reason 'other'")
 
 
@@ -667,7 +668,7 @@ def day_buy(session_id: str, req: DayBuyRequest) -> dict:
 @app.post("/api/day/sessions/{session_id}/sell")
 def day_sell(session_id: str, req: DaySellRequest) -> dict:
     """Early exit at the close of the current candle."""
-    return day.sell(session_id, req.reason, req.note)
+    return day.sell(session_id, req.reason, req.note, req.exits)
 
 
 @app.patch("/api/day/sessions/{session_id}/trade")

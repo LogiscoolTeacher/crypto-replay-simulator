@@ -450,6 +450,10 @@ table.buckets td.outcome.skipped { color: var(--ink-2); }
 .warn { color: var(--warning); }
 #nt-warn:empty, #nt-error:empty, #exit-error:empty { display: none; }
 .exit-grid { grid-template-columns: 1fr; }
+.exit-legs { display: flex; align-items: center; gap: 6px; margin: 8px 0 2px; }
+.exit-legs .chip { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.exit-legs .chip:has(input:disabled) { opacity: 0.45; cursor: default; }
+.exit-legs input { margin: 0; }
 .btn.chip { border-radius: 999px; }
 
 /* Day trading: move the stop / target of the open trade */

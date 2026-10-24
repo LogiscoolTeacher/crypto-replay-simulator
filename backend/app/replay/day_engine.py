@@ -35,6 +35,10 @@ Trading
   high >= take-profit -> exit at the take-profit ("take-profit"); both in one candle -> stop. Fills
   are exactly at the level (no gap or slippage model: a known limitation of v1).
 * Early exit by hand at the close of the current candle ("early exit") with a required reason.
+* Exits A and C: two whole-size versions of the exit, recorded side by side (like Alt 1 / Alt 2).
+  A sell closes A, C or both; the trade stays open until both are closed and then closes at the
+  later one (its time, price and reason book the cash, P&L and R). A stop / take-profit hit closes
+  whatever is still open at that level.
 * P&L = sell value - position value - buy fee - sell fee; P&L % of the position value;
   R = P&L / risk_amount (the nominal 0.1 %). "What if" after the exit: highest high and lowest low of
   the 15-minute candles after the exit candle until 24:00 of the exit day (local date of the exit
@@ -167,6 +171,8 @@ EXIT_STOP, EXIT_TP, EXIT_EARLY = "stop", "take-profit", "early exit"
 EXIT_EOD, EXIT_DATA_END = "end of day", "end of data"
 ALT_RATIO = 2.0
 ALT_KEYS = ("alt1", "alt2")
+AC_KEYS = ("A", "C")                # the two exits a sell chooses from (see DayEngine.sell)
+AC_CHOICES = {"A": ("A",), "C": ("C",), "both": AC_KEYS}
 HOUR_MS = 3_600_000
 EXIT_REASONS: tuple[tuple[str, str], ...] = (
     ("stalls", "Price stalls at resistance"),
@@ -306,6 +312,34 @@ def alts_public(t: dict) -> dict | None:
         x = dict(a[k])
         x["exit_local"] = local_str(x["exit_ms"] + config.interval_ms(BASE_INTERVAL))
         x["hold_hours"] = hold_hours(t["entry_ms"], x["exit_ms"])
+        x["diff"] = (x["pnl"] - t["pnl"]) if t.get("status") == "closed" and t.get("pnl") is not None else None
+        out[k] = x
+    return out
+
+
+def ac_legs(t: dict) -> dict[str, dict | None]:
+    """Exits A and C of a trade: {"A": leg or None, "C": leg or None}; None = still open (also for
+    trades from before the exits existed, whose column is NULL)."""
+    raw = t.get("exits_ac")
+    data = (json.loads(raw) if isinstance(raw, str) else dict(raw)) if raw else {}
+    return {k: data.get(k) for k in AC_KEYS}
+
+
+def ac_public(t: dict) -> dict | None:
+    """Exits A and C for the API: per exit "open", or the closed leg with its local time, hours held,
+    reason label and the difference to the real result (once the trade is closed). None for a trade
+    closed before the exits existed (nothing was recorded)."""
+    if not t.get("exits_ac") and t.get("status") == "closed":
+        return None
+    out: dict[str, Any] = {}
+    for k, leg in ac_legs(t).items():
+        if leg is None:
+            out[k] = {"status": "open"}
+            continue
+        x = dict(leg, status="closed")
+        x["exit_local"] = local_str(x["exit_ms"] + config.interval_ms(BASE_INTERVAL))
+        x["hold_hours"] = hold_hours(t["entry_ms"], x["exit_ms"])
+        x["reason_label"] = EXIT_REASON_LABELS.get(x.get("reason") or "")
         x["diff"] = (x["pnl"] - t["pnl"]) if t.get("status") == "closed" and t.get("pnl") is not None else None
         out[k] = x
     return out
@@ -455,6 +489,8 @@ class DayEngine:
             "leaving_next": self._leaving_next(st, ds, trade),
             "can_skip": ds["phase"] == "trading" and trade is None and not st["finished"],
             "can_sell": ds["phase"] == "trading" and trade is not None,
+            # which of exits A / C a sell may still close (both while neither is closed)
+            "open_exits": [k for k, leg in ac_legs(trade).items() if leg is None] if trade is not None else [],
             "can_continue": ds["phase"] == "exited" and pending is None and not exit_choice,
             "exit_choice": exit_choice and pending is None,
             "can_step_back": pending is None and self._step_back_target(st, ds) is not None,
@@ -824,9 +860,13 @@ class DayEngine:
         st = self.state(session_id)
         return {"trade": self._public_trade(trade, s["fee_rate"], st["price"]), "state": st}
 
-    def sell(self, session_id: str, reason: str, note: str | None = None) -> dict:
+    def sell(self, session_id: str, reason: str, note: str | None = None, exits: str = "both") -> dict:
         """Early exit by hand at the close of the current candle; a reason from EXIT_REASONS is
-        required, "other" needs a note."""
+        required, "other" needs a note. `exits` closes exit A, C or both (= whatever is still open):
+        while one of them is still open the trade stays open (cash untouched, an "exit_leg" event);
+        the sell that closes the last one closes the trade at this candle (the later exit is the real one)."""
+        if exits not in AC_CHOICES:
+            raise Invalid(f"exits must be one of {list(AC_CHOICES)}")
         if reason not in EXIT_REASON_LABELS:
             raise Invalid(f"reason must be one of {list(EXIT_REASON_LABELS)}")
         note = self._note(note, "note")
@@ -841,11 +881,37 @@ class DayEngine:
                 trade = self.store.open_trade(conn, session_id)
             if trade is None:
                 raise Conflict("No trade is open.")
+            legs = ac_legs(trade)
+            if exits != "both" and legs[exits] is not None:   # "both" closes whatever is still open
+                raise Conflict(f"Exit {exits} is already closed.")
             price = self.replay._price(s)
-            ev = self._exit(s, trade, s["cursor_ms"], price, EXIT_EARLY, reason, note)
+            still_open = self._close_legs(s, trade, AC_CHOICES[exits], s["cursor_ms"], price, EXIT_EARLY, reason, note)
+            if still_open:
+                ev = {"kind": "exit_leg", "closed": [k for k in AC_CHOICES[exits] if legs[k] is None], "open": still_open,
+                      "trade": self._public_trade(trade, s["fee_rate"], price)}
+            else:
+                ev = self._exit(s, trade, s["cursor_ms"], price, EXIT_EARLY, reason, note)
         st = self.state(session_id)
         st["events"] = [ev]
         return st
+
+    def _close_legs(self, s: dict, trade: dict, keys: tuple[str, ...], exit_ms: int, exit_price: float,
+                    exit_type: str, reason: str | None = None, note: str | None = None) -> list[str]:
+        """Close exits `keys` (those still open) of `trade` at `exit_price`, each a whole-size result
+        like the alternatives; saved at once. Returns the exits still open afterwards."""
+        legs = ac_legs(trade)
+        for k in keys:
+            if legs[k] is not None:
+                continue
+            res = trade_result(trade["entry_price"], exit_price, trade["coins"], trade["position_value"], trade["buy_fee"],
+                               s["fee_rate"], trade["risk_amount"])
+            legs[k] = {"exit_ms": exit_ms, "exit_price": exit_price, "exit_type": exit_type, "reason": reason, "note": note,
+                       "pnl": res["pnl"], "pnl_pct": res["pnl_pct"], "r_multiple": res["r_multiple"]}
+        raw = json.dumps(legs)
+        with self.store.tx() as conn:
+            self.store.update_trade(conn, trade["id"], exits_ac=raw, updated_at=_now_iso())
+        trade["exits_ac"] = raw
+        return [k for k in AC_KEYS if legs[k] is None]
 
     def _exit(self, s: dict, trade: dict, exit_ms: int, exit_price: float, exit_type: str,
               reason: str | None = None, note: str | None = None) -> dict:
@@ -1109,6 +1175,17 @@ class DayEngine:
                 "compared": len(same), "manual_pnl": sum(m["pnl"] for _, m in same), "alt_pnl": sum(x["pnl"] for x, _ in same),
             }
             summary[k]["diff"] = summary[k]["alt_pnl"] - summary[k]["manual_pnl"]
+        for k in AC_KEYS:   # exits A and C, over the trades where that exit has closed
+            legs = [a["exits_ac"][k] for a in out if a["exits_ac"] and a["exits_ac"][k]["status"] == "closed"]
+            same = [(a["exits_ac"][k], a["manual"]) for a in out
+                    if a["exits_ac"] and a["exits_ac"][k]["status"] == "closed" and a["manual"] and a["manual"]["status"] == "closed"]
+            summary[k] = {
+                "count": len(legs), "wins": sum(1 for x in legs if x["pnl"] > 0),
+                "pnl": sum(x["pnl"] for x in legs), "avg_r": avg([x["r_multiple"] for x in legs if x["r_multiple"] is not None]),
+                "by_type": {typ: sum(1 for x in legs if x["exit_type"] == typ) for typ in (EXIT_STOP, EXIT_TP, EXIT_EARLY)},
+                "compared": len(same), "manual_pnl": sum(m["pnl"] for _, m in same), "leg_pnl": sum(x["pnl"] for x, _ in same),
+            }
+            summary[k]["diff"] = summary[k]["leg_pnl"] - summary[k]["manual_pnl"]
         return {"trades": out, "summary": summary, "price": st["price"]}
 
     @classmethod
@@ -1140,6 +1217,7 @@ class DayEngine:
         out["manual"] = m
         out["diff"] = (a["pnl"] - manual["pnl"]) if (m and a["status"] == "closed" and manual["status"] == "closed") else None
         out["alts"] = alts_public(manual) if manual is not None else None
+        out["exits_ac"] = ac_public(manual) if manual is not None else None
         return out
 
     # ------------------------------------------------------------------ clock
@@ -1393,8 +1471,10 @@ class DayEngine:
                 self.store.update_trade(conn, trade["id"], overnight=1, updated_at=_now_iso())
             trade["overnight"] = 1
         if low <= trade["stop_used"]:  # both reached in one candle counts as the stop
+            self._close_legs(s, trade, AC_KEYS, nxt, trade["stop_used"], EXIT_STOP)   # whatever of A / C is still open
             return self._exit(s, trade, nxt, trade["stop_used"], EXIT_STOP)
         if high >= trade["take_profit"]:
+            self._close_legs(s, trade, AC_KEYS, nxt, trade["take_profit"], EXIT_TP)
             return self._exit(s, trade, nxt, trade["take_profit"], EXIT_TP)
         return self._review_event(s)
 
@@ -1459,8 +1539,8 @@ class DayEngine:
     # --------------------------------------------------------------- step back
     def _back_floor(self, s: dict, ds: dict) -> int:
         """The earliest candle Step back may return to: the latest of the first 06:00, the latest
-        jump's landing candle, the open trade's entry and its last stop / target move, and the exit
-        of the latest closed trade. Nothing before it is undone."""
+        jump's landing candle, the open trade's entry, its last stop / target move and its closed
+        exit A / C, and the exit of the latest closed trade. Nothing before it is undone."""
         marks = [s["data_start_ms"], ds.get("start_cursor_ms"), ds.get("back_floor_ms")]
         with self.store.tx() as conn:
             trade = self.store.open_trade(conn, s["id"])
@@ -1468,6 +1548,7 @@ class DayEngine:
         if trade is not None:
             marks.append(trade["entry_ms"])
             marks += [c["at_ms"] for c in trade_changes(trade)]
+            marks += [leg["exit_ms"] for leg in ac_legs(trade).values() if leg is not None]
         marks += [t["exit_ms"] for t in closed if t["exit_ms"] is not None]
         return max(m for m in marks if m is not None)
 
@@ -1757,6 +1838,7 @@ class DayEngine:
             "high_vs_entry_pct": t["whatif_high_vs_entry_pct"], "low_vs_entry_pct": t["whatif_low_vs_entry_pct"],
         }
         out["alts"] = alts_public(t)
+        out["exits_ac"] = ac_public(t)
         if t["status"] == "open" and price is not None:
             mv = t["coins"] * price
             unrealized = mv * (1.0 - fee_rate) - t["position_value"] - t["buy_fee"]  # if sold now, after fees
