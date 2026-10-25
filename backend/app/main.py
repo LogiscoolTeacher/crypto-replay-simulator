@@ -285,6 +285,7 @@ class DayReviewRequest(BaseModel):
     stop_tight: bool = Field(strict=True, description="The stop was too tight")
     over_target: bool = Field(strict=True, description="The price later went over the target (out too early)")
     stop_saved: bool = Field(strict=True, description="The stop saved me")
+    stop_moved_up: bool = Field(strict=True, description="I moved the stop too far up")
 
 
 class DayMoveRequest(BaseModel):
@@ -772,7 +773,7 @@ def day_trade_image(session_id: str, trade_id: int) -> FileResponse:
 
 @app.post("/api/day/sessions/{session_id}/trades/{trade_id}/review")
 def day_trade_review(session_id: str, trade_id: int, req: DayReviewRequest) -> dict:
-    """Answer (or change) the three review marks of a closed trade; the replay waits for them after every exit."""
+    """Answer (or change) the four review marks of a closed trade; the replay waits for them after every exit."""
     return day.review(session_id, trade_id, req.model_dump())
 
 

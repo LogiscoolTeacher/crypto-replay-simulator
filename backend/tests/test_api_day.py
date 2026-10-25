@@ -160,13 +160,14 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert r.json()["day"]["review_pending"]["id"] == tid and r.json()["day"]["can_continue"] is False
     assert client.post(f"{base}/end-day").status_code == 409
     assert client.post(f"{base}/sell", json={"reason": "stalls"}).status_code == 409
-    # the review: required before anything moves, all three marks, true / false only
+    # the review: required before anything moves, all four marks, true / false only
     assert client.post(f"{base}/continue").status_code == 409
     assert client.post(f"{base}/step", json={"n": 1}).status_code == 409
     assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": True}).status_code == 422
-    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": 1, "over_target": False, "stop_saved": False}).status_code == 422
-    assert client.post(f"{base}/trades/424242/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 404
-    r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False})
+    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 422
+    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": 1, "over_target": False, "stop_saved": False, "stop_moved_up": False}).status_code == 422
+    assert client.post(f"{base}/trades/424242/review", json={"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False}).status_code == 404
+    r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     assert r.status_code == 200, r.text
     assert r.json()["trade"]["review"]["over_target"] is True and r.json()["trade"]["review"]["reviewed"] is True
     assert r.json()["state"]["day"]["review_pending"] is None and r.json()["state"]["day"]["can_continue"] is True

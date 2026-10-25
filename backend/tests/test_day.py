@@ -295,7 +295,7 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     with pytest.raises(Conflict):
         day.resume(sid)     # the review first
     assert tr["review"]["reviewed"] is False and tr["review"]["over_target_suggested"] is (tr["whatif_high"] >= price + 4.0)
-    rv = day.review(sid, tr["id"], {"stop_tight": False, "over_target": True, "stop_saved": False})
+    rv = day.review(sid, tr["id"], {"stop_tight": False, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     assert rv["trade"]["review"]["over_target"] is True and rv["trade"]["review"]["reviewed"] is True
     assert rv["state"]["day"]["review_pending"] is None and rv["state"]["day"]["can_continue"] is True and rv["state"]["day"]["entries_allowed"] is True
     st2 = day.resume(sid)   # Continue after an exit is the jump to the next 06:00 (a step would go on with the day)
@@ -326,7 +326,7 @@ def test_conditions_are_saved_and_evaluated(db: Path):
     assert set(c) == {k for k, _ in CONDITIONS}
     st = day.step(sid)                      # take-profit: the first closed trade (a win)
     assert st["events"][0]["kind"] == "exit"
-    day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.resume(sid)                    # Continue: the jump to the next day
     st = day.state(sid)
     z2 = day.add_zone(sid, "1h", st["price"] + 0.5, st["price"] - 3.0)
@@ -424,7 +424,7 @@ def test_buying_is_always_allowed(db: Path):
     assert st["day"]["entries_allowed"] is False and "review" in st["day"]["block_reason"] and st["day"]["can_continue"] is False
     with pytest.raises(Conflict):
         day.buy(sid, z["id"], take_profit=price * 3.0, stop=price * 0.5)
-    st = day.review(sid, tid1, {"stop_tight": False, "over_target": False, "stop_saved": False})["state"]
+    st = day.review(sid, tid1, {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})["state"]
     assert st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None and st["day"]["can_continue"] is True
     p2 = st["price"]
     res = day.buy(sid, z["id"], take_profit=p2 * 3.0, stop=p2 * 0.5)   # the second trade of the day, right after the review (the 24:00 close)
@@ -438,7 +438,7 @@ def test_buying_is_always_allowed(db: Path):
     assert st["day"]["phase"] == "exited" and st["day"]["night"] is True and st["events"][0]["jumped_to_ms"] is None   # a night exit: no jump
     tid2 = st["events"][0]["trade"]["id"]
     assert st["day"]["review_pending"]["id"] == tid2 and st["day"]["entries_allowed"] is False
-    st = day.review(sid, tid2, {"stop_tight": True, "over_target": False, "stop_saved": False})["state"]
+    st = day.review(sid, tid2, {"stop_tight": True, "over_target": False, "stop_saved": False, "stop_moved_up": False})["state"]
     assert st["day"]["entries_allowed"] is True and st["day"]["night"] is True
     p3 = st["price"]
     res = day.buy(sid, z["id"], take_profit=p3 * 3.0, stop=p3 * 0.5)   # a buy at night
@@ -540,7 +540,7 @@ def test_auto_twin_survives_jumps_until_the_target(db: Path):
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0, confidence=3)
     day.step(sid, 2)
     man = day.sell(sid, "other", note="out")["events"][0]["trade"]
-    day.review(sid, man["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, man["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.resume(sid)                                                # Continue -> next day 06:00: the twin is still open
     tw = day.auto_trades(sid)["trades"][0]
     assert st["day"]["date"] == "2018-05-11" and tw["status"] == "open" and tw["exit_type"] is None
@@ -556,7 +556,7 @@ def test_auto_twin_survives_jumps_until_the_target(db: Path):
 
 # ------------------------------------------------------------------- review
 def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
-    """The three review marks are asked at the candle closing at 24:00 of the exit day (here reached
+    """The four review marks are asked at the candle closing at 24:00 of the exit day (here reached
     with "End the day") and the replay waits for them; "over the target" is suggested from the candles
     after the exit. The answers can be changed later, an open trade cannot be reviewed."""
     nxt, later = FIRST_CURSOR + Q, FIRST_CURSOR + 10 * Q
@@ -575,8 +575,9 @@ def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
     assert st["day"]["local_time"] == "2018-05-11 00:00" and st["day"]["date"] == "2018-05-10" and st["day"]["phase"] == "exited"
     pend = st["day"]["review_pending"]
     assert pend["id"] == tr["id"] and pend["review"]["reviewed"] is False and pend["review"]["stop_tight"] is None
+    assert pend["review"]["stop_moved_up"] is None
     assert pend["review"]["over_target_suggested"] is True and tr["whatif_high"] == price + 9.0
-    assert [q["key"] for q in st["day"]["review_questions"]] == ["stop_tight", "over_target", "stop_saved"]
+    assert [q["key"] for q in st["day"]["review_questions"]] == ["stop_tight", "over_target", "stop_saved", "stop_moved_up"]
     assert st["day"]["can_continue"] is False and st["day"]["entries_allowed"] is False
     assert st["day"]["block_reason"] == "Answer the review questions for trade #1 first."
     for call in (lambda: day.step(sid), lambda: day.step_back(sid), lambda: day.resume(sid), lambda: day.skip_day(sid), lambda: day.goto_day(sid, "2018-05-12"),
@@ -584,14 +585,16 @@ def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
         with pytest.raises(Conflict):
             call()
     assert local_hm(day.state(sid)["cursor_ms"] + Q) == (date(2018, 5, 11), 0, 0)   # nothing moved
-    # all three answers are required, true / false only; unknown trades
+    # all four answers are required, true / false only; unknown trades
     with pytest.raises(Invalid):
         day.review(sid, tr["id"], {"stop_tight": True, "over_target": True})
+    with pytest.raises(Invalid):   # the fourth mark ("moved the stop too far up") is required as well
+        day.review(sid, tr["id"], {"stop_tight": True, "over_target": True, "stop_saved": False})
     with pytest.raises(Invalid):
-        day.review(sid, tr["id"], {"stop_tight": 1, "over_target": True, "stop_saved": False})
+        day.review(sid, tr["id"], {"stop_tight": 1, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     with pytest.raises(NotFound):
-        day.review(sid, 424242, {"stop_tight": False, "over_target": False, "stop_saved": False})
-    res = day.review(sid, tr["id"], {"stop_tight": True, "over_target": True, "stop_saved": False})
+        day.review(sid, 424242, {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
+    res = day.review(sid, tr["id"], {"stop_tight": True, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     r = res["trade"]["review"]
     assert r["stop_tight"] is True and r["over_target"] is True and r["stop_saved"] is False and r["reviewed"] is True and r["reviewed_at"]
     d = res["state"]["day"]
@@ -599,14 +602,15 @@ def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
     # changed later, also after the day was left; the trades list carries the marks
     st = day.resume(sid)
     assert st["day"]["date"] == "2018-05-11"
-    r2 = day.review(sid, tr["id"], {"stop_tight": False, "over_target": True, "stop_saved": True})["trade"]["review"]
-    assert r2["stop_tight"] is False and r2["stop_saved"] is True
+    r2 = day.review(sid, tr["id"], {"stop_tight": False, "over_target": True, "stop_saved": True, "stop_moved_up": True})["trade"]["review"]
+    assert r2["stop_tight"] is False and r2["stop_saved"] is True and r2["stop_moved_up"] is True
     assert day.trades(sid)["trades"][0]["review"]["stop_saved"] is True
+    assert day.trades(sid)["trades"][0]["review"]["stop_moved_up"] is True
     # an open trade cannot be reviewed
     p2 = st["price"]
     t2 = day.buy(sid, z["id"], take_profit=p2 + 50.0, stop=p2 - 50.0, confidence=5)["trade"]
     with pytest.raises(Conflict):
-        day.review(sid, t2["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+        day.review(sid, t2["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
 
 
 def test_keep_trading_defers_the_review_to_2400(db: Path):
@@ -635,7 +639,7 @@ def test_keep_trading_defers_the_review_to_2400(db: Path):
     assert day.trades(sid)["trades"][0]["alts"] is not None  # its 24:00 has passed: the alternatives are settled
     with pytest.raises(Conflict):
         day.step(sid)
-    day.review(sid, t1["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, t1["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.step(sid)
     assert st["events"] == [] and st["day"]["night"] is True and st["day"]["trade"]["overnight"] is True
 
@@ -770,7 +774,7 @@ def test_step_back_stops_at_the_latest_action(db: Path):
     # through the night and over 06:00; back over 06:00 re-opens the day
     st = day.step(sid, 200)
     assert st["events"][0]["kind"] == "review"
-    day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.step(sid, 24)
     assert st["day"]["date"] == "2018-05-11" and day.days(sid)["days"][0]["left_how"] == "exit"
     st = day.step_back(sid)
@@ -820,7 +824,7 @@ def test_stepping_runs_through_the_night(day: DayEngine, session: dict):
     assert ev["jumped_to_ms"] is None and tr["review"]["over_target_suggested"] is False
     with pytest.raises(Conflict):
         day.resume(sid)
-    day.review(sid, tr["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, tr["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.resume(sid)
     assert st["events"][0]["kind"] == "jump" and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0)
     assert day.resume(sid)["events"] == []   # idempotent
@@ -974,7 +978,7 @@ def test_overnight_trade_runs_through_the_night(day: DayEngine, session: dict):
     assert tr["overnight"] is True and tr["exit_local"] == "2018-05-11 01:15"
     assert tr["whatif_n"] == 0 and tr["whatif"] is None   # a night exit: nothing of the trading day is left (and no jump)
     assert day.state(sid)["day"]["local_time"] == "2018-05-11 01:15"
-    day.review(sid, tr["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, tr["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.resume(sid)   # the next 06:00 is later the same morning
     assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0) and st["day"]["traded_today"] == 0
 
@@ -1102,7 +1106,7 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     assert st["day"]["leaving_next"] is False and st["day"]["can_continue"] is False and st["day"]["local_time"] == "2018-05-13 00:00"
     d3 = day.days(sid)["days"][2]
     assert d3["outcome"] == "trade" and d3["trade"]["seq"] == 1 and d3["trade"]["exit_type"] == "early exit" and d3["left_how"] is None
-    st = day.review(sid, tid, {"stop_tight": False, "over_target": False, "stop_saved": False})["state"]
+    st = day.review(sid, tid, {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})["state"]
     assert st["day"]["can_continue"] is True and st["day"]["leaving_next"] is False
     day.resume(sid)
     d3 = day.days(sid)["days"][2]
@@ -1241,7 +1245,7 @@ def test_next_signal_keeps_only_the_current_signal_zone(day: DayEngine, session:
     price = day.state(sid)["price"]
     day.buy(sid, second, take_profit=price * 3.0, stop=price * 0.5, confidence=5)   # a trade uses the second zone
     day.sell(sid, "other", note="out")
-    day.review(sid, day.trades(sid)["trades"][-1]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False})
+    day.review(sid, day.trades(sid)["trades"][-1]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     third = day.next_signal(sid, "rline_retest")["events"][0]["zone_id"]
     assert {z["id"] for z in day.zones(sid)} == {own["id"], second, third}
     day.update_zone(sid, third, 3e6 + 1.0, 3e6 - 2.0)                 # resized: now the trader's own

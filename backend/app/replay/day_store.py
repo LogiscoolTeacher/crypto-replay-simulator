@@ -162,6 +162,8 @@ MIGRATIONS = {
         "confidence": "INTEGER",
         # the three review marks answered at 24:00 of the exit day (0 / 1) and when they were answered
         "review_stop_tight": "INTEGER", "review_over_target": "INTEGER", "review_stop_saved": "INTEGER", "reviewed_at": "TEXT",
+        # the fourth review mark, "I moved the stop too far up" (added 2026-10-25; NULL on trades reviewed before)
+        "review_stop_moved_up": "INTEGER",
         # RSI 14 of the 1-hour chart at the buy (the 15m one is entry_rsi)
         "entry_rsi_1h": "REAL",
         # maximum adverse / favourable excursion between the entry and the exit, percent of the entry and in R

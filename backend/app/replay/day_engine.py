@@ -13,7 +13,7 @@ Clock (all times in UTC; until 2026-10-24 it was Europe/Malta)
   (its journal row records how). Skip, Continue, the calendar and the jump buttons still jump to a
   06:00. After an exit the replay stands on the exit candle: "End the day" jumps to 24:00 of the
   exit's trading day, "Keep trading" (or a step or a buy) goes on as if no trade had happened.
-* The three review questions of a closed trade are asked once the replay reaches 24:00 of its
+* The four review questions of a closed trade are asked once the replay reaches 24:00 of its
   exit's trading day (at once after a night exit); nothing moves on until they are answered.
 * "Step back" moves one 15-minute candle back, never before the latest trade action (entry, exit,
   stop / target move) or the landing candle of the latest jump; nothing is undone.
@@ -189,6 +189,7 @@ REVIEW_QUESTIONS: tuple[tuple[str, str, str], ...] = (
     ("stop_tight", "review_stop_tight", "The stop was too tight"),
     ("over_target", "review_over_target", "The price later went over the target (out too early)"),
     ("stop_saved", "review_stop_saved", "The stop saved me"),
+    ("stop_moved_up", "review_stop_moved_up", "I moved the stop too far up"),
 )
 WHATIF_FIELDS = ("whatif_n", "whatif_high", "whatif_low", "whatif_above_exit_pct", "whatif_below_exit_pct",
                  "whatif_high_vs_entry_pct", "whatif_low_vs_entry_pct")
@@ -1589,7 +1590,7 @@ class DayEngine:
             raise Conflict(f"Answer the review questions for trade #{t['seq']} first.")
 
     def review(self, session_id: str, trade_id: int, answers: dict) -> dict:
-        """Save the three review marks of a closed trade (all three required, True / False). The
+        """Save the four review marks of a closed trade (all four required, True / False). The
         answers can be changed later; a trade still open cannot be reviewed."""
         fields: dict = {}
         for key, col, _ in REVIEW_QUESTIONS:

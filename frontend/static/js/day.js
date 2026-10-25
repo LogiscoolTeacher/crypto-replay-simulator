@@ -875,7 +875,7 @@ export class DayMode {
   reviewToast() {
     const d = this.day;
     if (!this.ready()) return;
-    if (d.review_pending) this.c.toast(`Review trade #${d.review_pending.seq} in the side panel: keys 1, 2, 3 switch the marks, Enter saves. The replay waits.`);
+    if (d.review_pending) this.c.toast(`Review trade #${d.review_pending.seq} in the side panel: keys 1 to 4 switch the marks, Enter saves. The replay waits.`);
     else if (d.exit_choice) this.c.toast('Trade closed. End the day (Enter) or keep trading (K) in the side panel.');
   }
   // The picture of the trade whose review just became due, taken once (at its 24:00 or later).
@@ -946,12 +946,12 @@ export class DayMode {
   }
 
   // ----------------------------------------------------------------- review
-  // Three marks per closed trade, asked at 24:00 of the exit day (the replay waits for them) and
+  // Four marks per closed trade, asked at 24:00 of the exit day (the replay waits for them) and
   // editable later from the trade dialog. 'over the target' is pre-ticked from the candles after the exit.
   reviewTags(t) {
     const r = t.review;
     if (!r || !r.reviewed) return null;
-    return [['stop_tight', 'tight stop'], ['over_target', 'over target'], ['stop_saved', 'stop saved']].filter(([k]) => r[k]).map(([, label]) => label);
+    return [['stop_tight', 'tight stop'], ['over_target', 'over target'], ['stop_saved', 'stop saved'], ['stop_moved_up', 'stop moved too far up']].filter(([k]) => r[k]).map(([, label]) => label);
   }
   reviewCount(t) { const tags = this.reviewTags(t); return tags === null ? -1 : tags.length; }
   reviewTitle(t) { const fp = this.c.fmtPrice; return `Review trade #${t.seq} \u00b7 ${t.exit_type} @ ${fp(t.exit_price)} \u00b7 ${this.signed(t.pnl)} USDT (${this.signed(t.r_multiple)} R)`; }
@@ -965,8 +965,8 @@ export class DayMode {
   // The saved answers, or the defaults (all false, 'over the target' from the data).
   reviewValues(t) {
     const r = t.review || {};
-    return r.reviewed ? { stop_tight: !!r.stop_tight, over_target: !!r.over_target, stop_saved: !!r.stop_saved }
-      : { stop_tight: false, over_target: !!r.over_target_suggested, stop_saved: false };
+    return r.reviewed ? { stop_tight: !!r.stop_tight, over_target: !!r.over_target, stop_saved: !!r.stop_saved, stop_moved_up: !!r.stop_moved_up }
+      : { stop_tight: false, over_target: !!r.over_target_suggested, stop_saved: false, stop_moved_up: false };
   }
   // The pending review sits in the side panel, so the chart stays visible while answering. Its marks
   // are filled once per trade: later renders keep the user's clicks.
@@ -1511,6 +1511,7 @@ export class DayMode {
         : [['Alternatives', `available once the replay reaches ${t.entry_local && t.entry_local.slice(11) < '06:00' ? 'the next' : 'the'} 24:00`]]],
       ['Review (at 24:00 of the exit day)', t.review && t.review.reviewed
         ? [['Stop too tight', t.review.stop_tight ? 'true' : 'false'], ['Price later went over the target', t.review.over_target ? 'true' : 'false'], ['The stop saved me', t.review.stop_saved ? 'true' : 'false'],
+          ['Moved the stop too far up', t.review.stop_moved_up === null ? '\u2013 (reviewed before this mark existed)' : t.review.stop_moved_up ? 'true' : 'false'],
           ['Answered', t.review.reviewed_at.slice(0, 16).replace('T', ' ')]]
         : [['Review', t.status === 'closed' ? 'not answered yet' : 'after the exit']]],
       ['Notes', [['Notes', t.notes || '–']]],
@@ -1545,7 +1546,7 @@ export class DayMode {
       if (k === 'k') { e.preventDefault(); this.keepTrading(); return true; }
     }
     if (this.inlineReviewOpen()) {   // the pending review in the side panel
-      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved' };
+      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved', 4: 'stop_moved_up' };
       if (keys[e.key]) { e.preventDefault(); this.toggleReview(keys[e.key]); return true; }
       if (e.key === 'Enter' && !(e.target && e.target.closest && e.target.closest('button'))) { e.preventDefault(); this.saveInlineReview(); return true; }
     }
@@ -1574,7 +1575,7 @@ export class DayMode {
     $('day-review').addEventListener('submit', (e) => { e.preventDefault(); this.saveInlineReview(); });
     for (const b of $('dr-list').querySelectorAll('.rv-toggle')) b.addEventListener('click', () => this.setToggle(b, !b.classList.contains('on')));
     $('dlg-review').addEventListener('keydown', (e) => {
-      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved' };
+      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved', 4: 'stop_moved_up' };
       if (keys[e.key]) { e.preventDefault(); this.toggleReview(keys[e.key]); }
     });
     $('btn-day-new').addEventListener('click', () => this.openNewTrade());

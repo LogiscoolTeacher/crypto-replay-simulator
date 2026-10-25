@@ -85,7 +85,8 @@ this have no A / C (`exits_ac` is None in the API).
   trading day.
 - **Keep trading** (`POST …/keep-trading`): a step or a buy does the same.
 
-The **review** (3 true/false marks: stop too tight, went over the target, stop saved me) becomes due
+The **review** (4 true/false marks: stop too tight, went over the target, stop saved me, moved the
+stop too far up) becomes due
 when the replay reaches 24:00 of the exit's trading day. A step stops there with a `review` event,
 and nothing moves (step, jumps, buy, step back) until it is answered. A night exit is due at once.
 Only trades with `review_due = 1` (exits since `e128c09`) can block; older trades never do.
@@ -121,7 +122,7 @@ exit. Nothing is undone. Crossing 06:00 backwards clears that day's "left" mark.
 `_back_floor`, `_step_back_target`, `step_back`.
 
 **Keys** (day mode): N/B new trade, X sell, K skip (keep trading while the exit
-choice shows), Enter (end the day / save review), 1-2-3 review marks, Z draw zone, J, E, → step,
+choice shows), Enter (end the day / save review), 1-2-3-4 review marks, Z draw zone, J, E, → step,
 ← step back, P play.
 
 ## RLine_Retest (`backend/app/strategies/rline.py`)
@@ -177,6 +178,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- Review mark 4, "I moved the stop too far up" (`stop_moved_up`, column `review_stop_moved_up`,
+  key 4). Required like the other three; trades reviewed before show it as "–" (NULL).
 - Review fix: a step while a review was due resynced the state from the swing endpoint (no `day`
   block), so the review form and its Save button vanished. The resync uses the day endpoint now
   (`fetchSession`), and Step / Play are disabled while the review waits (`reviewWaits` in app.js).
