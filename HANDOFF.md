@@ -177,6 +177,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- Review fix: a step while a review was due resynced the state from the swing endpoint (no `day`
+  block), so the review form and its Save button vanished. The resync uses the day endpoint now
+  (`fetchSession`), and Step / Play are disabled while the review waits (`reviewWaits` in app.js).
+  Browser test: `tests/test_ui_day.py` (skipped without Playwright, like `test_ui.py`).
 - Exits A and C: a sell closes exit A, C or both; the trade stays open until both are closed and
   then closes at the later one. Stored as JSON in `day_trades.exits_ac`, shown in the Sell dialog,
   the day panel, the Auto exits tab (columns + summary) and the trade detail.
@@ -229,5 +233,5 @@ None of these are started. Roughly in order of usefulness:
 6. **Split `day_engine.py`** into reviews / jumps & signals / journal modules.
 7. **`has_image` vs. missing files**: a row can say it has a picture whose file is gone (404s).
    Check that the file exists, or hide the broken image.
-8. **Run the UI smoke test**: install Playwright so `test_ui.py` runs; add a day-mode path
-   (exit → choice → review, step back).
+8. **Run the UI smoke tests**: install Playwright so `test_ui.py` and `test_ui_day.py` run (neither
+   has run yet in this environment); extend the day path (exit → choice → review, step back).

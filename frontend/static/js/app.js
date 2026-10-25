@@ -305,10 +305,13 @@ function renderState() {
   $('cursor-price').textContent = ok && s.price !== null ? fmtPrice(s.price) : '–';
   $('step-size').textContent = state.interval || '–';
   $('btn-reset').disabled = !ok;
-  $('btn-step').disabled = !ok || s.finished;
+  // Day mode: a closed trade's review holds the replay; Step and Play wait for the answers.
+  const waits = reviewWaits();
+  $('btn-step').disabled = !ok || s.finished || waits;
+  $('btn-step').title = waits ? 'Answer the review in the side panel first' : 'Step one candle (\u2192)';
   $('btn-step-back').classList.toggle('hidden', !isDay());   // day trading only
   $('btn-step-back').disabled = !ok || !isDay() || state.busy || !(s.day && s.day.can_step_back);
-  $('btn-play').disabled = !ok || s.finished;
+  $('btn-play').disabled = !ok || s.finished || waits;
   $('btn-play').innerHTML = state.playing ? '&#x23F8;' : '&#x25B6;';
   $('btn-play').setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
   $('btn-indicators').disabled = !ok;
@@ -1096,9 +1099,13 @@ async function refreshView({ fit = false } = {}) {
 }
 
 // ------------------------------------------------------------------- replay
+// Day mode: true while a closed trade's review is due and unanswered (the server refuses every step).
+function reviewWaits() { return ready() && isDay() && !!(state.session.day && state.session.day.review_pending); }
+
 async function step(n = 1) {
   const s = state.session;
   if (!ready() || state.busy || s.finished) return;
+  if (reviewWaits()) { pause(); toast(`Answer the review questions for trade #${s.day.review_pending.seq} first.`, true); return; }
   state.busy = true;
   // Day mode: the step that leaves a trading day is preceded by the day's journal picture.
   if (isDay()) { try { await day.beforeStep(); } catch (e) { toast(e.message, true); } }
@@ -1125,8 +1132,9 @@ async function step(n = 1) {
   } catch (e) {
     toast(e.message, true);
     pause();
-    // The cursor may have moved even though the view failed: resync the state.
-    if (fresh(t)) api.session(t.sid).then(st => { if (fresh(t)) applyState(st); }).catch(() => {});
+    // The cursor may have moved even though the view failed: resync the state. A day session needs
+    // its own endpoint: the swing one has no day block, so the pending review (and its Save button) vanished.
+    if (fresh(t)) fetchSession(t.sid, s.mode).then(st => { if (fresh(t)) applyState(st); }).catch(() => {});
   } finally {
     state.busy = false;
     renderState();   // the day panel drew its buttons while busy: draw them again
