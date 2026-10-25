@@ -73,7 +73,6 @@ export const api = {
   dayStrategies: () => request('GET', '/api/day/strategies'),
   dayNextSignal: (id, body) => request('POST', `/api/day/sessions/${id}/next-signal`, body),
   dayGoto: (id, date) => request('POST', `/api/day/sessions/${id}/goto`, { date }),
-  dayContinue: (id) => request('POST', `/api/day/sessions/${id}/continue`),
   dayReset: (id) => request('POST', `/api/day/sessions/${id}/reset`),
   dayTrades: (id) => request('GET', `/api/day/sessions/${id}/trades`),
   dayAutoTrades: (id) => request('GET', `/api/day/sessions/${id}/auto-trades`),

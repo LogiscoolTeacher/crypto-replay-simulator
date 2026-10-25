@@ -16,7 +16,7 @@ from typing import Any
 SCHEMA = """
 -- One row per day-trading session: the fixed risk per trade and where the replay stands.
 -- phase: "trading" (stepping through candles) or "exited" (a trade has just closed: end the day,
--- keep trading, or "continue" to the next 06:00). start_cursor_ms: the first 06:00 candle (set once).
+-- the jump to the next 00:00, or keep trading). start_cursor_ms: the first day's start candle (set once).
 CREATE TABLE IF NOT EXISTS day_sessions (
     session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     timezone         TEXT    NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS day_sessions (
     updated_at       TEXT    NOT NULL
 );
 
--- The trend check of one trading day (06:00 to 06:00, local date of its start).
+-- The trend check of one trading day (the UTC date, 00:00 to 24:00; 06:00 to 06:00 until 2026-10-25).
 -- ema_above is computed (1/0, NULL = EMA 200 not available); hh_hl was the user's daily answer
 -- (retired 2026-10-24, old rows keep it, nothing reads it).
 CREATE TABLE IF NOT EXISTS day_checks (

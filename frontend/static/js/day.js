@@ -136,7 +136,7 @@ export class DayMode {
   // ------------------------------------------------------------ calendar
   // One month, a week per row from Monday to Sunday: the P&L (after fees) and the trades of every
   // day the replay has seen, the week's and the month's total. A past day opens its journal; a
-  // later day inside the replay jumps there (06:00).
+  // later day inside the replay jumps there (00:00).
   localDate(ms) { return ms === null || ms === undefined ? null : new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'UTC' }); }
   calShown() {
     if (this.calMonth) return this.calMonth;
@@ -207,7 +207,7 @@ export class DayMode {
           if (ds !== today) { cls.push('click'); td.title = `${ds}: open the day's journal`; td.addEventListener('click', () => this.openDay(r)); }
           else td.title = `${ds}: the current day (${this.day.local_time.slice(11)})`;
         } else if (inRange && ds > today && !this.session.finished) {
-          cls.push('click'); td.title = `${ds}: jump there (06:00). No trade may be open.`;
+          cls.push('click'); td.title = `${ds}: jump there (00:00). No trade may be open.`;
           td.addEventListener('click', () => this.gotoDay(ds));
         } else if (inRange && ds < today) {
           td.title = `${ds}: not visited (jumped over)`;
@@ -244,8 +244,8 @@ export class DayMode {
     return d && d.local_time ? `${d.local_time} UTC` : null;
   }
 
-  // The bar at the top right: how much of the trading day (06:00-24:00 UTC) has passed at the
-  // cursor candle's close, and the hours still left; full once the day is over (the night).
+  // The bar at the top right: how much of the trading day (00:00-24:00 UTC) has passed at the
+  // cursor candle's close, and the hours still left.
   renderProgress(s) {
     const bar = this.$('day-progress'), fill = this.$('day-progress-fill'), text = this.$('day-progress-text');
     const d = s && s.day;
@@ -269,14 +269,14 @@ export class DayMode {
     const ok = this.ready();
     const set = (id, text, cls) => { const el = $(id); el.textContent = text; if (cls !== undefined) el.className = cls; };
     set('day-date', ok ? d.date : '–');
-    set('day-time', ok ? `${d.local_time.slice(11)}${d.night ? ' · night' : ''}` : '');
+    set('day-time', ok ? d.local_time.slice(11) : '');
     const phase = $('day-phase');
     phase.className = 'badge';
     if (!ok) phase.textContent = '';
     else if (s.finished) { phase.textContent = 'end of replay'; phase.classList.add('good'); }
     else if (d.phase === 'exited') { phase.textContent = 'trade closed'; phase.classList.add('warn'); }
     else if (d.trade) { phase.textContent = 'in a trade'; phase.classList.add('good'); }
-    else phase.textContent = d.in_window ? 'trading hours' : 'night';
+    else phase.textContent = 'no trade';
     this.renderProgress(ok ? s : null);
 
     const chk = ok ? d.check : null;
@@ -308,11 +308,8 @@ export class DayMode {
     $('btn-day-new').disabled = !ok || busy || !d.entries_allowed;
     $('btn-day-sell').disabled = !ok || busy || !d.can_sell;
     $('btn-day-skip').disabled = !ok || busy || !d.can_skip;
-    $('btn-day-ema').disabled = !ok || busy || !(d.can_skip || d.can_continue);   // any state without an open trade
-    $('btn-day-signal').disabled = !ok || busy || !(d.can_skip || d.can_continue) || !$('day-strategy').value;
-    $('btn-day-continue').disabled = !ok || busy || !d.can_continue;
-    $('btn-day-continue').classList.toggle('hidden', !(ok && d.can_continue));
-    $('btn-day-skip').classList.toggle('hidden', !!(ok && d.can_continue));   // both jump to the next 06:00: one button at a time
+    $('btn-day-ema').disabled = !ok || busy || !d.can_skip;   // any state without an open trade or an exit choice
+    $('btn-day-signal').disabled = !ok || busy || !d.can_skip || !$('day-strategy').value;
     $('btn-day-zone').disabled = !ok || busy;
     this.renderInlineReview(ok ? d.review_pending : null);
     this.renderExitChoice(ok && d.exit_choice ? d.last_exit : null);
@@ -749,19 +746,19 @@ export class DayMode {
     finally { this.busy = false; this.render(); }
   }
 
-  // --------------------------------------------------------- skip, continue
+  // ------------------------------------------------------------------ skip
   async skipDay() {
     if (!this.ready() || this.busy || !this.day.can_skip) return;
     await this.jump(() => this.c.api.daySkip(this.session.id));
   }
   // Jump to the next trading day whose daily close is above the EMA 200 (the trend check's first line).
   async nextEmaDay() {
-    if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
+    if (!this.ready() || this.busy || !this.day.can_skip) return;
     await this.jump(() => this.c.api.dayNextEma(this.session.id));
   }
   // Jump to the selected strategy's next entry signal; the zone it came from is added and selected.
   async nextSignal() {
-    if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
+    if (!this.ready() || this.busy || !this.day.can_skip) return;
     const key = this.$('day-strategy').value;
     if (!key) return;
     await this.jump(() => this.c.api.dayNextSignal(this.session.id, { strategy: key }), (events) => {
@@ -787,11 +784,11 @@ export class DayMode {
     const s = this.strategies.find(x => x.key === this.$('day-strategy').value);
     this.$('day-strategy-note').textContent = s ? s.description : 'No strategies available.';
   }
-  // After an exit: "End the day" jumps to 24:00 of the exit's day (the review is asked there; the
-  // day is not left, so no day picture yet); "Keep trading" goes on from the exit candle.
+  // After an exit: "End the day" jumps to 24:00 of the exit's day, which is 00:00 of the next: the day
+  // is left (its picture first) and the review is asked there; "Keep trading" goes on from the exit candle.
   async endDay() {
     if (!this.ready() || this.busy || !this.day.exit_choice) return;
-    await this.jump(() => this.c.api.dayEndDay(this.session.id), null, false);
+    await this.jump(() => this.c.api.dayEndDay(this.session.id));
     this.reviewToast();
   }
   async keepTrading() {
@@ -817,19 +814,13 @@ export class DayMode {
     $('btn-dx-end').disabled = $('btn-dx-keep').disabled = busy;
   }
   exitChoiceOpen() { return !this.$('day-exit-choice').classList.contains('hidden'); }
-  async continueDay() {
-    if (!this.ready() || this.busy || !this.day.can_continue) return;
-    await this.jump(() => this.c.api.dayContinue(this.session.id));
-  }
-  // `leaving`: the jump leaves the trading day, so its journal picture is taken first.
-  async jump(call, after = null, leaving = true) {
+  // Every jump leaves the trading day (since days start at 00:00 also "End the day"), so its journal picture is taken first.
+  async jump(call, after = null) {
     this.busy = true;
     this.render();
-    if (leaving) {
-      try {
-        await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
-      } catch (e) { this.c.toast(`Day picture not saved: ${e.message}`, true); }
-    }
+    try {
+      await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
+    } catch (e) { this.c.toast(`Day picture not saved: ${e.message}`, true); }
     const t = this.c.token();
     try {
       const st = await call();
@@ -849,8 +840,8 @@ export class DayMode {
   // ----------------------------------------------------------------- events
   // Events of a step or a sell. After an exit by day the replay stays on the exit candle and the
   // side panel asks: end the day (jump to 24:00) or keep trading. The review and the trade's picture
-  // (15m, from the entry's 06:00 to that 24:00) come once the replay reaches that 24:00 (a 'review'
-  // event); a night exit gets them at once. A jump is only announced.
+  // (15m, from the entry's 00:00 to that 24:00) come once the replay reaches that 24:00 (a 'review'
+  // event). A jump is only announced.
   async handleEvents(events) {
     if (!this.active()) return;
     for (const ev of events || []) {
@@ -1027,7 +1018,7 @@ export class DayMode {
       this.c.applyState(res.state);
       this.renderTrades();
       const tags = this.reviewTags(res.trade);
-      this.c.toast(`Review of trade #${res.trade.seq} saved: ${tags.length ? tags.join(', ') : 'no marks'}. You can buy again, step on (also through the night), or press Continue \u2192 06:00.`);
+      this.c.toast(`Review of trade #${res.trade.seq} saved: ${tags.length ? tags.join(', ') : 'no marks'}. You can buy again, step on, or skip to the next day.`);
       return res;
     } catch (e) { if (this.c.fresh(tok)) $(errId).textContent = e.message; return null; }
     finally { $(btnId).disabled = false; }
@@ -1041,8 +1032,8 @@ export class DayMode {
     if (!d || !d.review_pending) return;
     await this.submitReview(d.review_pending, this.reviewAnswers('dr-list'), 'dr-error', 'btn-dr-save');
   }
-  // The trade's picture, taken when its review becomes due (24:00 of the exit day): always the 15-minute chart from 06:00 of the
-  // entry's trading day to 24:00 of the exit's (trade.frame; a night exit ends at the exit), with
+  // The trade's picture, taken when its review becomes due (24:00 of the exit day): always the 15-minute chart from 00:00 of the
+  // entry's trading day to 24:00 of the exit's (trade.frame), with
   // zones, entry, stop, take-profit, every earlier stop / target level (chart.setLevelHistory) and the exit line, whatever the zoom on screen. A hold longer than
   // the loaded bars (~6 days) starts at the oldest one. The view and zoom come back afterwards.
   async capturePicture(trade) {
@@ -1510,7 +1501,7 @@ export class DayMode {
         : [['Exits', 'n/a']]],
       ['Alternatives (hands-off, closed at 24:00 at the latest)', t.alts
         ? [['Alt 1: stop and target of the buy', this.altText(t.alts.alt1)], ['Alt 2: same stop, target 1:2', this.altText(t.alts.alt2)], ['Closing candle', t.alts.end_local]]
-        : [['Alternatives', `available once the replay reaches ${t.entry_local && t.entry_local.slice(11) < '06:00' ? 'the next' : 'the'} 24:00`]]],
+        : [['Alternatives', 'available once the replay reaches 24:00 of the entry day']]],
       ['Review (at 24:00 of the exit day)', t.review && t.review.reviewed
         ? [['Stop too tight', t.review.stop_tight ? 'true' : 'false'], ['Price later went over the target', t.review.over_target ? 'true' : 'false'], ['The stop saved me', t.review.stop_saved ? 'true' : 'false'],
           ['Moved the stop too far up', t.review.stop_moved_up === null ? '\u2013 (reviewed before this mark existed)' : t.review.stop_moved_up ? 'true' : 'false'],
@@ -1589,7 +1580,6 @@ export class DayMode {
     this.loadStrategies();
     this.buildColsMenu();
     document.addEventListener('click', (e) => { const m = $('day-cols'); if (m.open && !m.contains(e.target)) m.open = false; });
-    $('btn-day-continue').addEventListener('click', () => this.continueDay());
     $('btn-dx-end').addEventListener('click', () => this.endDay());
     $('btn-dx-keep').addEventListener('click', () => this.keepTrading());
     $('btn-cal-prev').addEventListener('click', () => this.moveCal(-1));

@@ -5,16 +5,16 @@ The mode shares the session row, the candle data, the view endpoint and the char
 
 Clock (all times in UTC; until 2026-10-24 it was Europe/Malta)
 * The session's base interval is 15 minutes; the chart may show 15m, 1h, 4h or 1D.
-* A trading day runs from 06:00 to 06:00 the next morning and is named after the local date of
-  its start. 06:00 to 24:00 is the entry window of the checklist, 00:00 to 06:00 the night; both
-  are only labels now: a buy is possible whenever no trade is open (the user asked for "always
-  able to buy"), also at night with an overnight trade just closed, and several times a day.
-* Stepping runs through the night like any other time; crossing 06:00 leaves the trading day
-  (its journal row records how). Skip, Continue, the calendar and the jump buttons still jump to a
-  06:00. After an exit the replay stands on the exit candle: "End the day" jumps to 24:00 of the
-  exit's trading day, "Keep trading" (or a step or a buy) goes on as if no trade had happened.
+* A trading day is the UTC calendar day, 00:00 to 24:00 (until 2026-10-25 it ran 06:00 to 06:00
+  with a "night" from 00:00 to 06:00). A candle belongs to the day its close falls in, and the
+  candle closing at 00:00 starts the new day: "24:00 of a day" and "00:00 of the next" are the same
+  candle. A buy is possible whenever no trade is open, several times a day.
+* Crossing 00:00 leaves the trading day (its journal row records how). Skip, the calendar and the
+  jump buttons land on the candle closing at 00:00. After an exit the replay stands on the exit
+  candle: "End the day" jumps to the next 00:00 (it leaves the day), "Keep trading" (or a step or
+  a buy) goes on as if no trade had happened.
 * The four review questions of a closed trade are asked once the replay reaches 24:00 of its
-  exit's trading day (at once after a night exit); nothing moves on until they are answered.
+  exit's trading day (= the next 00:00); nothing moves on until they are answered.
 * "Step back" moves one 15-minute candle back, never before the latest trade action (entry, exit,
   stop / target move) or the landing candle of the latest jump; nothing is undone.
 * The trend check of a day: "daily close above EMA 200", computed from the completed daily
@@ -86,7 +86,7 @@ VIEW_INTERVALS = ("15m", "1h", "4h", "1D")
 ZONE_INTERVALS = ("1h", "4h")      # the user draws zones on these charts (they show on all)
 TIMEZONE = "UTC"                   # the day clock (was Europe/Malta): no daylight-saving shifts, same as the exchange
 TZ = ZoneInfo(TIMEZONE)
-DAY_START_HOUR = 6                 # the trading day starts at 06:00 UTC
+DAY_START_HOUR = 0                 # the trading day is the UTC calendar day (it started at 06:00 until 2026-10-25)
 RISK_PCT = 0.1                     # of the starting capital, fixed for the session (was 1 % on 10k)
 DAY_START_BALANCE = 100_000.0      # default starting capital: 0.1 % = 100 USDT risk, no leverage needed down to a ~0.1 % stop
 ATR_PERIOD = 14
@@ -97,9 +97,9 @@ RR_WARN_BELOW = 2.0                # reward-to-risk below this only warns
 RSI_DIP_MAX = 40.0                 # entry rule 3: RSI 14 dropped to 40 or below during the dip
 NOTE_MAX_CHARS = 500
 DAY_NOTES_MAX_CHARS = 4000         # free text per trading day (the daily journal)
-# How a trading day was left (stored on its check row when the replay jumps to the next 06:00).
+# How a trading day was left (stored on its check row when the replay crosses or jumps past the next 00:00).
 LEFT_END, LEFT_SKIP, LEFT_EXIT, LEFT_HELD = "end", "skip", "exit", "held"
-LEFT_LABELS = {LEFT_END: "No trade", LEFT_SKIP: "Skipped", LEFT_EXIT: "Trade closed", LEFT_HELD: "Trade held past 06:00"}
+LEFT_LABELS = {LEFT_END: "No trade", LEFT_SKIP: "Skipped", LEFT_EXIT: "Trade closed", LEFT_HELD: "Trade held overnight"}
 
 # The entry conditions saved with every trade and evaluated afterwards (key, label). Each is
 # yes / no / unknown for a trade; see `trade_conditions`.
@@ -210,22 +210,21 @@ def local_str(ms: int | None) -> str | None:
 
 
 def trading_day(close_ms: int) -> date:
-    """The trading day a candle closing at `close_ms` belongs to, named after the local date of its
-    06:00 start: a close before 06:00 (the night, and 24:00 itself) still belongs to the previous day."""
+    """The trading day a candle closing at `close_ms` belongs to: the date of the close, where the
+    close at 00:00 (= 24:00 of the day before) already counts for the new day."""
     loc = to_local(close_ms)
     return loc.date() if (loc.hour, loc.minute, loc.second, loc.microsecond) >= (DAY_START_HOUR, 0, 0, 0) else loc.date() - timedelta(days=1)
 
 
 def day_bounds(d: date) -> tuple[int, int]:
-    """(06:00, 24:00) local of the trading day `d` in ms. Entries are allowed for candles closing
-    inside these bounds, both included."""
+    """(00:00, 24:00) of the trading day `d` in ms; the second is also 00:00 of the next day."""
     return local_ms(d, DAY_START_HOUR), local_ms(d + timedelta(days=1), 0)
 
 
 def alt_window_end(entry_ms: int) -> int:
-    """24:00 local (ms) at which the alternative trades of a buy at the candle opening at `entry_ms`
-    close at the latest: the 24:00 of the entry's trading day, or, for a buy at 24:00 itself or in
-    the night, the 24:00 of the trading day that follows."""
+    """24:00 (ms) at which the alternative trades of a buy at the candle opening at `entry_ms` close
+    at the latest: the 24:00 of the entry's trading day (a buy on the candle closing at 00:00 belongs
+    to the new day, so it runs to that day's 24:00)."""
     close = entry_ms + config.interval_ms(BASE_INTERVAL)
     d = trading_day(close)
     _, end = day_bounds(d)
@@ -236,20 +235,15 @@ def alt_window_end(entry_ms: int) -> int:
 
 def picture_frame(entry_ms: int, exit_ms: int | None) -> dict | None:
     """The time span (unix seconds, candle open times like the chart's) a trade's picture shows:
-    from the candle closing at 06:00 of the entry's trading day to the candle closing at 24:00 of
-    the exit's trading day, so an overnight trade shows every day it was held. A night exit (past
-    that 24:00) keeps its exit candle. None while the trade is open."""
+    from the candle closing at 00:00 of the entry's trading day to the candle closing at 24:00 of
+    the exit's trading day, so an overnight trade shows every day it was held. None while the trade
+    is open."""
     if exit_ms is None:
         return None
     base = config.interval_ms(BASE_INTERVAL)
     start, _ = day_bounds(trading_day(entry_ms + base))
     _, end = day_bounds(trading_day(exit_ms + base))
     return {"from_s": (start - base) // 1000, "to_s": max(exit_ms, end - base) // 1000}
-
-
-def in_entry_window(close_ms: int, d: date | None = None) -> bool:
-    start, end = day_bounds(d or trading_day(close_ms))
-    return start <= close_ms <= end
 
 
 # ---------------------------------------------------------------- pure numbers
@@ -398,7 +392,7 @@ class DayEngine:
         return f"Day {symbol} from {_iso(start_ms)[:10]}"
 
     def prepare(self, session_id: str, progress=None) -> dict:
-        """Download the data (shared logic), then put the cursor on the first 06:00 candle. Safe to re-run."""
+        """Download the data (shared logic), then put the cursor on the first day's start (_first_day_cursor). Safe to re-run."""
         self._day_row(session_id)
         self.replay.prepare(session_id, progress=progress)
         with self._lock:
@@ -416,7 +410,7 @@ class DayEngine:
         self.replay.delete_session(session_id)  # the day tables cascade
 
     def reset(self, session_id: str) -> dict:
-        """Back to the first 06:00 with the starting capital: trades, trend checks, zones and pictures gone."""
+        """Back to the first day's start with the starting capital: trades, trend checks, zones and pictures gone."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -477,7 +471,6 @@ class DayEngine:
             "day_start_local": local_str(start), "day_end_local": local_str(end),
             "local_time": local_str(close), "local_iso": loc.isoformat(),
             "utc_offset_min": int((loc.utcoffset() or timedelta()).total_seconds() // 60),
-            "in_window": start <= close <= end, "night": close > end,
             "check": self._public_check(check),
             "entries_allowed": allowed, "block_reason": reason,
             "trade": self._public_trade(trade, st["fee_rate"], st["price"]) if trade else None,
@@ -499,8 +492,8 @@ class DayEngine:
         return out
 
     def _leaving_next(self, st: dict, ds: dict, trade: dict | None) -> bool:
-        """True when the next step leaves this trading day: the next candle closes after 06:00 of
-        the next one. The frontend takes the day's picture before that step."""
+        """True when the next step leaves this trading day: the next candle closes at or after 00:00
+        of the next one. The frontend takes the day's picture before that step."""
         if st["finished"]:
             return False
         base = self._base_ms
@@ -518,7 +511,7 @@ class DayEngine:
             return False, f"Answer the review questions for trade #{pending['seq']} first."
         if trade is not None:
             return False, "A trade is open."
-        # Nothing else blocks: not the night, not a trade already made today, not a trade just closed,
+        # Nothing else blocks: not the time of day, not a trade already made today, not a trade just closed,
         # not the trend check. The conditions are saved with the trade and evaluated later.
         return True, None
 
@@ -808,7 +801,7 @@ class DayEngine:
                     created_at=now, updated_at=now,
                 )
                 if self.store.get_day_session(conn, session_id)["phase"] == "exited":
-                    # a new trade right after an exit: the day goes on, no jump to the next 06:00
+                    # a new trade right after an exit: the day goes on, no jump to the next 00:00
                     self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=now)
             with self.sessions.tx() as conn:
                 self.sessions.update_session(conn, session_id, cash=cash_after, updated_at=now)
@@ -936,16 +929,16 @@ class DayEngine:
             self.sessions.update_session(conn, s["id"], cash=cash_after, updated_at=now)
         s["cash"] = cash_after
         trade.update(fields)
-        # before its 24:00 the user chooses: end the day there (end_day) or keep trading; a night
-        # exit is reviewed at once
+        # the user chooses: end the day (end_day, the jump to the next 00:00) or keep trading; the
+        # exit candle always closes before its day's 24:00, so the choice is always offered
         choice = exit_ms + self._base_ms < self._review_end(trade)
         return {"kind": "exit", "exit_type": exit_type, "trade": self._public_trade(trade, s["fee_rate"]),
                 "choice": choice, "jumped_to_ms": None, "jumped_to_local": None}
 
     def end_day(self, session_id: str) -> dict:
-        """After an exit before 24:00 ("End the day"): jump to the candle closing at 24:00 of the
-        exit's trading day, where the review is asked. The phase stays "exited", so Continue goes
-        on to the next 06:00 once the review is answered."""
+        """After an exit ("End the day"): jump to the candle closing at 24:00 of the exit's trading day.
+        That candle is 00:00 of the next day, so the day is left ("Trade closed") and the review is
+        asked on landing. Since the 00:00 day start this is the same jump as Continue (resume)."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -953,12 +946,9 @@ class DayEngine:
                 last = self.store.get_trade(conn, session_id, ds["last_exit_id"]) if ds["phase"] == "exited" and ds["last_exit_id"] else None
             if last is None:
                 raise Conflict("No trade has just closed.")
-            jumped = self._jump_to_day_end(s, last["exit_ms"])
-            if jumped is None:
-                raise Conflict("The day of this exit has already ended.")
-            self._set_floor(s, jumped)
-            ev = {"kind": "jump", "to_ms": jumped, "to_iso": _iso(jumped), "to_local": local_str(jumped + self._base_ms),
-                  "reason": "Day ended: 24:00."}
+            if s["cursor_ms"] >= s["data_end_ms"]:
+                raise Conflict("The replay has reached its end.")
+            ev = self._resume(s, ds)
         st = self.state(session_id)
         st["events"] = [ev]
         return st
@@ -983,21 +973,6 @@ class DayEngine:
         the cursor has reached."""
         close = s["cursor_ms"] + self._base_ms
         return next((t for t in self.store.due_reviews(conn, s["id"]) if close >= self._review_end(t)), None)
-
-    def _jump_to_day_end(self, s: dict, exit_ms: int) -> int | None:
-        """Move the replay to the candle closing at 24:00 of the exit's trading day, so the whole
-        day is on the chart for the review. Nothing happens when the exit is already at or past
-        24:00 (a night exit) or at the end of the data. Returns the new cursor or None."""
-        base = self._base_ms
-        _, end = day_bounds(trading_day(exit_ms + base))
-        if exit_ms + base >= end:
-            return None
-        nxt = self.candles.first_at_or_after(s["symbol"], BASE_INTERVAL, end - base)
-        target = s["data_end_ms"] if nxt is None or nxt > s["data_end_ms"] else nxt
-        if target <= s["cursor_ms"]:
-            return None
-        self._set_cursor(s, target)
-        return target
 
     def _excursion(self, s: dict, trade: dict, exit_ms: int) -> dict:
         """MAE / MFE: the lowest low and the highest high of the 15-minute candles after the entry
@@ -1080,7 +1055,7 @@ class DayEngine:
     def _what_if(self, s: dict, trade: dict, exit_ms: int, exit_price: float) -> dict:
         """Highest high and lowest low of the 15-minute candles after the exit candle until 24:00 of
         the exit's trading day (the window the review shows); all None when there are none, e.g.
-        after a night exit."""
+        after an exit on the day's last candle."""
         _, end = day_bounds(trading_day(exit_ms + self._base_ms))
         df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, exit_ms + self._base_ms, end - self._base_ms)
         if len(df) == 0:
@@ -1092,7 +1067,7 @@ class DayEngine:
     def _settle_auto(self, s: dict) -> None:
         """Close every open automatic twin whose exit the candles up to the cursor already show: the
         original stop (a candle low at or below it; the stop wins when both levels are hit in one
-        candle) or the original target (a high at or above it). The twin runs through the night and
+        candle) or the original target (a high at or above it). The twin runs overnight and
         across days until one of them is hit. Only the candles after the last checked one are read,
         and nothing beyond the cursor, so a twin never knows the future."""
         with self._lock:
@@ -1225,7 +1200,7 @@ class DayEngine:
     def step(self, session_id: str, n: int = 1) -> dict:
         """Advance `n` 15-minute candles, firing the stop / take-profit of an open trade on the way;
         stops at an exit and where a review becomes due (24:00 of an exit's trading day). After an
-        exit a step means "keep trading": the day goes on (Continue is the jump to the next 06:00)."""
+        exit a step means "keep trading": the day goes on (End the day is the jump to the next 00:00)."""
         if not isinstance(n, int) or n < 1:
             raise Invalid("n must be >= 1")
         events: list[dict] = []
@@ -1250,7 +1225,7 @@ class DayEngine:
         return st
 
     def resume(self, session_id: str) -> dict:
-        """After an exit: jump to the next 06:00 (idempotent while already trading)."""
+        """After an exit: jump to the next 00:00 (idempotent while already trading)."""
         events: list[dict] = []
         with self._lock:
             s = self._ready(session_id)
@@ -1263,7 +1238,7 @@ class DayEngine:
         return st
 
     def skip_day(self, session_id: str) -> dict:
-        """Jump to the next day's 06:00 (only without an open trade)."""
+        """Jump to the next day's 00:00 (only without an open trade)."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -1276,13 +1251,13 @@ class DayEngine:
                         raise Conflict("A trade is open: close it before skipping the day.")
                 if s["cursor_ms"] >= s["data_end_ms"]:
                     raise Conflict("The replay has reached its end.")
-                ev = self._jump(s, trading_day(s["cursor_ms"] + self._base_ms) + timedelta(days=1), "Skipped to the next day at 06:00.", LEFT_SKIP)
+                ev = self._jump(s, trading_day(s["cursor_ms"] + self._base_ms) + timedelta(days=1), "Skipped to the next day at 00:00.", LEFT_SKIP)
         st = self.state(session_id)
         st["events"] = [ev]
         return st
 
     def goto_day(self, session_id: str, day_date: str) -> dict:
-        """Jump forward to 06:00 of a later trading day (from the calendar). Never backwards, not
+        """Jump forward to 00:00 of a later trading day (from the calendar). Never backwards, not
         with an open trade, not past the replay's end. The current day is left as skipped (or as
         'trade closed' when its trade had just closed); the days in between are never seen."""
         try:
@@ -1312,13 +1287,13 @@ class DayEngine:
             self._set_cursor(s, target)
             self._set_floor(s, target)
             ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(target + self._base_ms),
-                  "reason": f"Jumped to {day_date} at 06:00."}
+                  "reason": f"Jumped to {day_date} at 00:00."}
         st = self.state(session_id)
         st["events"] = [ev]
         return st
 
     def next_ema_day(self, session_id: str) -> dict:
-        """Jump forward to 06:00 of the next trading day whose trend check says "daily close above
+        """Jump forward to 00:00 of the next trading day whose trend check says "daily close above
         EMA 200" (the button "Next day > EMA 200"). The rules of goto_day apply: never backwards,
         not with an open trade; Conflict when no such day is left before the replay's end."""
         with self._lock:
@@ -1343,7 +1318,7 @@ class DayEngine:
 
     def next_signal(self, session_id: str, strategy: str, params: dict | None = None) -> dict:
         """Jump forward to the next entry signal of a jump strategy (the button "Next signal"): the
-        15m candle in which the signal happens becomes the cursor, also in the night. The zone the
+        15m candle in which the signal happens becomes the cursor, at any time of day. The zone the
         signal came from is added to the session's zones (1h) so the New trade panel can use it.
         The gates of the other jumps apply: the review first, no open trade, not past the end;
         Conflict when no signal is left before the replay's end."""
@@ -1376,9 +1351,8 @@ class DayEngine:
             self._set_floor(s, target)
             zone = self._signal_zone(session_id, sig)
             close = target + base
-            night = "" if in_entry_window(close) else " (night, outside 06:00–24:00)"
             ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(close),
-                  "reason": f"{js.name}: {js.describe_signal(sig)}{night}.",
+                  "reason": f"{js.name}: {js.describe_signal(sig)}.",
                   "strategy": js.key, "signal": {k: v for k, v in sig.items() if k != "bar"}, "zone_id": zone["id"]}
         st = self.state(session_id)
         st["events"] = [ev]
@@ -1434,7 +1408,7 @@ class DayEngine:
 
     def _next_ema_above_day(self, s: dict, after: date) -> date | None:
         """The first trading day after `after` whose last completed daily candle closes above the
-        EMA 200, judged at that day's 06:00 exactly like the trend check (`_daily_ema`)."""
+        EMA 200, judged at that day's 00:00 exactly like the trend check (`_daily_ema`)."""
         limit = s["data_end_ms"] + self._base_ms
         d = after + timedelta(days=1)
         while local_ms(d, DAY_START_HOUR) <= limit:
@@ -1445,7 +1419,7 @@ class DayEngine:
         return None
 
     def _advance(self, s: dict) -> dict | None:
-        """One 15-minute candle forward, through the night as well. Crossing 06:00 leaves the trading
+        """One 15-minute candle forward. Crossing 00:00 leaves the trading
         day. Returns an exit event, a review event (a closed trade's 24:00 reached) or None."""
         base = self._base_ms
         nxt = self.candles.nth_at_or_after(s["symbol"], BASE_INTERVAL, s["cursor_ms"] + base, 1)
@@ -1493,7 +1467,7 @@ class DayEngine:
             self.store.update_day_session(conn, s["id"], phase="trading", updated_at=_now_iso())
         ds["phase"] = "trading"
         close = (last["exit_ms"] if last and last["exit_ms"] is not None else s["cursor_ms"]) + self._base_ms
-        return self._jump(s, trading_day(close) + timedelta(days=1), "Trade closed: next day at 06:00.", LEFT_EXIT)
+        return self._jump(s, trading_day(close) + timedelta(days=1), "Day ended: next day at 00:00.", LEFT_EXIT)
 
     def _jump(self, s: dict, d: date, reason: str, how: str) -> dict:
         self._mark_left(s, d - timedelta(days=1), how)
@@ -1512,16 +1486,18 @@ class DayEngine:
             self.store.delete_unused_signal_zones(conn, s["id"])
 
     def _first_day_cursor(self, s: dict, from_ms: int) -> int:
-        """The base candle closing at the first 06:00 that the candle opening at `from_ms` can reach."""
+        """Where the replay starts: the day of the candle opening at `from_ms` when the data begins
+        right at its 00:00 (then on that first candle, the 00:00 one is not in the session), else
+        the candle closing at the next 00:00."""
         base = self._base_ms
         d = trading_day(from_ms + base)
         start, _ = day_bounds(d)
-        if start - base < from_ms:
+        if start < from_ms:
             d += timedelta(days=1)
-        return self._cursor_at_day_start(s, d)
+        return max(self._cursor_at_day_start(s, d), from_ms)
 
     def _cursor_at_day_start(self, s: dict, d: date) -> int:
-        """Open time of the stored base candle that closes at 06:00 of day `d` (the first one after
+        """Open time of the stored base candle that closes at 00:00 of day `d` (the first one after
         it on a data gap), clamped to the session's last candle."""
         start, _ = day_bounds(d)
         nxt = self.candles.first_at_or_after(s["symbol"], BASE_INTERVAL, start - self._base_ms)
@@ -1539,7 +1515,7 @@ class DayEngine:
 
     # --------------------------------------------------------------- step back
     def _back_floor(self, s: dict, ds: dict) -> int:
-        """The earliest candle Step back may return to: the latest of the first 06:00, the latest
+        """The earliest candle Step back may return to: the latest of the first day's start, the latest
         jump's landing candle, the open trade's entry, its last stop / target move and its closed
         exit A / C, and the exit of the latest closed trade. Nothing before it is undone."""
         marks = [s["data_start_ms"], ds.get("start_cursor_ms"), ds.get("back_floor_ms")]
@@ -1560,7 +1536,7 @@ class DayEngine:
 
     def step_back(self, session_id: str) -> dict:
         """One 15-minute candle back (day trading only), never before the floor (_back_floor).
-        Crossing 06:00 backwards re-opens the day it returns to (its journal row forgets how it was
+        Crossing 00:00 backwards re-opens the day it returns to (its journal row forgets how it was
         left). Blocked while a review is due."""
         with self._lock:
             s = self._ready(session_id)
@@ -1582,7 +1558,7 @@ class DayEngine:
     # ------------------------------------------------------------------ review
     def _review_gate(self, s: dict) -> None:
         """Conflict while a closed trade's review is due (its 24:00 reached) and unanswered: no step,
-        no Continue, no skip, no jump, no step back (and no buy, see _entry_gate) until the three
+        no Continue, no skip, no jump, no step back (and no buy, see _entry_gate) until the four
         questions are answered."""
         with self.store.tx() as conn:
             t = self._pending_review(s, conn)

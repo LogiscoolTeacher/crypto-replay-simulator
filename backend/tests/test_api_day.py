@@ -12,7 +12,7 @@ from tests.fakes import DAY, H, LISTING, FineFakeClient
 START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC
 END = START + 6 * DAY
 NOW = START + 10 * DAY + 1
-FIRST_CURSOR = START + 5 * H + 45 * 60_000   # closes at 06:00 UTC
+FIRST_CURSOR = START                 # the first candle of 2018-05-10 (the day starts at 00:00 UTC)
 SYMBOL = "SOLUSDT"   # a coin no other test module downloads, so their stored candles stay untouched
 PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
@@ -153,15 +153,17 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert r.json()["cursor_ms"] == st["cursor_ms"] and ev["choice"] is True and r.json()["day"]["exit_choice"] is True
     assert r.json()["day"]["can_step_back"] is False                                               # the exit is the floor
     assert client.post(f"{base}/step-back", json={}).status_code == 409
-    # end the day: the jump to 24:00, where the review is asked
+    # end the day: the jump to 24:00 (= 00:00 of the next day), where the review is asked
     r = client.post(f"{base}/end-day")
     assert r.status_code == 200, r.text
     assert r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["local_time"] == "2018-05-11 00:00"
+    assert r.json()["day"]["date"] == "2018-05-11" and r.json()["day"]["phase"] == "trading"
     assert r.json()["day"]["review_pending"]["id"] == tid and r.json()["day"]["can_continue"] is False
     assert client.post(f"{base}/end-day").status_code == 409
     assert client.post(f"{base}/sell", json={"reason": "stalls"}).status_code == 409
     # the review: required before anything moves, all four marks, true / false only
     assert client.post(f"{base}/continue").status_code == 409
+    assert client.post(f"{base}/skip").status_code == 409
     assert client.post(f"{base}/step", json={"n": 1}).status_code == 409
     assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": True}).status_code == 422
     assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 422
@@ -170,7 +172,7 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     assert r.status_code == 200, r.text
     assert r.json()["trade"]["review"]["over_target"] is True and r.json()["trade"]["review"]["reviewed"] is True
-    assert r.json()["state"]["day"]["review_pending"] is None and r.json()["state"]["day"]["can_continue"] is True
+    assert r.json()["state"]["day"]["review_pending"] is None and r.json()["state"]["day"]["can_skip"] is True
     assert client.patch(f"{base}/trade", json={"stop": 1.0}).status_code == 409                    # closed: nothing to move
 
     # the picture at the exit
@@ -183,10 +185,10 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     rows = client.get(f"{base}/trades").json()["trades"]
     assert len(rows) == 1 and rows[0]["exit_reason_label"] == "Price stalls at resistance" and rows[0]["has_image"]
 
-    # continue -> next 06:00; skip -> the day after; reset -> back to the start
+    # continue: nothing left to continue (End the day already started the next day); skip -> the day
+    # after; reset -> back to the start
     r = client.post(f"{base}/continue")
-    assert r.status_code == 200 and r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["date"] == "2018-05-11"
-    assert r.json()["day"]["phase"] == "trading"
+    assert r.status_code == 200 and r.json()["events"] == [] and r.json()["day"]["date"] == "2018-05-11"
     r = client.post(f"{base}/skip")
     assert r.status_code == 200 and r.json()["day"]["date"] == "2018-05-12"
     r = client.post(f"{base}/reset")

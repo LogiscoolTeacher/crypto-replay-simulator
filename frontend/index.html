@@ -31,7 +31,7 @@
     <div class="spacer"></div>
 
     <div class="readout">
-      <div id="day-progress" class="day-progress day-only" title="The trading day 06:00–24:00 UTC: how much has passed, and the hours left" aria-label="Hours left in the trading day">
+      <div id="day-progress" class="day-progress day-only" title="The trading day 00:00–24:00 UTC: how much has passed, and the hours left" aria-label="Hours left in the trading day">
         <div id="day-progress-fill" class="fill"></div>
         <span id="day-progress-text" class="mono">&ndash;</span>
       </div>
@@ -237,14 +237,14 @@
           <div class="table-tools">
             <span id="auto-summary" class="small mono"></span>
             <span class="spacer"></span>
-            <span class="info" tabindex="0" role="note" title="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. Exit A / C: your two exit versions (whole position each); the later one is the real exit. P&amp;L after fees, no effect on your cash." aria-label="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. A night buy runs to the next 24:00. P&amp;L after fees, no effect on your cash.">i</span>
+            <span class="info" tabindex="0" role="note" title="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. Exit A / C: your two exit versions (whole position each); the later one is the real exit. P&amp;L after fees, no effect on your cash." aria-label="Twin: the original stop and target, exits only when one is hit, however long that takes. Alt 1: the same levels, closed with the 24:00 candle if nothing was hit. Alt 2: the same stop, target at 1:2, closed at 24:00 too. P&amp;L after fees, no effect on your cash.">i</span>
           </div>
           <table class="buckets" id="day-auto-table" aria-label="Automatic exits">
             <thead><tr>
               <th>#</th><th>Day</th><th>Entry</th><th class="num">Entry price</th><th class="num" title="The original stop of the trade">Stop</th><th class="num" title="The original target of the trade">Target</th>
               <th>Exit</th><th title="stop or take-profit">Type</th><th class="num">Exit price</th><th class="num" title="Hours between the buy and the exit (an open twin counts up to now)">Held</th><th class="num" title="P&amp;L of the twin after fees">P&amp;L</th><th class="num">%</th><th class="num" title="P&amp;L divided by the risk amount">R</th>
               <th title="How your manual trade ended">Manual exit</th><th class="num" title="Hours your manual trade was held">Manual held</th><th class="num" title="P&amp;L of your manual trade after fees">Manual P&amp;L</th><th class="num" title="Twin minus manual: positive = hands-off would have done better">Difference</th>
-              <th title="Alternative 1: the stop and target of the buy, closed with the 24:00 candle when neither was hit (a night buy runs to the next 24:00)">Alt 1 exit</th><th class="num" title="P&amp;L of Alt 1 after fees">Alt 1 P&amp;L</th><th class="num" title="Alt 1 P&amp;L divided by the risk amount">Alt 1 R</th>
+              <th title="Alternative 1: the stop and target of the buy, closed with the 24:00 candle when neither was hit">Alt 1 exit</th><th class="num" title="P&amp;L of Alt 1 after fees">Alt 1 P&amp;L</th><th class="num" title="Alt 1 P&amp;L divided by the risk amount">Alt 1 R</th>
               <th class="num" title="Alternative 2: the stop of the buy and a target 2 x the risk above the entry">Alt 2 target</th><th title="How Alt 2 ended: stop, take-profit or the 24:00 close">Alt 2 exit</th><th class="num" title="P&amp;L of Alt 2 after fees">Alt 2 P&amp;L</th><th class="num" title="Alt 2 P&amp;L divided by the risk amount">Alt 2 R</th>
               <th title="Exit A: how and when it closed (hover for the price, reason and the difference to the real exit)">A exit</th><th class="num" title="P&amp;L of exit A after fees (whole position)">A P&amp;L</th><th class="num" title="Exit A P&amp;L divided by the risk amount">A R</th>
               <th title="Exit C: how and when it closed (hover for the price, reason and the difference to the real exit)">C exit</th><th class="num" title="P&amp;L of exit C after fees (whole position)">C P&amp;L</th><th class="num" title="Exit C P&amp;L divided by the risk amount">C R</th>
@@ -261,7 +261,7 @@
             <button type="button" id="btn-cal-now" class="btn small" title="The month of the replay's current day">Now</button>
             <span id="cal-summary" class="small muted"></span>
             <span class="spacer"></span>
-            <span class="info" tabindex="0" role="note" title="Click a past day for its journal, a later day to jump there (06:00). P&amp;L after fees." aria-label="Click a past day for its journal, a later day to jump there (06:00). P&amp;L after fees.">i</span>
+            <span class="info" tabindex="0" role="note" title="Click a past day for its journal, a later day to jump there (00:00). P&amp;L after fees." aria-label="Click a past day for its journal, a later day to jump there (00:00). P&amp;L after fees.">i</span>
           </div>
           <table class="cal" id="cal-table" aria-label="Trading calendar">
             <thead><tr><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th><th class="week" title="P&amp;L of the week">Week</th></tr></thead>
@@ -430,14 +430,13 @@
           <button type="button" id="btn-day-new" class="btn buy" title="Open the New trade panel (N)">New trade</button>
           <button type="button" id="btn-day-sell" class="btn sell" title="Early exit at the close of this candle, with a reason: exit A, C or both (X)">Sell</button>
           <span class="spacer"></span>
-          <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 06:00 (K)">Skip day &rarr; 06:00</button>
-          <button type="button" id="btn-day-continue" class="btn small primary hidden" title="The trade has closed: jump to the next day at 06:00 (or buy again / step on instead)">Continue &rarr; 06:00</button>
+          <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 00:00 (K)">Skip day &rarr; 00:00</button>
         </div>
         <div class="review-inline hidden" id="day-exit-choice" role="group" aria-labelledby="dx-title">
           <b id="dx-title" class="small">Trade closed</b>
           <p id="dx-sub" class="small muted"></p>
           <div class="row-flex">
-            <button type="button" id="btn-dx-end" class="btn small primary" title="Jump to 24:00 of this day; the review is asked there">End the day &rarr; 24:00 <kbd>Enter</kbd></button>
+            <button type="button" id="btn-dx-end" class="btn small primary" title="Jump to 24:00 of this day (00:00 of the next); the review is asked there">End the day &rarr; 00:00 <kbd>Enter</kbd></button>
             <button type="button" id="btn-dx-keep" class="btn small" title="Go on from here as if no trade had happened; the review waits for 24:00">Keep trading <kbd>K</kbd></button>
           </div>
           <p class="small muted">A step or a new trade also keeps trading.</p>
@@ -453,7 +452,7 @@
             <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_moved_up" aria-pressed="false">false</button><span class="review-label">I moved the stop too far up <kbd>4</kbd></span></div>
           </div>
           <p id="dr-error" class="error small" role="alert"></p>
-          <div class="row-flex"><button type="submit" id="btn-dr-save" class="btn small primary">Save review <kbd>Enter</kbd></button><span class="small muted">Continue, step and Buy wait for the answers.</span></div>
+          <div class="row-flex"><button type="submit" id="btn-dr-save" class="btn small primary">Save review <kbd>Enter</kbd></button><span class="small muted">Step, jumps and Buy wait for the answers.</span></div>
         </form>
         <div class="sub" id="day-notes-sub" data-fold>
           <div class="sub-head"><button type="button" class="fold small muted" aria-expanded="true">Notes for this day</button> <span id="day-notes-state" class="mono small muted"></span></div>
@@ -487,7 +486,7 @@
         <div class="row-flex">
           <select id="day-strategy" aria-label="Jump strategy"></select>
           <span class="spacer"></span>
-          <button type="button" id="btn-day-signal" class="btn small primary" title="Jump to the strategy's next entry signal (also at night); its zone is added to your zones (E)">Next signal (E)</button>
+          <button type="button" id="btn-day-signal" class="btn small primary" title="Jump to the strategy's next entry signal (any time of day); its zone is added to your zones (E)">Next signal (E)</button>
         </div>
         <p id="day-strategy-note" class="muted small"></p>
         <p id="day-signal-last" class="small" role="status"></p>
@@ -581,7 +580,7 @@
     <button id="btn-play" class="btn icon play" title="Play / pause (P)" aria-label="Play">&#x25B6;</button>
     <button id="btn-step" class="btn icon" title="Step one candle (&rarr;)" aria-label="Step one candle">&#x23ED;</button>
     <span class="step-info">step: <span id="step-size" class="mono">&ndash;</span></span>
-    <button type="button" id="btn-day-ema" class="btn small day-only" title="Jump to the next day whose daily close is above the EMA 200, at 06:00 (J)">Next day &gt; EMA</button>
+    <button type="button" id="btn-day-ema" class="btn small day-only" title="Jump to the next day whose daily close is above the EMA 200, at 00:00 (J)">Next day &gt; EMA</button>
     <label class="speed">Speed
       <input id="speed" type="range" min="1" max="10" value="2" aria-label="Candles per second">
       <span id="speed-label" class="mono">2/s</span>
@@ -695,7 +694,7 @@
         <label class="wide">Name <span class="muted">(optional)</span> <input name="name" id="f-name" type="text" maxlength="80" placeholder="e.g. BTC summer 2025"></label>
       </div>
       <p class="muted small" id="f-note-swing">The base timeframe is the finest you can view in this session. Finer timeframes mean more data to download.</p>
-      <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 0.1 % of the start balance per trade (100 USDT at the default 100 000), trading day 06:00 to 24:00 UTC. The first day begins at the first 06:00 after the start date.</p>
+      <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 0.1 % of the start balance per trade (100 USDT at the default 100 000), trading day 00:00 to 24:00 UTC, starting on the start date.</p>
       <p id="form-error" class="error hidden"></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="btn-cancel-session">Cancel</button>

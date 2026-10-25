@@ -18,7 +18,6 @@ from app.replay.day_engine import (
     ac_public,
     alt_window_end,
     day_bounds,
-    in_entry_window,
     local_ms,
     picture_frame,
     position_size,
@@ -35,10 +34,11 @@ from app.indicators.registry import validate_params
 from app.strategies.rline import RLINE_PARAMS, get_jump_strategy
 from tests.fakes import DAY, H, LISTING, Q, FineFakeClient, quarter_candle
 
-START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC (the day clock is UTC: 06:00 = START + 6 h)
+START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC (the day clock is UTC, a day runs 00:00 to 24:00)
 END = START + 6 * DAY
 NOW = START + 10 * DAY + 1
-FIRST_CURSOR = START + 5 * H + 45 * 60_000   # the 15m candle closing at 06:00 UTC on 2018-05-10
+FIRST_CURSOR = START                 # the first 15m candle of 2018-05-10 (00:00-00:15): the data starts at 00:00
+MIDNIGHT = START + 95 * Q            # the candle closing at 24:00 of 2018-05-10 (= 00:00 of the 11th)
 PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 16).decode()
 
 
@@ -130,27 +130,30 @@ def test_atr_is_wilder_smoothed_true_range():
 
 
 # ------------------------------------------------------------------ the clock
-def test_trading_day_and_entry_window_in_winter_and_summer():
-    six = utc_ms(2024, 1, 15, 6, 0)                    # 06:00 UTC: the day clock is UTC (was Malta)
-    assert trading_day(six) == date(2024, 1, 15)
+def test_trading_day_is_the_utc_calendar_day_in_winter_and_summer():
+    midnight = utc_ms(2024, 1, 15, 0, 0)               # 00:00 UTC: the day clock is UTC (was Malta), the day starts at 00:00 (was 06:00)
+    assert trading_day(midnight) == date(2024, 1, 15)  # the close at 00:00 already starts the new day
     start, end = day_bounds(date(2024, 1, 15))
-    assert start == six and end == utc_ms(2024, 1, 16, 0, 0)
-    assert trading_day(six - 1) == date(2024, 1, 14)   # 05:59:59 still belongs to the day before
-    assert in_entry_window(end) and trading_day(end) == date(2024, 1, 15)          # 24:00 counts
-    assert not in_entry_window(end + Q) and trading_day(end + Q) == date(2024, 1, 15)  # 00:15: the night
+    assert start == midnight and end == utc_ms(2024, 1, 16, 0, 0)
+    assert trading_day(midnight - 1) == date(2024, 1, 14)          # 23:59:59 belongs to the day before
+    assert trading_day(utc_ms(2024, 1, 15, 3, 0)) == date(2024, 1, 15)   # no night: 03:00 is the 15th
+    assert trading_day(end) == date(2024, 1, 16)                   # 24:00 = 00:00 of the next day
     assert local_ms(date(2024, 7, 15), 6) == utc_ms(2024, 7, 15, 6, 0)             # summer: no daylight-saving shift
-    assert day_bounds(date(2024, 7, 15))[1] == utc_ms(2024, 7, 16, 0, 0)
+    assert day_bounds(date(2024, 7, 15)) == (utc_ms(2024, 7, 15, 0, 0), utc_ms(2024, 7, 16, 0, 0))
 
 
 # ----------------------------------------------------------------- the engine
-def test_prepare_puts_the_cursor_on_the_first_0600_candle(day: DayEngine, session: dict):
+def test_prepare_puts_the_cursor_on_the_first_day_start(day: DayEngine, session: dict):
+    """The data starts at 00:00 of the start date, so the replay starts on that day's first candle
+    (no jump to 06:00 any more); data starting later in a day waits for the next 00:00."""
     sid = session["id"]
     assert session["status"] == "ready" and session["base_interval"] == "15m"
     assert session["cursor_ms"] == FIRST_CURSOR
-    assert local_hm(session["cursor_ms"] + Q) == (date(2018, 5, 10), 6, 0)
+    assert local_hm(session["cursor_ms"] + Q) == (date(2018, 5, 10), 0, 15)
+    assert day._first_day_cursor(session, START + 5 * H) == START + DAY - Q   # mid-day data: the candle closing at the next 00:00
     assert session["price"] == pytest.approx(quarter_candle(FIRST_CURSOR)[3])
     d = session["day"]
-    assert d["date"] == "2018-05-10" and d["in_window"] and not d["night"] and d["phase"] == "trading"
+    assert d["date"] == "2018-05-10" and "night" not in d and "in_window" not in d and d["phase"] == "trading"
     assert d["risk_amount"] == 100.0 and d["timezone"] == "UTC" and d["utc_offset_min"] == 0
     assert d["check"]["ema_above"] is True and d["check"]["ema200"] is not None and "hh_hl" not in d["check"] and "uptrend" not in d
     assert d["check"]["daily_close_iso"].startswith("2018-05-09")   # yesterday's completed UTC day
@@ -203,7 +206,8 @@ def test_plan_and_buy(day: DayEngine, session: dict):
     assert p["risk_usdt"] == pytest.approx(100.0) and p["capped"] is False
     assert p["take_profit"] is None and p["rr"] is None and p["can_buy"] is False
     assert p["signals"]["price_in_zone"] is True and p["signals"]["ema_above"] is True
-    assert p["signals"]["rsi"] is not None and p["signals"]["rsi_day_min"] == pytest.approx(p["signals"]["rsi"])  # first candle of the day
+    # the day's candles so far: the one closing at 00:00 (it starts the day) and the cursor's
+    assert p["signals"]["rsi"] is not None and p["signals"]["rsi_day_min"] <= p["signals"]["rsi"]
     assert p["signals"]["close_above_prev_high"] == (price > quarter_candle(FIRST_CURSOR - Q)[1])
     tp = price + 1.5 * (price - p["stop_used"])
     p2 = day.plan(sid, z["id"], take_profit=tp)
@@ -237,7 +241,7 @@ def test_plan_and_buy(day: DayEngine, session: dict):
     assert t["ema_above"] is True and "hh_hl" not in t and "uptrend" not in t and t["day_date"] == "2018-05-10" and t["capped"] is False
     assert t["zone_upper"] == z["upper"] and t["zone_lower"] == z["lower"] and t["entry_atr"] == pytest.approx(p["atr"])
     assert t["stop_suggested"] == pytest.approx(price - 1.25) and t["stop_atr"] == pytest.approx(p["stop_atr"]) and t["stop_used"] == t["stop_suggested"]
-    assert t["entry_local"] == "2018-05-10 06:00" and t["overnight"] is False
+    assert t["entry_local"] == "2018-05-10 00:15" and t["overnight"] is False
     st = res["state"]
     assert st["cash"] == pytest.approx(100_000 - p["position_value"] - p["buy_fee"])
     assert st["day"]["entries_allowed"] is False and st["day"]["block_reason"] == "A trade is open."
@@ -267,11 +271,13 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     assert st["cursor_ms"] == nxt and ev["choice"] is True and ev["jumped_to_ms"] is None
     assert st["day"]["exit_choice"] is True and st["day"]["review_pending"] is None and st["day"]["can_continue"] is False
     assert st["day"]["entries_allowed"] is True    # buying again means keep trading
-    # "End the day" jumps to the candle closing at 24:00 of the exit day, for the review
+    # "End the day" jumps to the candle closing at 24:00 of the exit day = 00:00 of the next: the day
+    # is left ("Trade closed") and the review is asked on landing
     st = day.end_day(sid)
     assert st["events"][0]["kind"] == "jump" and st["events"][0]["to_local"] == "2018-05-11 00:00"
-    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 0, 0) and st["day"]["exit_choice"] is False
-    assert st["day"]["date"] == "2018-05-10" and st["day"]["local_time"] == "2018-05-11 00:00"
+    assert st["cursor_ms"] == MIDNIGHT and st["day"]["exit_choice"] is False
+    assert st["day"]["date"] == "2018-05-11" and st["day"]["local_time"] == "2018-05-11 00:00" and st["day"]["phase"] == "trading"
+    assert day.days(sid)["days"][0]["left_how"] == "exit"
     with pytest.raises(Conflict):
         day.end_day(sid)    # the day has ended
     tr = day.trades(sid)["trades"][-1]
@@ -280,10 +286,10 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     assert tr["pnl"] == pytest.approx(want["pnl"]) and tr["r_multiple"] == pytest.approx(want["r_multiple"])
     assert tr["pnl_pct"] == pytest.approx(want["pnl_pct"]) and tr["fees"] == pytest.approx(tr["buy_fee"] + tr["sell_fee"])
     assert st["cash"] == pytest.approx(100_000 + tr["pnl"]) and st["account"]["realized_pnl"] == pytest.approx(tr["pnl"])
-    assert st["day"]["phase"] == "exited" and st["day"]["entries_allowed"] is False   # nothing before the review
+    assert st["day"]["entries_allowed"] is False   # nothing before the review
     assert st["day"]["block_reason"] == "Answer the review questions for trade #1 first." and st["day"]["can_continue"] is False
-    assert st["day"]["last_exit"]["id"] == tr["id"] and st["day"]["review_pending"]["id"] == tr["id"]
-    # "what if": the 15-minute candles after the exit candle until 24:00 local of the exit day
+    assert st["day"]["review_pending"]["id"] == tr["id"]
+    # "what if": the 15-minute candles after the exit candle until 24:00 of the exit day
     df = day.candles.get_candles("BTCUSDT", "15m", nxt + Q, local_ms(date(2018, 5, 11), 0) - Q)
     assert tr["whatif_n"] == len(df) > 0
     assert tr["whatif_high"] == df["high"].max() and tr["whatif_low"] == df["low"].min()
@@ -293,17 +299,16 @@ def test_take_profit_fires_on_the_next_candle_and_the_step_after_jumps(db: Path)
     with pytest.raises(Conflict):
         day.sell(sid, "stalls")
     with pytest.raises(Conflict):
-        day.resume(sid)     # the review first
+        day.skip_day(sid)   # the review first
     assert tr["review"]["reviewed"] is False and tr["review"]["over_target_suggested"] is (tr["whatif_high"] >= price + 4.0)
     rv = day.review(sid, tr["id"], {"stop_tight": False, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     assert rv["trade"]["review"]["over_target"] is True and rv["trade"]["review"]["reviewed"] is True
-    assert rv["state"]["day"]["review_pending"] is None and rv["state"]["day"]["can_continue"] is True and rv["state"]["day"]["entries_allowed"] is True
-    st2 = day.resume(sid)   # Continue after an exit is the jump to the next 06:00 (a step would go on with the day)
-    assert st2["events"][0]["kind"] == "jump" and local_hm(st2["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0)
-    assert st2["day"]["phase"] == "trading" and st2["day"]["date"] == "2018-05-11"
-    assert st2["day"]["traded_today"] == 0 and st2["day"]["last_exit"] is None
+    assert rv["state"]["day"]["review_pending"] is None and rv["state"]["day"]["entries_allowed"] is True
+    # the new day has begun: no Continue any more, Skip day goes on to the next 00:00
+    assert rv["state"]["day"]["can_continue"] is False and rv["state"]["day"]["can_skip"] is True
+    assert rv["state"]["day"]["traded_today"] == 0 and rv["state"]["day"]["last_exit"] is None
     rows = day.trades(sid)["trades"]
-    assert len(rows) == 1 and rows[0]["exit_type"] == "take-profit" and rows[0]["exit_local"] == "2018-05-10 06:15"
+    assert len(rows) == 1 and rows[0]["exit_type"] == "take-profit" and rows[0]["exit_local"] == "2018-05-10 00:30"
 
 
 def test_conditions_are_saved_and_evaluated(db: Path):
@@ -384,7 +389,7 @@ def test_move_stop_and_target_is_tracked(db: Path):
     t = res["trade"]
     assert t["stop_used"] == price - 1.0 and t["take_profit"] == price + 4.0 and t["stop_initial"] == price - 2.0
     assert len(t["changes"]) == 1 and t["changes"][0]["field"] == "stop" and t["changes"][0]["from"] == price - 2.0 and t["changes"][0]["to"] == price - 1.0
-    assert t["changes"][0]["at_ms"] == FIRST_CURSOR and t["changes"][0]["at_local"].endswith("06:00")
+    assert t["changes"][0]["at_ms"] == FIRST_CURSOR and t["changes"][0]["at_local"].endswith("00:15")
     assert t["conditions"]["stop_moved"] is True and t["conditions"]["stop_own"] is True   # the choice at the buy still counts
     assert t["rr"] == pytest.approx(2.0) and t["rr_now"] == pytest.approx(4.0) and t["stop_pct"] == pytest.approx(-1.0 / price * 100)
     assert res["state"]["day"]["trade"]["stop_used"] == price - 1.0
@@ -414,8 +419,8 @@ def test_move_stop_and_target_is_tracked(db: Path):
 
 
 def test_buying_is_always_allowed(db: Path):
-    """Only an open trade (or the end of the replay) blocks a buy: a second trade on the same day,
-    one right after an exit and one at night are all allowed; the Days journal counts them all."""
+    """Only an open trade (or the end of the replay) blocks a buy: a second trade on the same day right
+    after an exit, and one right after an overnight exit, are allowed; the Days journal counts them."""
     nxt = FIRST_CURSOR + Q
     price = quarter_candle(FIRST_CURSOR)[3]
     day = make(db, {nxt: (price, price + 5.0, price - 0.1, price + 1.0)})
@@ -426,36 +431,34 @@ def test_buying_is_always_allowed(db: Path):
     st = day.step(sid)                                   # take-profit on the next candle
     assert st["events"][0]["kind"] == "exit" and st["day"]["exit_choice"] is True
     tid1 = st["events"][0]["trade"]["id"]
-    st = day.end_day(sid)                                # end the day: 24:00, where the review is asked
-    assert st["day"]["phase"] == "exited" and st["day"]["local_time"] == "2018-05-11 00:00"
-    assert st["day"]["entries_allowed"] is False and "review" in st["day"]["block_reason"] and st["day"]["can_continue"] is False
-    with pytest.raises(Conflict):
-        day.buy(sid, z["id"], take_profit=price * 3.0, stop=price * 0.5)
-    st = day.review(sid, tid1, {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})["state"]
-    assert st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None and st["day"]["can_continue"] is True
+    assert st["day"]["entries_allowed"] is True and st["day"]["block_reason"] is None   # a buy means keep trading
     p2 = st["price"]
-    res = day.buy(sid, z["id"], take_profit=p2 * 3.0, stop=p2 * 0.5)   # the second trade of the day, right after the review (the 24:00 close)
+    res = day.buy(sid, z["id"], take_profit=p2 * 3.0, stop=p2 * 0.5)   # the second trade of the day, right after the exit
     assert res["trade"]["seq"] == 2 and res["trade"]["day_date"] == "2018-05-10"
     d = res["state"]["day"]
     assert d["phase"] == "trading" and d["traded_today"] == 2 and d["can_sell"] is True and d["can_continue"] is False and d["last_exit"] is None
     assert d["entries_allowed"] is False and d["block_reason"] == "A trade is open."
-    st = day.step(sid, 2)                                # into the night with the trade open
-    assert st["day"]["night"] is True and st["day"]["trade"]["overnight"] is True and st["day"]["date"] == "2018-05-10"
+    st = day.step(sid, 200)                              # stops at 24:00 (= 00:00): the review of trade #1
+    assert st["cursor_ms"] == MIDNIGHT and st["events"][-1]["kind"] == "review" and st["day"]["review_pending"]["id"] == tid1
+    assert st["day"]["date"] == "2018-05-11" and st["day"]["trade"]["seq"] == 2
+    assert day.days(sid)["days"][0]["left_how"] == "held"   # "Trade held overnight"
+    day.review(sid, tid1, {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
+    st = day.step(sid, 2)
+    assert st["day"]["trade"]["overnight"] is True and st["day"]["date"] == "2018-05-11"
     st = day.sell(sid, "no_overnight")
-    assert st["day"]["phase"] == "exited" and st["day"]["night"] is True and st["events"][0]["jumped_to_ms"] is None   # a night exit: no jump
+    assert st["day"]["phase"] == "exited" and st["day"]["exit_choice"] is True and st["events"][0]["jumped_to_ms"] is None
     tid2 = st["events"][0]["trade"]["id"]
-    assert st["day"]["review_pending"]["id"] == tid2 and st["day"]["entries_allowed"] is False
-    st = day.review(sid, tid2, {"stop_tight": True, "over_target": False, "stop_saved": False, "stop_moved_up": False})["state"]
-    assert st["day"]["entries_allowed"] is True and st["day"]["night"] is True
+    assert st["day"]["review_pending"] is None and st["day"]["entries_allowed"] is True   # its review waits for the 11th's 24:00
     p3 = st["price"]
-    res = day.buy(sid, z["id"], take_profit=p3 * 3.0, stop=p3 * 0.5)   # a buy at night
-    assert res["trade"]["seq"] == 3 and res["trade"]["day_date"] == "2018-05-10" and res["state"]["day"]["phase"] == "trading"
+    res = day.buy(sid, z["id"], take_profit=p3 * 3.0, stop=p3 * 0.5)   # right after the overnight exit
+    assert res["trade"]["seq"] == 3 and res["trade"]["day_date"] == "2018-05-11" and res["state"]["day"]["phase"] == "trading"
     rows = day.days(sid)["days"]
-    assert rows[0]["date"] == "2018-05-10" and rows[0]["trade_count"] == 3 and rows[0]["trade_seqs"] == [1, 2, 3]
-    assert rows[0]["trade"]["seq"] == 3 and rows[0]["outcome"] == "open"
+    assert rows[0]["date"] == "2018-05-10" and rows[0]["trade_count"] == 2 and rows[0]["trade_seqs"] == [1, 2]
+    assert rows[0]["trade"]["seq"] == 2 and rows[0]["trade"]["id"] == tid2
     closed = [x for x in day.trades(sid)["trades"] if x["status"] == "closed"]
     assert rows[0]["day_pnl"] == pytest.approx(sum(x["pnl"] for x in closed)) and len(closed) == 2
-    assert rows[0]["exit_types"] == ["take-profit", "early exit"]   # the open third trade has none yet
+    assert rows[0]["exit_types"] == ["take-profit", "early exit"]
+    assert rows[1]["date"] == "2018-05-11" and rows[1]["trade_seqs"] == [3] and rows[1]["outcome"] == "open"
     assert "trade_count" in rows[0] and day.days_csv(sid).startswith("date,")
 
 
@@ -519,15 +522,15 @@ def test_auto_twin_reaches_the_target_after_an_early_manual_exit(db: Path):
     assert sm["diff"] == pytest.approx(tw["pnl"] - man["pnl"]) and sm["auto_pnl"] == pytest.approx(tw["pnl"]) and sm["manual_pnl"] == pytest.approx(man["pnl"])
 
 
-def test_auto_twin_runs_through_the_night_until_the_stop(db: Path):
-    hit = FIRST_CURSOR + 80 * Q                                         # 02:00 of the next night
+def test_auto_twin_runs_until_the_stop(db: Path):
+    hit = FIRST_CURSOR + 80 * Q                                         # 20:15 the same day
     price = quarter_candle(FIRST_CURSOR)[3]
     day = make(db, {hit: (price, price + 1.0, price - 60.0, price)})
     sid = day.create_session("BTCUSDT", START, END)["id"]
     day.prepare(sid)
     z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0, confidence=3)
-    st = day.step(sid, 72)                                              # the candle closing at 24:00: nothing happened
+    st = day.step(sid, 72)                                              # 18 hours later: nothing happened
     tw = st["day"]["auto"]
     assert tw["status"] == "open" and tw["hold_hours"] is None and st["day"]["trade"]["hold_hours"] is None
     st = day.step(sid, 10)                                              # the manual trade (same stop) and the twin stop together
@@ -538,7 +541,7 @@ def test_auto_twin_runs_through_the_night_until_the_stop(db: Path):
 
 
 def test_auto_twin_survives_jumps_until_the_target(db: Path):
-    hit = FIRST_CURSOR + 100 * Q                                        # 07:00 of the next day
+    hit = FIRST_CURSOR + 100 * Q                                        # 01:15 of the next day
     price = quarter_candle(FIRST_CURSOR)[3]
     day = make(db, {hit: (price, price + 60.0, price - 1.0, price)})
     sid = day.create_session("BTCUSDT", START, END)["id"]
@@ -548,10 +551,10 @@ def test_auto_twin_survives_jumps_until_the_target(db: Path):
     day.step(sid, 2)
     man = day.sell(sid, "other", note="out")["events"][0]["trade"]
     day.review(sid, man["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
-    st = day.resume(sid)                                                # Continue -> next day 06:00: the twin is still open
+    st = day.end_day(sid)                                               # End the day -> next day 00:00: the twin is still open
     tw = day.auto_trades(sid)["trades"][0]
-    assert st["day"]["date"] == "2018-05-11" and tw["status"] == "open" and tw["exit_type"] is None
-    st = day.step(sid, 4)
+    assert st["day"]["date"] == "2018-05-11" and st["cursor_ms"] == MIDNIGHT and tw["status"] == "open" and tw["exit_type"] is None
+    st = day.step(sid, 5)
     a = day.auto_trades(sid)
     tw = a["trades"][0]
     assert tw["status"] == "closed" and tw["exit_type"] == "take-profit" and tw["exit_ms"] == hit and tw["hold_hours"] == pytest.approx(25.0)
@@ -563,8 +566,8 @@ def test_auto_twin_survives_jumps_until_the_target(db: Path):
 
 # ------------------------------------------------------------------- review
 def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
-    """The four review marks are asked at the candle closing at 24:00 of the exit day (here reached
-    with "End the day") and the replay waits for them; "over the target" is suggested from the candles
+    """The four review marks are asked at the candle closing at 24:00 of the exit day (= 00:00 of the
+    next, here reached with "End the day") and the replay waits for them; "over the target" is suggested from the candles
     after the exit. The answers can be changed later, an open trade cannot be reviewed."""
     nxt, later = FIRST_CURSOR + Q, FIRST_CURSOR + 10 * Q
     price = quarter_candle(FIRST_CURSOR)[3]
@@ -579,7 +582,7 @@ def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
     assert ev["exit_type"] == "stop" and ev["choice"] is True and st["day"]["review_pending"] is None
     st = day.end_day(sid)
     tr = st["day"]["review_pending"]
-    assert st["day"]["local_time"] == "2018-05-11 00:00" and st["day"]["date"] == "2018-05-10" and st["day"]["phase"] == "exited"
+    assert st["day"]["local_time"] == "2018-05-11 00:00" and st["day"]["date"] == "2018-05-11" and st["day"]["phase"] == "trading"
     pend = st["day"]["review_pending"]
     assert pend["id"] == tr["id"] and pend["review"]["reviewed"] is False and pend["review"]["stop_tight"] is None
     assert pend["review"]["stop_moved_up"] is None
@@ -587,7 +590,7 @@ def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
     assert [q["key"] for q in st["day"]["review_questions"]] == ["stop_tight", "over_target", "stop_saved", "stop_moved_up"]
     assert st["day"]["can_continue"] is False and st["day"]["entries_allowed"] is False
     assert st["day"]["block_reason"] == "Answer the review questions for trade #1 first."
-    for call in (lambda: day.step(sid), lambda: day.step_back(sid), lambda: day.resume(sid), lambda: day.skip_day(sid), lambda: day.goto_day(sid, "2018-05-12"),
+    for call in (lambda: day.step(sid), lambda: day.step_back(sid), lambda: day.skip_day(sid), lambda: day.goto_day(sid, "2018-05-12"),
                  lambda: day.next_ema_day(sid), lambda: day.buy(sid, z["id"], take_profit=price + 4.0, stop=price - 2.0)):
         with pytest.raises(Conflict):
             call()
@@ -605,10 +608,10 @@ def test_review_is_asked_at_2400_and_blocks_the_replay(db: Path):
     r = res["trade"]["review"]
     assert r["stop_tight"] is True and r["over_target"] is True and r["stop_saved"] is False and r["reviewed"] is True and r["reviewed_at"]
     d = res["state"]["day"]
-    assert d["review_pending"] is None and d["can_continue"] is True and d["entries_allowed"] is True and d["block_reason"] is None
-    # changed later, also after the day was left; the trades list carries the marks
-    st = day.resume(sid)
-    assert st["day"]["date"] == "2018-05-11"
+    assert d["review_pending"] is None and d["can_skip"] is True and d["entries_allowed"] is True and d["block_reason"] is None
+    # changed later, also after another day was left; the trades list carries the marks
+    st = day.skip_day(sid)
+    assert st["day"]["date"] == "2018-05-12"
     r2 = day.review(sid, tr["id"], {"stop_tight": False, "over_target": True, "stop_saved": True, "stop_moved_up": True})["trade"]["review"]
     assert r2["stop_tight"] is False and r2["stop_saved"] is True and r2["stop_moved_up"] is True
     assert day.trades(sid)["trades"][0]["review"]["stop_saved"] is True
@@ -639,16 +642,17 @@ def test_keep_trading_defers_the_review_to_2400(db: Path):
     p2 = st["price"]
     t2 = day.buy(sid, z["id"], take_profit=p2 * 3.0, stop=p2 * 0.5)["trade"]   # the second trade of the day
     assert t2["seq"] == 2
-    st = day.step(sid, 200)                                  # stops at the candle closing at 24:00
+    st = day.step(sid, 200)                                  # stops at the candle closing at 24:00 (= 00:00 of the 11th)
     assert [e["kind"] for e in st["events"]] == ["review"] and st["events"][0]["trade"]["id"] == t1["id"]
     assert st["day"]["local_time"] == "2018-05-11 00:00" and st["day"]["review_pending"]["id"] == t1["id"]
+    assert st["day"]["trade"]["overnight"] is False         # the 00:00 close is still the 10th's 24:00
     assert st["day"]["trade"]["id"] == t2["id"]              # the second trade stays open
     assert day.trades(sid)["trades"][0]["alts"] is not None  # its 24:00 has passed: the alternatives are settled
     with pytest.raises(Conflict):
         day.step(sid)
     day.review(sid, t1["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
     st = day.step(sid)
-    assert st["events"] == [] and st["day"]["night"] is True and st["day"]["trade"]["overnight"] is True
+    assert st["events"] == [] and st["day"]["date"] == "2018-05-11" and st["day"]["trade"]["overnight"] is True
 
 
 def test_old_trades_without_a_due_review_never_block(db: Path):
@@ -663,7 +667,7 @@ def test_old_trades_without_a_due_review_never_block(db: Path):
     with day.store.tx() as conn:
         day.store.update_trade(conn, t["id"], review_due=None)   # a trade from before the rule
     st = day.end_day(sid)
-    assert st["day"]["review_pending"] is None and st["day"]["can_continue"] is True
+    assert st["day"]["review_pending"] is None and st["day"]["can_skip"] is True
     assert day.step(sid)["events"] == []
 
 
@@ -751,13 +755,13 @@ def test_exits_a_and_c_both_at_once(day: DayEngine, session: dict):
 
 def test_step_back_stops_at_the_latest_action(db: Path):
     """Step back goes one 15m candle back, never before the entry, a stop / target move, an exit or
-    a jump's landing candle; crossing 06:00 backwards re-opens the day in the journal."""
+    a jump's landing candle; crossing 00:00 backwards re-opens the day in the journal."""
     price = quarter_candle(FIRST_CURSOR)[3]
     day = make(db)
     sid = day.create_session("BTCUSDT", START, END)["id"]
     day.prepare(sid)
     st = day.state(sid)
-    assert st["day"]["can_step_back"] is False              # the first 06:00
+    assert st["day"]["can_step_back"] is False              # the first candle
     with pytest.raises(Conflict):
         day.step_back(sid)
     day.step(sid, 3)
@@ -778,14 +782,17 @@ def test_step_back_stops_at_the_latest_action(db: Path):
     day.keep_trading(sid)
     day.step(sid, 2)
     assert day.step_back(sid)["cursor_ms"] == t["entry_ms"] + 3 * Q
-    # through the night and over 06:00; back over 06:00 re-opens the day
+    # over 00:00 (the review stops the step there); back over 00:00 re-opens the day
     st = day.step(sid, 200)
-    assert st["events"][0]["kind"] == "review"
-    day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
-    st = day.step(sid, 24)
+    assert st["events"][0]["kind"] == "review" and st["cursor_ms"] == MIDNIGHT
     assert st["day"]["date"] == "2018-05-11" and day.days(sid)["days"][0]["left_how"] == "exit"
+    day.review(sid, st["events"][0]["trade"]["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
+    st = day.step(sid, 2)
     st = day.step_back(sid)
-    assert st["day"]["date"] == "2018-05-10" and st["day"]["night"] is True and day.days(sid)["days"][0]["left_how"] is None
+    st = day.step_back(sid)
+    assert st["cursor_ms"] == MIDNIGHT and st["day"]["date"] == "2018-05-11"
+    st = day.step_back(sid)
+    assert st["day"]["date"] == "2018-05-10" and st["day"]["local_time"] == "2018-05-10 23:45" and day.days(sid)["days"][0]["left_how"] is None
     st = day.step(sid)
     assert st["day"]["date"] == "2018-05-11" and day.days(sid)["days"][0]["left_how"] == "exit"
     # a jump's landing candle is the floor
@@ -816,36 +823,34 @@ def test_early_exit_needs_a_reason_and_fills_at_the_close(day: DayEngine, sessio
     assert ev["choice"] is True and st["cursor_ms"] == cursor and st["day"]["review_pending"] is None   # the review waits for 24:00
 
 
-def test_stepping_runs_through_the_night(day: DayEngine, session: dict):
+def test_stepping_crosses_midnight_into_the_next_day(day: DayEngine, session: dict):
+    """There is no night any more: the candle closing at 00:00 starts the next day, and the step that
+    reaches it leaves the day (leaving_next turns on one candle before)."""
     sid = session["id"]
-    st = day.step(sid, 72)   # 18 hours of 15-minute candles: the candle closing at 24:00
-    assert st["events"] == [] and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 0, 0)
-    assert st["day"]["date"] == "2018-05-10" and st["day"]["in_window"] is True and st["day"]["night"] is False
-    # an entry at the 24:00 close is still allowed; an exit in that candle has no "what if" window
+    st = day.step(sid, 93)   # the candle closing at 23:30
+    assert st["events"] == [] and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 23, 30)
+    assert st["day"]["date"] == "2018-05-10" and st["day"]["leaving_next"] is False
+    # an exit at 23:45: its "what if" window is the one candle up to 24:00 (23:45-24:00)
+    st = day.step(sid)
+    assert st["cursor_ms"] == MIDNIGHT - Q and st["day"]["leaving_next"] is True
     price = st["price"]
     z = day.add_zone(sid, "1h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0)
     ev = day.sell(sid, "no_overnight")["events"][0]
     tr = ev["trade"]
-    assert tr["whatif_n"] == 0 and tr["whatif"] is None and tr["whatif_above_exit_pct"] is None
-    assert ev["jumped_to_ms"] is None and tr["review"]["over_target_suggested"] is False
-    with pytest.raises(Conflict):
-        day.resume(sid)
+    assert tr["whatif_n"] == 1 and tr["whatif"] is not None
+    assert ev["jumped_to_ms"] is None and ev["choice"] is True and tr["review"]["over_target_suggested"] is False
+    st = day.keep_trading(sid)
+    st = day.step(sid)       # 00:00: the next day, and the review of that exit
+    assert st["cursor_ms"] == MIDNIGHT and [e["kind"] for e in st["events"]] == ["review"]
+    assert st["day"]["date"] == "2018-05-11" and st["day"]["local_time"] == "2018-05-11 00:00" and st["day"]["entries_allowed"] is False
     day.review(sid, tr["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
-    st = day.resume(sid)
-    assert st["events"][0]["kind"] == "jump" and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0)
-    assert day.resume(sid)["events"] == []   # idempotent
-    # with no trade at all, stepping runs on through the night; 06:00 starts the next day
-    st = day.step(sid, 72)
-    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 12), 0, 0)
-    st = day.step(sid)
-    assert st["events"] == [] and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 12), 0, 15)
-    assert st["day"]["date"] == "2018-05-11" and st["day"]["night"] is True and st["day"]["entries_allowed"] is True
-    assert st["day"]["leaving_next"] is False
-    st = day.step(sid, 22)
-    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 12), 5, 45) and st["day"]["leaving_next"] is True
-    st = day.step(sid)
-    assert st["events"] == [] and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 12), 6, 0) and st["day"]["date"] == "2018-05-12"
+    assert day.resume(sid)["events"] == []   # nothing to continue: the new day is already here
+    row = [r for r in day.days(sid)["days"] if r["date"] == "2018-05-10"][0]
+    assert row["left_how"] == "exit" and row["left_label"] == "Trade closed"
+    # with no trade at all the next 00:00 leaves the day as "No trade"
+    st = day.step(sid, 96)
+    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 12), 0, 0) and st["day"]["date"] == "2018-05-12"
     row = [r for r in day.days(sid)["days"] if r["date"] == "2018-05-11"][0]
     assert row["left_how"] == "end" and row["left_label"] == "No trade"
 
@@ -859,7 +864,8 @@ def test_goto_day_jumps_forward_only(day: DayEngine, session: dict):
         day.goto_day(sid, "2018-06-01")                          # after the end of the replay
     st = day.goto_day(sid, "2018-05-13")
     assert st["events"][0]["kind"] == "jump" and "2018-05-13" in st["events"][0]["reason"]
-    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 13), 6, 0) and st["day"]["date"] == "2018-05-13"
+    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 13), 0, 0) and st["day"]["date"] == "2018-05-13"
+    assert "at 00:00" in st["events"][0]["reason"]
     rows = day.days(sid)["days"]
     assert [r["date"] for r in rows] == ["2018-05-10", "2018-05-13"]   # the days in between were never seen
     assert rows[0]["left_how"] == "skip" and rows[0]["outcome"] == "skipped" and rows[1]["outcome"] == "current"
@@ -904,8 +910,8 @@ def test_next_signal(day: DayEngine, session: dict, monkeypatch):
     assert len(zones) == 1 and zones[0]["id"] == ev["zone_id"] and zones[0]["interval"] == "1h" and zones[0]["upper"] == 1e6
     st = day.next_signal(sid, "rline_retest")       # the next hour's signal; the same zone is reused
     assert st["cursor_ms"] == START + 7 * H and len(day.zones(sid)) == 1
-    st = day.next_signal(sid, "rline_retest")       # 02:00 local on 2018-05-13: the night of 2018-05-12, still jumped to
-    assert st["day"]["date"] == "2018-05-12" and "night" in st["events"][0]["reason"]
+    st = day.next_signal(sid, "rline_retest")       # 00:00 on 2018-05-13: that day, no "night" any more
+    assert st["day"]["date"] == "2018-05-13" and "night" not in st["events"][0]["reason"]
     assert [(r["date"], r["left_how"]) for r in day.days(sid)["days"]][0] == ("2018-05-10", "skip")
     with pytest.raises(Conflict):
         day.next_signal(sid, "rline_retest")        # nothing left
@@ -963,31 +969,36 @@ def test_upgrade_old_risk_sessions(db: Path, day: DayEngine, session: dict):
 def test_skip_day(day: DayEngine, session: dict):
     sid = session["id"]
     st = day.skip_day(sid)
-    assert st["events"][0]["kind"] == "jump" and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0)
-    assert st["day"]["can_skip"] is True
+    assert st["events"][0]["kind"] == "jump" and local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 0, 0)
+    assert st["cursor_ms"] == MIDNIGHT and st["events"][0]["reason"] == "Skipped to the next day at 00:00."
+    assert st["day"]["can_skip"] is True and st["day"]["date"] == "2018-05-11"
 
 
-def test_overnight_trade_runs_through_the_night(day: DayEngine, session: dict):
+def test_overnight_trade_runs_into_the_next_day(day: DayEngine, session: dict):
+    """A trade still open after 24:00 is overnight; it then belongs to the day it was bought on, while
+    the replay is on the next day (the day it was bought on is left as "Trade held overnight")."""
     sid = session["id"]
-    st = day.step(sid, 71)   # the candle closing at 23:45
-    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 23, 45)
+    st = day.step(sid, 93)   # the candle closing at 23:30
+    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 10), 23, 30)
     price = st["price"]
     z = day.add_zone(sid, "4h", price + 0.5, price - 0.5)
     day.buy(sid, z["id"], take_profit=price + 50.0, stop=price - 50.0)
-    st = day.step(sid)   # closes at 24:00: not overnight yet
-    assert st["day"]["trade"]["overnight"] is False and st["day"]["night"] is False
-    st = day.step(sid)   # closes at 00:15: the night
-    assert st["day"]["trade"]["overnight"] is True and st["day"]["night"] is True and st["day"]["date"] == "2018-05-10"
-    assert st["day"]["block_reason"] == "A trade is open." and st["day"]["can_sell"] is True   # the night itself does not block
-    st = day.step(sid, 4)   # 01:15, still open, still the same trading day
-    assert st["events"] == [] and st["day"]["date"] == "2018-05-10"
+    st = day.step(sid, 2)    # closes at 24:00 (= 00:00 of the 11th): not overnight yet
+    assert st["day"]["trade"]["overnight"] is False and st["day"]["date"] == "2018-05-11"
+    assert day.days(sid)["days"][0]["left_how"] == "held" and day.days(sid)["days"][0]["left_label"] == "Trade held overnight"
+    st = day.step(sid)       # closes at 00:15
+    assert st["day"]["trade"]["overnight"] is True and st["day"]["trade"]["day_date"] == "2018-05-10"
+    assert st["day"]["block_reason"] == "A trade is open." and st["day"]["can_sell"] is True
+    st = day.step(sid, 4)    # 01:15, still open
+    assert st["events"] == [] and st["day"]["date"] == "2018-05-11"
     tr = day.sell(sid, "no_overnight")["events"][0]["trade"]
     assert tr["overnight"] is True and tr["exit_local"] == "2018-05-11 01:15"
-    assert tr["whatif_n"] == 0 and tr["whatif"] is None   # a night exit: nothing of the trading day is left (and no jump)
-    assert day.state(sid)["day"]["local_time"] == "2018-05-11 01:15"
-    day.review(sid, tr["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})
-    st = day.resume(sid)   # the next 06:00 is later the same morning
-    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 11), 6, 0) and st["day"]["traded_today"] == 0
+    assert tr["whatif_n"] > 0     # the rest of the 11th until its 24:00
+    st = day.state(sid)
+    assert st["day"]["local_time"] == "2018-05-11 01:15" and st["day"]["exit_choice"] is True and st["day"]["review_pending"] is None
+    st = day.end_day(sid)    # the review waits for the 11th's 24:00 = 00:00 of the 12th
+    assert local_hm(st["cursor_ms"] + Q) == (date(2018, 5, 12), 0, 0) and st["day"]["review_pending"]["id"] == tr["id"]
+    assert st["day"]["traded_today"] == 0
 
 
 def test_ema_not_available_leaves_the_trend_unknown(db: Path):
@@ -1078,7 +1089,7 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     with pytest.raises(NotFound):
         day.day_image_path(sid, "2018-05-10")
     row = day.attach_day_image(sid, "2018-05-10", PNG)
-    assert row["has_image"] is True and row["image_local"] == "2018-05-10 06:00"
+    assert row["has_image"] is True and row["image_local"] == "2018-05-10 00:15"
     assert day.day_image_path(sid, "2018-05-10").read_bytes().startswith(b"\x89PNG")
     assert day.state(sid)["day"]["check"]["notes"] == "quiet morning" and day.state(sid)["day"]["check"]["has_image"] is True
     # day 1 skipped
@@ -1086,36 +1097,36 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     assert st["day"]["date"] == "2018-05-11"
     d1 = day.days(sid)["days"]
     assert [d["date"] for d in d1] == ["2018-05-10", "2018-05-11"]
-    assert d1[0]["outcome"] == "skipped" and d1[0]["left_how"] == "skip" and d1[0]["left_label"] == "Skipped" and d1[0]["left_local"] == "2018-05-10 06:00"
+    assert d1[0]["outcome"] == "skipped" and d1[0]["left_how"] == "skip" and d1[0]["left_label"] == "Skipped" and d1[0]["left_local"] == "2018-05-10 00:15"
     assert d1[0]["notes"] == "quiet morning" and d1[0]["has_image"] is True
     assert d1[1]["outcome"] == "current" and d1[1]["left_how"] is None
-    # day 2: no trade; stepping runs through the night, leaving_next turns on at the 05:45 candle
+    # day 2: no trade; leaving_next turns on at the 23:45 candle
     for _ in range(100):
         st = day.state(sid)
         if st["day"]["leaving_next"]:
             break
         st = day.step(sid)
         assert st["events"] == []
-    assert st["day"]["local_time"] == "2018-05-12 05:45" and st["day"]["date"] == "2018-05-11" and st["day"]["leaving_next"] is True
+    assert st["day"]["local_time"] == "2018-05-11 23:45" and st["day"]["date"] == "2018-05-11" and st["day"]["leaving_next"] is True
     st = day.step(sid)
     assert st["events"] == [] and st["day"]["date"] == "2018-05-12" and st["day"]["leaving_next"] is False
     d2 = day.days(sid)["days"][1]
-    assert d2["outcome"] == "no trade" and d2["left_how"] == "end" and d2["left_local"] == "2018-05-12 05:45" and d2["notes"] is None
-    # day 3: a trade; after the exit leaving_next is on (the continue is the jump), the row shows the trade
+    assert d2["outcome"] == "no trade" and d2["left_how"] == "end" and d2["left_local"] == "2018-05-11 23:45" and d2["notes"] is None
+    # day 3: a trade; the row shows it
     z = day.add_zone(sid, "1h", price + 0.5, price - 3.0)   # middle = price - 1.25, below the day-3 price
     day.buy(sid, z["id"], take_profit=None, ratio=2.0)
     assert day.state(sid)["day"]["leaving_next"] is False
     st = day.sell(sid, "stalls")
     tid = st["events"][0]["trade"]["id"]
     assert st["day"]["exit_choice"] is True and st["day"]["can_continue"] is False
-    st = day.end_day(sid)
-    # at 24:00 the review comes first; the night still belongs to the day
-    assert st["day"]["leaving_next"] is False and st["day"]["can_continue"] is False and st["day"]["local_time"] == "2018-05-13 00:00"
     d3 = day.days(sid)["days"][2]
     assert d3["outcome"] == "trade" and d3["trade"]["seq"] == 1 and d3["trade"]["exit_type"] == "early exit" and d3["left_how"] is None
+    st = day.end_day(sid)
+    # End the day: the jump to 24:00 = 00:00 of the 13th leaves day 3; the review comes first there
+    assert st["day"]["leaving_next"] is False and st["day"]["can_continue"] is False and st["day"]["local_time"] == "2018-05-13 00:00"
+    assert st["day"]["date"] == "2018-05-13" and st["day"]["review_pending"]["id"] == tid
     st = day.review(sid, tid, {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False})["state"]
-    assert st["day"]["can_continue"] is True and st["day"]["leaving_next"] is False
-    day.resume(sid)
+    assert st["day"]["can_continue"] is False and st["day"]["can_skip"] is True and st["day"]["leaving_next"] is False
     d3 = day.days(sid)["days"][2]
     assert d3["left_how"] == "exit" and d3["left_label"] == "Trade closed" and d3["trade"]["pnl"] is not None
     rows = day.days(sid)["days"]
@@ -1123,7 +1134,7 @@ def test_daily_journal_tracks_every_day(day: DayEngine, session: dict):
     csv_text = day.days_csv(sid)
     lines = csv_text.splitlines()
     assert lines[0].startswith("date,daily_close,ema200,ema_above,outcome,left_label") and len(lines) == 5
-    assert lines[1].startswith("2018-05-10,") and ",skipped,Skipped,2018-05-10 06:00,,,,,,,True,2018-05-10 06:00,quiet morning" in lines[1]
+    assert lines[1].startswith("2018-05-10,") and ",skipped,Skipped,2018-05-10 00:15,,,,,,,True,2018-05-10 00:15,quiet morning" in lines[1]
     assert ",trade,Trade closed," in lines[3] and ",1,early exit,Price stalls at resistance," in lines[3]
     # reset wipes the journal and its pictures
     pic = day.day_image_path(sid, "2018-05-10")
@@ -1181,14 +1192,14 @@ def test_alternative_trades_close_at_24_00_at_the_latest(db: Path):
     day.end_day(sid)                                                       # the replay jumps to 24:00
     man = day.trades(sid)["trades"][0]
     a = man["alts"]
-    end = FIRST_CURSOR + 72 * Q                                            # the candle closing at 24:00
+    end = MIDNIGHT                                                         # the candle closing at 24:00
     assert a["end_ms"] == end + Q and a["end_local"].endswith("00:00")
     a1, a2 = a["alt1"], a["alt2"]
     assert a1["stop"] == a2["stop"] == price - 2.0 and a1["take_profit"] == price + 10.0 and a2["take_profit"] == price + 4.0
     assert a2["exit_type"] == "take-profit" and a2["exit_ms"] == c2 and a2["exit_price"] == price + 4.0
     want = trade_result(price, price + 4.0, man["coins"], man["position_value"], man["buy_fee"], 0.001, man["risk_amount"])
     assert a2["pnl"] == pytest.approx(want["pnl"]) and a2["r_multiple"] == pytest.approx(want["r_multiple"]) and a2["diff"] == pytest.approx(a2["pnl"] - man["pnl"])
-    assert a1["exit_type"] == "end of day" and a1["exit_ms"] == end and a1["exit_price"] == quarter_candle(end)[3] and a1["hold_hours"] == pytest.approx(18.0)
+    assert a1["exit_type"] == "end of day" and a1["exit_ms"] == end and a1["exit_price"] == quarter_candle(end)[3] and a1["hold_hours"] == pytest.approx(23.75)
     # the after-exit moves also in R
     w = man["whatif"]
     assert w["above_exit_r"] == pytest.approx((price + 5.0 - man["exit_price"]) * man["coins"] / man["risk_usdt"]) and w["above_exit_r"] > 0
@@ -1207,33 +1218,33 @@ def test_alternative_trades_close_at_24_00_at_the_latest(db: Path):
 
 
 def test_picture_frame_spans_the_held_days():
-    """The trade picture runs from 06:00 of the entry's trading day to 24:00 of the exit's (candle
-    open times in seconds: the candles closing at 06:00 and at 24:00); a night exit keeps its candle."""
+    """The trade picture runs from 00:00 of the entry's trading day to 24:00 of the exit's (candle
+    open times in seconds: the candles closing at 00:00 and at 24:00)."""
     def frame(entry_ms, exit_ms):
         f = picture_frame(entry_ms, exit_ms)
         return local_hm(f["from_s"] * 1000 + Q), local_hm(f["to_s"] * 1000 + Q)
     noon, evening = local_ms(date(2018, 5, 10), 12) - Q, local_ms(date(2018, 5, 10), 18) - Q
-    assert frame(noon, evening) == ((date(2018, 5, 10), 6, 0), (date(2018, 5, 11), 0, 0))
+    assert frame(noon, evening) == ((date(2018, 5, 10), 0, 0), (date(2018, 5, 11), 0, 0))
     next_day = local_ms(date(2018, 5, 11), 10) - Q                       # held overnight
-    assert frame(noon, next_day) == ((date(2018, 5, 10), 6, 0), (date(2018, 5, 12), 0, 0))
-    night = local_ms(date(2018, 5, 11), 3) - Q                           # closed at 03:00 in the night
-    assert frame(noon, night) == ((date(2018, 5, 10), 6, 0), (date(2018, 5, 11), 3, 0))
-    night_buy = local_ms(date(2018, 5, 11), 2) - Q                       # bought in the night after the 10th
-    assert frame(night_buy, next_day)[0] == (date(2018, 5, 10), 6, 0)
+    assert frame(noon, next_day) == ((date(2018, 5, 10), 0, 0), (date(2018, 5, 12), 0, 0))
+    early = local_ms(date(2018, 5, 11), 3) - Q                           # closed at 03:00 the next morning
+    assert frame(noon, early) == ((date(2018, 5, 10), 0, 0), (date(2018, 5, 12), 0, 0))
+    early_buy = local_ms(date(2018, 5, 11), 2) - Q                       # bought at 02:00: the 11th
+    assert frame(early_buy, next_day)[0] == (date(2018, 5, 11), 0, 0)
     assert picture_frame(noon, None) is None
 
 
-def test_alternative_window_ends_at_the_next_24_00_for_night_buys():
-    """A buy during the day closes its alternatives at that day's 24:00; a buy at 24:00 itself or in
-    the night (00:00-06:00) at the 24:00 of the following trading day."""
+def test_alternative_window_ends_at_the_entry_days_24_00():
+    """A buy closes its alternatives at 24:00 of its trading day; a buy on the candle closing at 00:00
+    belongs to the new day and runs to that day's 24:00."""
     noon = local_ms(date(2018, 5, 10), 12) - Q                           # the candle closing at 12:00
     assert local_hm(alt_window_end(noon)) == (date(2018, 5, 11), 0, 0)
-    midnight = local_ms(date(2018, 5, 11), 0) - Q                        # the candle closing at 24:00
+    midnight = local_ms(date(2018, 5, 11), 0) - Q                        # the candle closing at 00:00 of the 11th
     assert local_hm(alt_window_end(midnight)) == (date(2018, 5, 12), 0, 0)
-    night = local_ms(date(2018, 5, 11), 2) - Q                           # 02:00 in the night after the 10th
-    assert local_hm(alt_window_end(night)) == (date(2018, 5, 12), 0, 0)
-    dawn = local_ms(date(2018, 5, 11), 6) - Q                            # the 06:00 candle starts the 11th
-    assert local_hm(alt_window_end(dawn)) == (date(2018, 5, 12), 0, 0)
+    early = local_ms(date(2018, 5, 11), 2) - Q                           # 02:00 on the 11th
+    assert local_hm(alt_window_end(early)) == (date(2018, 5, 12), 0, 0)
+    late = local_ms(date(2018, 5, 11), 0) - 2 * Q                        # the candle closing at 23:45 of the 10th
+    assert local_hm(alt_window_end(late)) == (date(2018, 5, 11), 0, 0)
 
 
 def test_next_signal_keeps_only_the_current_signal_zone(day: DayEngine, session: dict, monkeypatch):

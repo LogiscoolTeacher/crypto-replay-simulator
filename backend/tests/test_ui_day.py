@@ -16,12 +16,12 @@ pw = pytest.importorskip("playwright.sync_api")
 import uvicorn  # noqa: E402
 
 from app import main  # noqa: E402
-from tests.fakes import DAY, H, LISTING, Q, FineFakeClient, quarter_candle  # noqa: E402
+from tests.fakes import DAY, LISTING, Q, FineFakeClient, quarter_candle  # noqa: E402
 
 START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC
 END = START + 6 * DAY
 NOW = START + 10 * DAY + 1
-FIRST_CURSOR = START + 5 * H + 45 * 60_000   # the first 15m candle of the replay (closes at 06:00 UTC)
+FIRST_CURSOR = START                 # the first 15m candle of the replay (00:00-00:15 UTC)
 SYMBOL = "ADAUSDT"   # a coin no other test module downloads
 PRICE = quarter_candle(FIRST_CURSOR)[3]
 # the next candle hits the stop of the test trade

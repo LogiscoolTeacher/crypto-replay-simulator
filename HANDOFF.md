@@ -3,7 +3,7 @@
 State of the project for the next Claude Code instance. Read this first, then the code it points
 to. Update the **History** and **Open / ideas** sections when you finish a change.
 
-Last updated: 2026-10-24 (after `e128c09`).
+Last updated: 2026-10-25.
 
 ## What the app is
 
@@ -48,12 +48,16 @@ data/                               gitignored: replay.db, snapshots/ (pictures)
 
 ## Day-trading mode as it stands
 
-**Clock**: UTC (Europe/Malta until 2026-10-24; `TIMEZONE` in day_engine.py). A trading day runs
-06:00 → 06:00 UTC and is named after its start date.
-06:00–24:00 is the entry window, 00:00–06:00 the night; both are labels only. Buying is allowed
-whenever no trade is open, also at night and several times a day. Stepping and Play run through the
-night. Crossing 06:00 leaves the day: its journal row records how (`No trade`, `Trade closed`,
-`Trade held past 06:00`, `Skipped`), and the day picture is taken just before.
+**Clock**: UTC (Europe/Malta until 2026-10-24; `TIMEZONE` in day_engine.py). A trading day is the
+UTC calendar day, 00:00 → 24:00 (`DAY_START_HOUR = 0`; until 2026-10-25 it ran 06:00 → 06:00 with a
+"night"). A candle belongs to the day its **close** falls in, so the candle closing at 00:00 starts
+the new day: "24:00 of a day" and "00:00 of the next" are the same candle (the cursor of every jump).
+Buying is allowed whenever no trade is open, several times a day. Crossing 00:00 leaves the day: its
+journal row records how (`No trade`, `Trade closed`, `Trade held overnight`, `Skipped`), and the day
+picture is taken just before. A new session starts on the start date: on its first candle
+(00:00–00:15), because the candle closing at 00:00 lies before the session's data (a re-prepare
+would reset a cursor before `data_start_ms`). Old sessions keep their stored days; from the cursor
+on, days start at 00:00.
 
 **Session**: 100 000 USDT start, risk fixed at 0.1 % of the start (100 USDT) per trade, fee 0.1 %
 per side (the side panel no longer shows the risk row). Base interval 15m; the chart shows 15m / 1h / 4h / 1D. Zones are drawn on 1h / 4h.
@@ -81,20 +85,22 @@ whatever is still open at that level. A closed exit is a step-back floor. Trades
 this have no A / C (`exits_ac` is None in the API).
 
 **After an exit by day** the replay stays on the exit candle and the side panel asks:
-- **End the day → 24:00** (`POST …/end-day`): jumps to the candle closing at 24:00 of the exit's
-  trading day.
+- **End the day → 00:00** (`POST …/end-day`): jumps to the candle closing at 24:00 of the exit's
+  trading day = 00:00 of the next, so it leaves the day (day picture first) and the review is asked
+  on landing. It is the same jump as the old Continue (`resume`); the Continue button is gone, the
+  `/continue` route stays for the API.
 - **Keep trading** (`POST …/keep-trading`): a step or a buy does the same.
 
 The **review** (4 true/false marks: stop too tight, went over the target, stop saved me, moved the
 stop too far up) becomes due
 when the replay reaches 24:00 of the exit's trading day. A step stops there with a `review` event,
-and nothing moves (step, jumps, buy, step back) until it is answered. A night exit is due at once.
+and nothing moves (step, jumps, buy, step back) until it is answered; Step / Play are disabled then.
 Only trades with `review_due = 1` (exits since `e128c09`) can block; older trades never do.
 Code: `DayEngine._exit`, `end_day`, `keep_trading`, `_pending_review`, `_review_gate`,
 `_review_event`.
 
 **Per trade, also recorded**:
-- the automatic twin (same entry, hands-off original stop / target, runs through the night)
+- the automatic twin (same entry, hands-off original stop / target, runs across days until one is hit)
 - Alt 1 / Alt 2: hands-off alternatives closed by 24:00 at the latest, filled once the replay passed
   that 24:00
 - MAE / MFE in % and R
@@ -102,7 +108,7 @@ Code: `DayEngine._exit`, `end_day`, `keep_trading`, `_pending_review`, `_review_
 - the entry conditions (`CONDITIONS`, evaluated in the Conditions tab)
 
 **Pictures**:
-- Trade picture: taken when its review becomes due; always 15m, framed from 06:00 of the entry's
+- Trade picture: taken when its review becomes due; always 15m, framed from 00:00 of the entry's
   trading day to 24:00 of the exit's (`picture_frame`, `day.js capturePicture`). A trade whose stop /
   target was moved also shows every level as a stepped line with "SL ↑" / "TP ↓" marks at the moves
   (`chart.setLevelHistory`; pictures only, not the live chart).
@@ -111,16 +117,16 @@ Code: `DayEngine._exit`, `end_day`, `keep_trading`, `_pending_review`, `_review_
 Both are stored under `data/snapshots/<session>/`.
 
 **Navigation**:
-- Skip day / Continue → next 06:00
+- Skip day → next 00:00
 - Calendar (goto a later day)
 - Next day > EMA (J)
 - Next signal (E): jumps to the next RLine_Retest signal and adds its zone as a temporary
   "signal" zone, removed when unused and the day is left
 
 **Step back** (⏮ button between Back to start ⏴ and Play, key ←; day mode only): one 15m candle back,
-never before the latest of: the first 06:00, the landing candle of the latest jump
+never before the latest of: the first candle, the landing candle of the latest jump
 (`day_sessions.back_floor_ms`), the open trade's entry or its last stop/target move, the latest
-exit. Nothing is undone. Crossing 06:00 backwards clears that day's "left" mark. Code:
+exit. Nothing is undone. Crossing 00:00 backwards clears that day's "left" mark. Code:
 `_back_floor`, `_step_back_target`, `step_back`.
 
 **Keys** (day mode): N/B new trade, X sell, K skip (keep trading while the exit
@@ -180,6 +186,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- No more 06:00: the trading day is the UTC calendar day (`DAY_START_HOUR = 0`). A new session,
+  Skip day, the calendar, Next day > EMA and End the day land on 00:00; there is no night, and "End
+  the day" now leaves the day (it is the old Continue, whose button is gone). `in_entry_window` and
+  the `in_window` / `night` state fields are removed.
 - Indicator panes (RSI, MACD, Volume delta, the day-mode RSI pane) have a -/+ button at their top
   right: minimized they shrink to a 22 px strip with their lines hidden (`chart.togglePane`,
   `_renderPaneFolds`, remembered in localStorage `replay.ui.minPanes`). The pane's price scale stays
