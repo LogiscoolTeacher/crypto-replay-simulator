@@ -103,8 +103,10 @@ Code: `DayEngine._exit`, `end_day`, `keep_trading`, `_pending_review`, `_review_
 
 **Pictures**:
 - Trade picture: taken when its review becomes due; always 15m, framed from 06:00 of the entry's
-  trading day to 24:00 of the exit's (`picture_frame`, `day.js capturePicture`).
-- Day picture: taken when the day is left.
+  trading day to 24:00 of the exit's (`picture_frame`, `day.js capturePicture`). A trade whose stop /
+  target was moved also shows every level as a stepped line with "SL ↑" / "TP ↓" marks at the moves
+  (`chart.setLevelHistory`; pictures only, not the live chart).
+- Day picture: taken when the day is left (with the same level history for the day's closed trade).
 
 Both are stored under `data/snapshots/<session>/`.
 
@@ -178,6 +180,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- Pictures show every stop / target move: stepped lines from the entry to the exit plus a mark at
+  each move (`chart.setLevelHistory`, from `trade.changes`). Pictures taken before keep the old look.
 - Review mark 4, "I moved the stop too far up" (`stop_moved_up`, column `review_stop_moved_up`,
   key 4). Required like the other three; trades reviewed before show it as "–" (NULL).
 - Review fix: a step while a review was due resynced the state from the swing endpoint (no `day`

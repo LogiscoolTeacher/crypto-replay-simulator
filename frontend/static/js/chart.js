@@ -137,6 +137,7 @@ export class ChartView {
     this._titles = new Map();  // price line -> its title, so setQuiet can hide and restore it
     this.planLines = [];   // dotted target and stop lines of the selected bucket
     this.levelLines = [];  // support / resistance price lines of the Bitcoin context peek
+    this.levelHistory = []; // stepped stop / target lines of a day trade's moves (pictures only, see setLevelHistory)
     this.extremeLines = []; // dashed lines at the 6-month high and low of the coin on screen
     this.trades = [];
     this.targetRange = null;   // range requested but not yet applied by the library
@@ -241,6 +242,47 @@ export class ChartView {
       if (key && open) this.dragLines.push({ key, line, price, title, entry: trade.entry_price });
     }
   }
+  // The history of a day trade's stop and target (the pictures): each level as a stepped line from the
+  // entry to the exit (or the latest candle), changing at the candle after the one it was moved on
+  // (a move takes effect at that candle's close), with a small "SL ↑" / "TP ↓" mark at each move.
+  // Nothing is drawn for a trade whose levels never moved: the dotted price lines already tell it all.
+  // `null` removes it again.
+  setLevelHistory(trade) {
+    for (const s of this.levelHistory || []) this.chart.removeSeries(s);
+    this.levelHistory = [];
+    const changes = trade ? trade.changes || [] : [];
+    if (!changes.length || !this.payload || !this.payload.time || !this.payload.time.length) return;
+    const step = this.intervalMs / 1000;
+    const times = this.payload.time;
+    const startS = Math.floor(trade.entry_ms / 1000);
+    const endS = Math.min(trade.exit_ms !== null && trade.exit_ms !== undefined ? Math.floor(trade.exit_ms / 1000) : Infinity, times[times.length - 1]);
+    const fields = [
+      ['stop', trade.stop_initial, DOWN, 'SL', 'aboveBar'],
+      ['take_profit', trade.tp_initial, UP, 'TP', 'belowBar'],
+    ];
+    for (const [field, initial, color, short, position] of fields) {
+      const moves = changes.filter(c => c.field === field);
+      if (!moves.length || initial === null || initial === undefined || endS < startS) continue;
+      // one value per bar time (two moves on one candle: the later one counts), oldest first
+      const at = new Map([[startS, initial]]);
+      const marks = [];
+      for (const c of moves) {
+        const t = Math.min(Math.floor(c.at_ms / 1000) + step, endS);
+        at.set(t, c.to);
+        marks.push({ time: t, position, color, shape: c.to > c.from ? 'arrowUp' : 'arrowDown', text: `${short} ${c.to > c.from ? '↑' : '↓'}`, size: 0.8 });
+      }
+      const pts = [...at.entries()].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
+      if (pts[pts.length - 1].time < endS) pts.push({ time: endS, value: pts[pts.length - 1].value });   // run on to the exit
+      const series = this.chart.addSeries(LWC.LineSeries, {
+        color, lineWidth: 2, lineType: LWC.LineType.WithSteps, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, priceFormat: this.priceFormat(),   // the old levels count for the price scale too
+      }, 0);
+      series.setData(pts);
+      LWC.createSeriesMarkers(series, marks.filter((m, i, all) => all.findIndex(x => x.time === m.time) === i));
+      this.levelHistory.push(series);
+    }
+  }
+
   // Dragging the stop / target line of the open trade (day-trading mode). The pointerdown near a
   // line is taken in the capture phase and default-prevented, so the library never sees the mouse
   // gesture (no pan, no click); the new price goes to onDragLine on release.

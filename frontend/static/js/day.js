@@ -1043,7 +1043,7 @@ export class DayMode {
   }
   // The trade's picture, taken when its review becomes due (24:00 of the exit day): always the 15-minute chart from 06:00 of the
   // entry's trading day to 24:00 of the exit's (trade.frame; a night exit ends at the exit), with
-  // zones, entry, stop, take-profit and the exit line, whatever the zoom on screen. A hold longer than
+  // zones, entry, stop, take-profit, every earlier stop / target level (chart.setLevelHistory) and the exit line, whatever the zoom on screen. A hold longer than
   // the loaded bars (~6 days) starts at the oldest one. The view and zoom come back afterwards.
   async capturePicture(trade) {
     if (!this.ready() || this.capturing) return;
@@ -1057,6 +1057,7 @@ export class DayMode {
       const frame = trade.frame && chart.rangeForTimes(trade.frame.from_s, trade.frame.to_s);
       if (frame) chart.setRange(frame);
       chart.setDayLines(trade);
+      chart.setLevelHistory(trade);   // every stop / target move, not only the last levels
       // the range applies on a later frame: wait until the chart shows it, then one more for the paint
       // (a frame falls back to a timer, so a hidden page cannot hang here)
       for (let k = 0; k < 10; k++) {
@@ -1066,10 +1067,11 @@ export class DayMode {
       }
       await nextFrame();
       try { image = chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
+      chart.setLevelHistory(null);
       chart.setDayLines(this.day ? this.day.trade : null);
       if (prev !== '15m' && this.state.interval === '15m') await this.c.setInterval(prev);
       if (range && this.state.interval === prev) chart.setRange(range);
-    } finally { this.capturing = false; }
+    } finally { chart.setLevelHistory(null); this.capturing = false; }
     if (!image) return;
     const t = this.c.token();
     try {
@@ -1097,11 +1099,11 @@ export class DayMode {
     try {
       if (prev !== '15m') await this.c.setInterval('15m');
       const closed = d.last_exit && d.last_exit.day_date === d.date ? d.last_exit : null;
-      if (closed) this.c.chart.setDayLines(closed);
+      if (closed) { this.c.chart.setDayLines(closed); this.c.chart.setLevelHistory(closed); }
       await nextFrame(); await nextFrame();   // let the chart paint
       let image = null;
       try { image = this.c.chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
-      if (closed) this.c.chart.setDayLines(d.trade);
+      if (closed) { this.c.chart.setLevelHistory(null); this.c.chart.setDayLines(d.trade); }
       if (image) {
         const t = this.c.token();
         try {

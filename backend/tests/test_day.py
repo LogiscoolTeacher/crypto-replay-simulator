@@ -402,6 +402,13 @@ def test_move_stop_and_target_is_tracked(db: Path):
     assert len(closed["changes"]) == 2 and closed["stop_initial"] == price - 2.0 and closed["price_change_pct"] is None
     with pytest.raises(Conflict):
         day.move_trade(sid, stop=price - 3.0)       # closed
+    # the trade whose review is due carries every move and the levels of the buy: the trade picture
+    # draws the whole stop / target history from them (chart.setLevelHistory)
+    pend = day.end_day(sid)["day"]["review_pending"]
+    assert pend["id"] == closed["id"] and pend["stop_initial"] == price - 2.0 and pend["tp_initial"] == price + 4.0
+    assert [(c["field"], c["from"], c["to"]) for c in pend["changes"]] == [("stop", price - 2.0, price - 1.0), ("take_profit", price + 4.0, price + 3.0)]
+    assert pend["entry_ms"] == FIRST_CURSOR and pend["exit_ms"] == nxt
+    day.review(sid, closed["id"], {"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": True})
     by = {c["key"]: c for c in day.conditions(sid)["conditions"]}
     assert by["stop_moved"]["with"]["trades"] == 1 and by["tp_moved"]["with"]["trades"] == 1
 
