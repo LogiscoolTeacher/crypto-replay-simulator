@@ -111,3 +111,27 @@ def test_review_survives_a_refused_step(page, server_url):
     assert st["day"]["review_pending"] is None
     assert page.is_enabled("#btn-step")
     assert not page.errors, page.errors
+
+
+def test_indicator_pane_can_be_minimized(page, server_url):
+    """The -/+ button of an indicator pane (here the day-mode RSI pane) shrinks it to a thin strip with
+    its lines hidden, is remembered in the browser over a reload, and brings the pane back."""
+    page.goto(server_url + "/")
+    page.wait_for_function("window.__app && window.__app.state.intervals.length > 0")
+    sid = page.evaluate("window.__app.state.sessions.find(s => s.mode === 'day').id")
+    page.evaluate(f"window.__app.loadSession('{sid}')")
+    page.wait_for_selector(".pane-fold[data-key='rsi']")
+    page.click(".pane-fold[data-key='rsi']")
+    assert page.inner_text(".pane-fold[data-key='rsi']").startswith("+ RSI 14")
+    assert page.evaluate("window.__app.chart.chart.panes()[1].getHeight()") < 40
+    assert page.evaluate("window.__app.chart.rsiLines.every(r => r.series.options().visible === false)")
+    assert page.evaluate("JSON.parse(localStorage.getItem('replay.ui.minPanes'))") == ["rsi"]
+    page.reload()
+    page.wait_for_function("window.__app && window.__app.state.intervals.length > 0")
+    page.evaluate(f"window.__app.loadSession('{sid}')")
+    page.wait_for_selector(".pane-fold.min[data-key='rsi']")
+    page.click(".pane-fold[data-key='rsi']")
+    assert page.inner_text(".pane-fold[data-key='rsi']") == "−"
+    assert page.evaluate("window.__app.chart.chart.panes()[1].getHeight()") > 100
+    assert page.evaluate("JSON.parse(localStorage.getItem('replay.ui.minPanes'))") == []
+    assert not page.errors, page.errors

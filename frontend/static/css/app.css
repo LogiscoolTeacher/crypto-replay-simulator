@@ -166,6 +166,11 @@ input.short { width: 64px; }
 .legend-fold { all: unset; position: absolute; left: 4px; top: 4px; pointer-events: auto; cursor: pointer; color: var(--muted); font-size: 11px; width: 14px; line-height: 16px; text-align: center; }
 .legend-fold:hover { color: var(--ink); }
 .legend-fold:focus-visible { outline: 2px solid var(--accent); border-radius: 3px; }
+/* the -/+ button of an indicator pane (chart.js _renderPaneFolds); minimized it also names the pane */
+.pane-fold { all: unset; position: absolute; top: 2px; right: 4px; z-index: 3; cursor: pointer; color: var(--muted); font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 3px; background: rgba(26,26,25,0.75); }
+.pane-fold:hover { color: var(--ink); }
+.pane-fold:focus-visible { outline: 2px solid var(--accent); }
+.pane-fold.min { color: var(--ink); }   /* stays at the right: the library's logo sits bottom left */
 
 .chart-overlay { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: rgba(13,13,13,0.6); }
 .overlay-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; max-width: 420px; text-align: center; }

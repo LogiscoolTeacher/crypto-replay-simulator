@@ -20,12 +20,14 @@ export class RsiZonePrimitive {
     this.lines = [];   // [{ label, color, values }]: one entry per bar of the chart, null where there is no RSI yet
     this._views = [new RsiPaneView(this)];
     this._attached = null;
+    this.hidden = false;   // the pane is minimized: draw nothing (chart.js _renderPaneFolds)
   }
   attached(params) { this._attached = params; }
   detached() { this._attached = null; }
   updateAllViews() {}
   paneViews() { return this._views; }
   setLines(lines) { this.lines = lines || []; if (this._attached) this._attached.requestUpdate(); }
+  setHidden(on) { this.hidden = !!on; if (this._attached) this._attached.requestUpdate(); }
 }
 
 class RsiPaneView {
@@ -39,7 +41,7 @@ class RsiRenderer {
   draw(target) {
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
       const a = this.p._attached;
-      if (!a) return;
+      if (!a || this.p.hidden) return;
       const yLo = a.series.priceToCoordinate(this.p.lower);
       const yHi = a.series.priceToCoordinate(this.p.upper);
       if (yLo === null || yHi === null) return;

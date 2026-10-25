@@ -25,6 +25,7 @@ const AXIS = '#383835';
 const SURFACE = '#1a1a19';
 const PANE_HEIGHT = 140;
 const RSI_PANE_HEIGHT = 130;   // the RSI pane of day-trading mode (15m and 1h lines)
+const MIN_PANE_HEIGHT = 22;    // a minimized indicator pane: only its name and the + button
 const RSI_COLORS = ['#9085e9', '#c98500'];   // one per timeframe, in the order of the request
 const RSI_LOWER = 30;
 const RSI_UPPER = 70;
@@ -138,6 +139,12 @@ export class ChartView {
     this.planLines = [];   // dotted target and stop lines of the selected bucket
     this.levelLines = [];  // support / resistance price lines of the Bitcoin context peek
     this.levelHistory = []; // stepped stop / target lines of a day trade's moves (pictures only, see setLevelHistory)
+    this.paneInfo = [];     // per indicator pane (index 1, 2, ...): { key, label, series }, see _rebuildPanes
+    this.minPanes = new Set();  // keys of the panes the user minimized ('rsi' or an instance identity)
+    this.onPaneFold = null;     // (keys) => void: the app remembers the minimized panes
+    // The library adds a new pane's row only when it paints: the -/+ buttons go in as soon as it is
+    // there. _renderPaneFolds changes nothing that is already right, so its own button causes no loop.
+    new MutationObserver(() => { if (this.paneInfo.length) this._renderPaneFolds(); }).observe(el, { childList: true, subtree: true });
     this.extremeLines = []; // dashed lines at the 6-month high and low of the coin on screen
     this.trades = [];
     this.targetRange = null;   // range requested but not yet applied by the library
@@ -554,6 +561,7 @@ export class ChartView {
     for (const r of this.rsiLines) this.chart.removeSeries(r.series);
     this.rsiLines = [];
     this.rsiZones = null;
+    this.paneInfo = [];
     if (typeof this.chart.removePane === 'function') {
       while (this.chart.panes().length > 1) this.chart.removePane(this.chart.panes().length - 1);
     }
@@ -577,6 +585,7 @@ export class ChartView {
         this.rsiLines.push({ interval, color, series, data: null });
       });
       this.rsiLines[0].series.priceScale().applyOptions({ scaleMargins: { top: 0, bottom: 0 } });
+      this.paneInfo.push({ key: 'rsi', label: `RSI 14 \u00b7 ${this.rsiIntervals.join(' / ')}`, series: this.rsiLines.map(r => r.series) });
     }
     const { instances, catalog } = this.indicatorArgs;
     instances.forEach((instance, i) => {
@@ -615,6 +624,10 @@ export class ChartView {
         }
       }
       this.indicators.push({ instance, ident: instanceIdent(instance), spec, color, outputs, data: null });
+      if (!spec.overlay) {
+        const args = Object.values(instance.params || {});
+        this.paneInfo.push({ key: instanceIdent(instance), label: `${SHORT_NAMES[instance.key] || spec.name}${args.length ? ` (${args.join(', ')})` : ''}`, series: outputs.map(o => o.series) });
+      }
     });
     this._layoutPanes();
     if (withData && this.payload) this.setData(this.payload);
@@ -623,14 +636,66 @@ export class ChartView {
   // Pane heights as stretch factors: a freshly added pane has no height yet, so the library's
   // setHeight (which divides by the current heights) would give it a fraction of what was asked.
   // Every extra pane gets its fixed height, the candles take what is left.
+  // A minimized pane keeps only a thin strip; the candles get the space.
   _layoutPanes() {
     const panes = this.chart.panes();
     if (panes.length < 2 || typeof panes[0].setStretchFactor !== 'function') return;
     const total = Math.max(300, (this.el.clientHeight || 0) - 30);   // minus the time axis
     const rsiPanes = this.rsiLines.length ? 1 : 0;
-    const wanted = panes.map((_, i) => i === 0 ? 0 : i <= rsiPanes ? RSI_PANE_HEIGHT : PANE_HEIGHT);
+    const wanted = panes.map((_, i) => {
+      if (i === 0) return 0;
+      const info = this.paneInfo[i - 1];
+      if (info && this.minPanes.has(info.key)) return MIN_PANE_HEIGHT;
+      return i <= rsiPanes ? RSI_PANE_HEIGHT : PANE_HEIGHT;
+    });
     const rest = Math.max(150, total - wanted.reduce((a, b) => a + b, 0));
     panes.forEach((pane, i) => pane.setStretchFactor(i === 0 ? rest : wanted[i]));
+    this._renderPaneFolds();
+  }
+
+  // The minimized panes, by key (from the app's storage). Keys of panes not on the chart are kept, so
+  // an indicator added again later comes back minimized.
+  setMinPanes(keys) {
+    this.minPanes = new Set(keys || []);
+    this._layoutPanes();
+  }
+  togglePane(key) {
+    if (this.minPanes.has(key)) this.minPanes.delete(key); else this.minPanes.add(key);
+    this._layoutPanes();
+    if (this.onPaneFold) this.onPaneFold([...this.minPanes]);
+  }
+  // A small -/+ button in the top right corner of every indicator pane (inside the pane's own cell, which
+  // the library rebuilds with the panes). A minimized pane hides its lines and shows its name next to +.
+  _renderPaneFolds() {
+    const panes = this.chart.panes();
+    this.paneInfo.forEach((info, k) => {
+      const min = this.minPanes.has(info.key);
+      if (info.series[0] && info.series[0].options().visible === min) {
+        for (const s of info.series) s.applyOptions({ visible: !min });
+        // (the pane's price scale stays: a hidden one breaks takeScreenshot, so the pictures)
+        if (info.key === 'rsi' && this.rsiZones) this.rsiZones.setHidden(min);   // its bands and names too
+      }
+      const pane = panes[k + 1];
+      const row = pane && typeof pane.getHTMLElement === 'function' ? pane.getHTMLElement() : null;
+      const cell = row && row.children[1];
+      if (!cell) return;
+      let btn = cell.querySelector(':scope > .pane-fold');
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'pane-fold';
+        btn.addEventListener('pointerdown', (e) => e.stopPropagation());   // no chart pan from the button
+        btn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePane(btn.dataset.key); });
+        cell.appendChild(btn);
+      }
+      const text = min ? `+ ${info.label}` : '\u2212';
+      if (btn.textContent === text && btn.dataset.key === info.key) return;
+      btn.dataset.key = info.key;
+      btn.classList.toggle('min', min);
+      btn.textContent = text;
+      btn.title = min ? `Show ${info.label} again` : `Minimize ${info.label}`;
+      btn.setAttribute('aria-label', btn.title);
+    });
   }
 
   // ------------------------------------------------------------------ data

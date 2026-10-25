@@ -180,6 +180,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- Indicator panes (RSI, MACD, Volume delta, the day-mode RSI pane) have a -/+ button at their top
+  right: minimized they shrink to a 22 px strip with their lines hidden (`chart.togglePane`,
+  `_renderPaneFolds`, remembered in localStorage `replay.ui.minPanes`). The pane's price scale stays
+  visible on purpose: hiding it makes `takeScreenshot` throw, which would break the pictures.
 - Pictures show every stop / target move: stepped lines from the entry to the exit plus a mark at
   each move (`chart.setLevelHistory`, from `trade.changes`). Pictures taken before keep the old look.
 - Review mark 4, "I moved the stop too far up" (`stop_moved_up`, column `review_stop_moved_up`,

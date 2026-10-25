@@ -2308,6 +2308,9 @@ async function init() {
   initFolds();
   try { chart.setLegendMin(localStorage.getItem('replay.ui.legendMin') === '1'); } catch { /* no storage */ }
   chart.onLegendFold = (min) => { try { localStorage.setItem('replay.ui.legendMin', min ? '1' : '0'); } catch { /* no storage */ } };
+  // Minimized indicator panes (their -/+ button), remembered in this browser like the legend fold.
+  try { chart.setMinPanes(JSON.parse(localStorage.getItem('replay.ui.minPanes') || '[]')); } catch { /* no storage or bad value */ }
+  chart.onPaneFold = (keys) => { try { localStorage.setItem('replay.ui.minPanes', JSON.stringify(keys)); } catch { /* no storage */ } };
   $('f-mode').addEventListener('change', renderSessionMode);
   $('f-length').addEventListener('change', applySessionLength);
   $('f-start').addEventListener('change', applySessionLength);
