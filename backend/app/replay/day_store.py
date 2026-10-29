@@ -167,9 +167,12 @@ MIGRATIONS = {
         "mae_pct": "REAL", "mfe_pct": "REAL", "mae_r": "REAL", "mfe_r": "REAL",
         # the two hands-off alternatives (JSON: end_ms, alt1, alt2), filled once the replay reached their 24:00
         "alts": "TEXT",
-        # 1 = the review is asked once the replay reaches 24:00 of the exit's trading day (exits from
-        # this rule on; older trades keep NULL and never hold the replay)
+        # 1 = the trade's picture is taken once the replay reaches 24:00 of the exit's trading day (exits
+        # from this rule on; older trades keep NULL). Until 2026-10 it also held the replay for the review.
         "review_due": "INTEGER",
+        # scaling in quarters of the original size: how many are still held (NULL = 4) and the steps
+        # (JSON list: at_ms, side sell/add, coins, price, value, fee, reason, note), see DayEngine.scale_trade
+        "quarters_open": "INTEGER", "scales": "TEXT",
     },
     # the earliest candle "Step back" may return to, set by every jump (the candles jumped over were never seen)
     "day_sessions": {"back_floor_ms": "INTEGER"},
@@ -338,10 +341,10 @@ class DayStore:
             "SELECT * FROM day_trades WHERE session_id=? AND status='closed' ORDER BY exit_ms, id", (session_id,)
         ).fetchall()]
 
-    def due_reviews(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
-        """Closed trades whose review is still to be answered, oldest exit first."""
+    def due_pictures(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        """Closed trades still waiting for their picture at 24:00 of the exit day, oldest exit first."""
         return [dict(r) for r in conn.execute(
-            "SELECT * FROM day_trades WHERE session_id=? AND status='closed' AND review_due=1 AND reviewed_at IS NULL"
+            "SELECT * FROM day_trades WHERE session_id=? AND status='closed' AND review_due=1 AND image_path IS NULL"
             " ORDER BY exit_ms, id", (session_id,)
         ).fetchall()]
 

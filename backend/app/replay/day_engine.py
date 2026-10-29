@@ -13,8 +13,9 @@ Clock (all local times in Europe/Malta)
   (its journal row records how). Skip, Continue, the calendar and the jump buttons still jump to a
   06:00. After an exit the replay stands on the exit candle: "End the day" jumps to 24:00 of the
   exit's trading day, "Keep trading" (or a step or a buy) goes on as if no trade had happened.
-* The three review questions of a closed trade are asked once the replay reaches 24:00 of its
-  exit's trading day (at once after a night exit); nothing moves on until they are answered.
+* The picture of a closed trade is taken once the replay reaches 24:00 of its exit's trading day
+  (at once after a night exit). The three review questions are optional: they can be answered
+  any time from the trade's dialog and never hold the replay (the Trades tab marks open ones).
 * "Step back" moves one 15-minute candle back, never before the latest trade action (entry, exit,
   stop / target move) or the landing candle of the latest jump; nothing is undone.
 * The trend check of a day: "daily close above EMA 200" is computed from the completed daily
@@ -79,6 +80,7 @@ log = logging.getLogger(__name__)
 BASE_INTERVAL = "15m"
 VIEW_INTERVALS = ("15m", "1h", "4h", "1D")
 ZONE_INTERVALS = ("1h", "4h")      # the user draws zones on these charts (they show on all)
+ZONE_MERGE_GAP = 0.5               # zones closer than this x the smaller one's height are merged into one
 TIMEZONE = "Europe/Malta"
 TZ = ZoneInfo(TIMEZONE)
 DAY_START_HOUR = 6                 # the trading day starts at 06:00 local time
@@ -115,6 +117,7 @@ CONDITIONS: tuple[tuple[str, str], ...] = (
     ("evening", "Entry after 18:00"),
     ("stop_moved", "Stop moved during the trade"),
     ("tp_moved", "Target moved during the trade"),
+    ("partial", "Partial profit taken (a quarter sold before the exit)"),
 )
 MOVE_FIELDS = {"stop": "stop_used", "take_profit": "take_profit"}
 STOP_MATCH_PCT = 0.01   # a stop within this percent of the middle / ATR stop counts as that choice
@@ -153,6 +156,7 @@ def trade_conditions(t: dict) -> dict[str, bool | None]:
         "evening": hour >= 18,
         "stop_moved": float(stop0) != float(t["stop_used"]),
         "tp_moved": float(tp0) != float(t["take_profit"]),
+        "partial": any(x.get("side") == "sell" for x in trade_scales(t)),
     }
 
 
@@ -166,6 +170,59 @@ def trade_changes(t: dict) -> list[dict]:
     except (TypeError, ValueError):
         return []
     return data if isinstance(data, list) else []
+
+
+# Scaling: a quarter of the ORIGINAL size can be sold (partial profit, with a reason) or added back,
+# never above the original size; the last quarter goes with the normal Sell. The trade's coins,
+# position value, buy fee and risk stay those of the buy (the twin, the alternatives and MAE / MFE
+# use them); quarters_open says how much is still held and `scales` lists the steps.
+QUARTERS = 4
+SCALE_SIDES = ("sell", "add")
+
+
+def trade_scales(t: dict) -> list[dict]:
+    """The saved quarter steps of a trade (oldest first); [] without any."""
+    raw = t.get("scales")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def quarters_open(t: dict) -> int:
+    """How many quarters of the original size are still held (4 for trades from before scaling)."""
+    return QUARTERS if t.get("quarters_open") is None else int(t["quarters_open"])
+
+
+def coins_open(t: dict) -> float:
+    return float(t["coins"]) * quarters_open(t) / QUARTERS
+
+
+def scaled_result(t: dict, exit_price: float, fee_rate: float) -> dict:
+    """The whole trade's result when the coins still held are sold at `exit_price`: every sale (the
+    quarter steps and this final one) minus every purchase (the buy and the quarters added back)
+    minus every fee; the same as trade_result without steps. P&L % of the original position
+    value, R = P&L / risk_amount. This is exactly the change of the cash over the trade."""
+    steps = trade_scales(t)
+    sell_value = coins_open(t) * exit_price
+    sell_fee = sell_value * fee_rate
+    sold = sum(float(x["value"]) for x in steps if x["side"] == "sell")
+    added = sum(float(x["value"]) for x in steps if x["side"] == "add")
+    step_fees = sum(float(x["fee"]) for x in steps)
+    pnl = sell_value + sold - t["position_value"] - added - t["buy_fee"] - step_fees - sell_fee
+    return {
+        "sell_value": sell_value,
+        "sell_fee": sell_fee,
+        "fees": t["buy_fee"] + step_fees + sell_fee,
+        "pnl": pnl,
+        "pnl_pct": pnl / t["position_value"] * 100.0 if t["position_value"] else None,
+        "r_multiple": pnl / t["risk_amount"] if t["risk_amount"] else None,
+    }
+
+
 MAX_PRICE = 1e12
 EXIT_STOP, EXIT_TP, EXIT_EARLY = "stop", "take-profit", "early exit"
 # how the alternative trades end when neither level is hit: the close of the 24:00 candle, or of the
@@ -180,6 +237,7 @@ EXIT_REASONS: tuple[tuple[str, str], ...] = (
     ("adverse_move", "Sudden strong move against the trade"),
     ("news", "News or an event"),
     ("no_overnight", "Don't want to hold overnight"),
+    ("held_too_long", "Held the position too long"),
     ("other", "Other"),
 )
 EXIT_REASON_LABELS = dict(EXIT_REASONS)
@@ -435,13 +493,13 @@ class DayEngine:
             trade = self.store.open_trade(conn, sid)
             traded = self.store.trades_on_day(conn, sid, d.isoformat())
             last_exit = self.store.get_trade(conn, sid, ds["last_exit_id"]) if ds["phase"] == "exited" and ds["last_exit_id"] else None
-            pending = self._pending_review(st, conn)
-            if pending is not None:
-                self._fill_alternatives(st, conn, pending)   # its 24:00 has passed: the alternatives can be settled
+            picture = self._picture_due(st, conn)
+            if picture is not None:
+                self._fill_alternatives(st, conn, picture)   # its 24:00 has passed: the alternatives can be settled
         # just closed before its 24:00: end the day there or keep trading
         exit_choice = last_exit is not None and close < self._review_end(last_exit)
         uptrend = None if check["hh_hl"] is None or check["ema_above"] is None else bool(check["ema_above"] == 1 and check["hh_hl"] == 1)
-        allowed, reason = self._entry_gate(st, ds, close, end, trade, traded, pending)
+        allowed, reason = self._entry_gate(st, ds, close, end, trade, traded)
         loc = to_local(close)
         out.update({
             "date": d.isoformat(),
@@ -456,15 +514,15 @@ class DayEngine:
             "auto": self._auto_of(sid, trade["id"], trade) if trade else None,   # the open trade's automatic twin
             "traded_today": traded,
             "last_exit": self._public_trade(last_exit, st["fee_rate"]) if last_exit else None,
-            # the trade whose review is still open: nothing moves on until it is answered
-            "review_pending": self._public_trade(pending, st["fee_rate"]) if pending else None,
+            # the closed trade whose picture is due (its 24:00 reached, none taken yet): the frontend takes it
+            "picture_due": self._public_trade(picture, st["fee_rate"]) if picture else None,
             "review_questions": [{"key": k, "label": label} for k, _, label in REVIEW_QUESTIONS],
             "leaving_next": self._leaving_next(st, ds, trade),
             "can_skip": ds["phase"] == "trading" and trade is None and not st["finished"],
             "can_sell": ds["phase"] == "trading" and trade is not None,
-            "can_continue": ds["phase"] == "exited" and pending is None and not exit_choice,
-            "exit_choice": exit_choice and pending is None,
-            "can_step_back": pending is None and self._step_back_target(st, ds) is not None,
+            "can_continue": ds["phase"] == "exited" and not exit_choice,
+            "exit_choice": exit_choice,
+            "can_step_back": self._step_back_target(st, ds) is not None,
         })
         return out
 
@@ -480,16 +538,14 @@ class DayEngine:
         return trading_day(nxt + base) != trading_day(st["cursor_ms"] + base)
 
     @staticmethod
-    def _entry_gate(st: dict, ds: dict, close: int, end: int, trade: dict | None, traded: int,
-                    pending: dict | None = None) -> tuple[bool, str | None]:
+    def _entry_gate(st: dict, ds: dict, close: int, end: int, trade: dict | None, traded: int) -> tuple[bool, str | None]:
         if st["finished"]:
             return False, "The replay has reached its end."
-        if pending is not None:
-            return False, f"Answer the review questions for trade #{pending['seq']} first."
         if trade is not None:
             return False, "A trade is open."
         # Nothing else blocks: not the night, not a trade already made today, not a trade just closed,
-        # not the trend check. The conditions are saved with the trade and evaluated later.
+        # not an unanswered review, not the trend check. The conditions are saved with the trade and
+        # evaluated later.
         return True, None
 
     def _account(self, st: dict, day: dict) -> dict:
@@ -501,11 +557,13 @@ class DayEngine:
         equity = st["cash"] + market_value
         return {
             "cash": st["cash"],
-            "invested": trade["position_value"] if trade else 0.0,
+            "invested": trade["position_value"] * quarters_open(trade) / QUARTERS if trade else 0.0,   # cost of what is still held
             "market_value": market_value,
             "unrealized_pnl": trade["unrealized_pnl"] if trade and trade.get("unrealized_pnl") is not None else 0.0,
             "realized_pnl": sum(t["pnl"] for t in closed),
-            "fees_paid": sum(t["buy_fee"] for t in trades) + sum(t["sell_fee"] or 0.0 for t in closed),
+            # closed: every fee of the trade; open: the buy and the quarter steps so far
+            "fees_paid": sum(t["fees"] if t["fees"] is not None else t["buy_fee"] + (t["sell_fee"] or 0.0) for t in closed)
+            + (trade["buy_fee"] + sum(x["fee"] for x in trade["scales"]) if trade else 0.0),
             "equity": equity,
             "total_return": equity - st["start_balance"],
             "total_return_pct": (equity / st["start_balance"] - 1.0) * 100.0,
@@ -590,13 +648,17 @@ class DayEngine:
         with self.store.tx() as conn:
             return [self._public_zone(z) for z in self.store.list_zones(conn, session_id)]
 
-    def add_zone(self, session_id: str, interval: str, p1: float, p2: float) -> dict:
+    def add_zone(self, session_id: str, interval: str, p1: float, p2: float, source: str | None = None) -> dict:
+        """Add a zone; a zone close to an existing one is merged into it (see _merge_zones), so the
+        result may be an older zone with wider edges. `merged` = how many zones were folded in."""
         self._day_row(session_id)
         upper, lower = self._zone_edges(interval, p1, p2)
         now = _now_iso()
         with self._lock, self.store.tx() as conn:
-            z = self.store.add_zone(conn, session_id=session_id, interval=interval, upper=upper, lower=lower, created_at=now, updated_at=now)
-        return self._public_zone(z)
+            z = self.store.add_zone(conn, session_id=session_id, interval=interval, upper=upper, lower=lower, source=source,
+                                    created_at=now, updated_at=now)
+            z, merged = self._merge_zones(conn, session_id, z["id"])
+        return {**self._public_zone(z), "merged": merged}
 
     def update_zone(self, session_id: str, zone_id: int, p1: float, p2: float) -> dict:
         with self._lock, self.store.tx() as conn:
@@ -606,8 +668,46 @@ class DayEngine:
             upper, lower = self._zone_edges(z["interval"], p1, p2)
             # a resized signal zone becomes the trader's own: it is never removed by itself any more
             self.store.update_zone(conn, z["id"], upper=upper, lower=lower, source=None, updated_at=_now_iso())
-            z = self.store.get_zone(conn, session_id, z["id"])
-        return self._public_zone(z)  # type: ignore[arg-type]
+            z, merged = self._merge_zones(conn, session_id, z["id"])
+        return {**self._public_zone(z), "merged": merged}
+
+    @staticmethod
+    def _zones_close(a: dict, b: dict) -> bool:
+        """Two zones are close when they overlap or the gap between them is at most ZONE_MERGE_GAP
+        times the height of the smaller one (zones are about 0.5 to 1 ATR high, so a gap of roughly
+        a quarter to half an ATR). Plain prices only, no candles needed."""
+        gap = max(a["lower"], b["lower"]) - min(a["upper"], b["upper"])
+        return gap <= ZONE_MERGE_GAP * min(a["upper"] - a["lower"], b["upper"] - b["lower"])
+
+    def _merge_zones(self, conn: sqlite3.Connection, session_id: str, zone_id: int) -> tuple[dict, int]:
+        """Fold every zone close to `zone_id` into one band (repeated, so a chain of close zones
+        becomes one): the union of the edges, kept on the OLDEST zone's row (the lowest id), the
+        larger interval (4h over 1h), and drawn by hand (source NULL) if any of them was, so a
+        "Next signal" zone merged into a hand-drawn one stays. The other rows are deleted; trades
+        keep their own copy of the zone edges. Returns (the surviving zone, how many were merged)."""
+        zones = {z["id"]: z for z in self.store.list_zones(conn, session_id)}
+        band = dict(zones[zone_id])
+        group = [band]
+        others = [z for i, z in zones.items() if i != zone_id]
+        changed = True
+        while changed:
+            changed = False
+            for z in list(others):
+                if self._zones_close(band, z):
+                    band["upper"], band["lower"] = max(band["upper"], z["upper"]), min(band["lower"], z["lower"])
+                    group.append(z)
+                    others.remove(z)
+                    changed = True
+        if len(group) == 1:
+            return zones[zone_id], 0
+        keep = min(z["id"] for z in group)
+        interval = max((z["interval"] for z in group), key=ZONE_INTERVALS.index)
+        source = None if any(z.get("source") is None for z in group) else group[0].get("source")
+        for z in group:
+            if z["id"] != keep:
+                self.store.delete_zone(conn, session_id, z["id"])
+        self.store.update_zone(conn, keep, upper=band["upper"], lower=band["lower"], interval=interval, source=source, updated_at=_now_iso())
+        return self.store.get_zone(conn, session_id, keep), len(group) - 1  # type: ignore[return-value]
 
     def delete_zone(self, session_id: str, zone_id: int) -> None:
         with self._lock, self.store.tx() as conn:
@@ -849,6 +949,59 @@ class DayEngine:
         st = self.state(session_id)
         return {"trade": self._public_trade(trade, s["fee_rate"], st["price"]), "state": st}
 
+    def scale_trade(self, session_id: str, side: str, reason: str | None = None, note: str | None = None) -> dict:
+        """Sell a quarter of the original size (a partial profit; a reason from EXIT_REASONS is
+        required, "other" needs a note) or add a quarter back (only up to the original size), at the
+        close of the current candle with the session's fee. The cash moves at once; the stop and the
+        target stay; the step is saved with the trade (see scaled_result for the final P&L)."""
+        if side not in SCALE_SIDES:
+            raise Invalid(f"side must be one of {list(SCALE_SIDES)}")
+        note = self._note(note, "note")
+        if side == "sell":
+            if reason not in EXIT_REASON_LABELS:
+                raise Invalid("Choose a reason for the partial sell.")
+            if reason == "other" and not note:
+                raise Invalid("Say what the reason is under Other.")
+        else:
+            reason = None
+        with self._lock:
+            s = self._ready(session_id)
+            ds = self._day_row(session_id)
+            if ds["phase"] == "exited":
+                raise Conflict("The trade has already closed.")
+            with self.store.tx() as conn:
+                trade = self.store.open_trade(conn, session_id)
+            if trade is None:
+                raise Conflict("No trade is open.")
+            q = quarters_open(trade)
+            if side == "sell" and q <= 1:
+                raise Conflict("Only the last quarter is left: close it with Sell.")
+            if side == "add" and q >= QUARTERS:
+                raise Conflict("The position is at its original size: only quarters sold before can be added back.")
+            price = self.replay._price(s)
+            coins = float(trade["coins"]) / QUARTERS
+            value = coins * price
+            fee = value * s["fee_rate"]
+            if side == "add" and value + fee > s["cash"] + 1e-9:
+                raise Invalid("Not enough cash to add a quarter.")
+            cash_after = s["cash"] + (value - fee if side == "sell" else -(value + fee))
+            if abs(cash_after) < 1e-6:
+                cash_after = 0.0
+            now = _now_iso()
+            q_after = q - 1 if side == "sell" else q + 1
+            steps = trade_scales(trade)
+            steps.append({"at_ms": s["cursor_ms"], "at_local": local_str(s["cursor_ms"] + self._base_ms), "side": side,
+                          "coins": coins, "price": price, "value": value, "fee": fee, "quarters_after": q_after,
+                          "reason": reason, "note": note})
+            fields = {"quarters_open": q_after, "scales": json.dumps(steps), "updated_at": now}
+            with self.store.tx() as conn:
+                self.store.update_trade(conn, trade["id"], **fields)
+            with self.sessions.tx() as conn:
+                self.sessions.update_session(conn, session_id, cash=cash_after, updated_at=now)
+            trade.update(fields)
+        st = self.state(session_id)
+        return {"trade": self._public_trade(trade, s["fee_rate"], st["price"]), "state": st}
+
     def sell(self, session_id: str, reason: str, note: str | None = None) -> dict:
         """Early exit by hand at the close of the current candle; a reason from EXIT_REASONS is
         required, "other" needs a note."""
@@ -874,8 +1027,7 @@ class DayEngine:
 
     def _exit(self, s: dict, trade: dict, exit_ms: int, exit_price: float, exit_type: str,
               reason: str | None = None, note: str | None = None) -> dict:
-        res = trade_result(trade["entry_price"], exit_price, trade["coins"], trade["position_value"], trade["buy_fee"],
-                           s["fee_rate"], trade["risk_amount"])
+        res = scaled_result(trade, exit_price, s["fee_rate"])   # only the coins still held are sold here
         cash_after = s["cash"] + res["sell_value"] - res["sell_fee"]
         now = _now_iso()
         fields = {
@@ -895,15 +1047,15 @@ class DayEngine:
         s["cash"] = cash_after
         trade.update(fields)
         # before its 24:00 the user chooses: end the day there (end_day) or keep trading; a night
-        # exit is reviewed at once
+        # exit gets its picture at once
         choice = exit_ms + self._base_ms < self._review_end(trade)
         return {"kind": "exit", "exit_type": exit_type, "trade": self._public_trade(trade, s["fee_rate"]),
                 "choice": choice, "jumped_to_ms": None, "jumped_to_local": None}
 
     def end_day(self, session_id: str) -> dict:
         """After an exit before 24:00 ("End the day"): jump to the candle closing at 24:00 of the
-        exit's trading day, where the review is asked. The phase stays "exited", so Continue goes
-        on to the next 06:00 once the review is answered."""
+        exit's trading day, where the trade's picture is taken. The phase stays "exited", so Continue
+        goes on to the next 06:00."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -923,7 +1075,7 @@ class DayEngine:
 
     def keep_trading(self, session_id: str) -> dict:
         """After an exit ("Keep trading"): the day goes on from the exit candle as if no trade had
-        happened; the review waits for 24:00 of the exit's trading day."""
+        happened; the trade's picture waits for 24:00 of the exit's trading day."""
         with self._lock:
             self._ready(session_id)
             ds = self._day_row(session_id)
@@ -933,18 +1085,18 @@ class DayEngine:
         return self.state(session_id)
 
     def _review_end(self, trade: dict) -> int:
-        """24:00 (ms) of the exit's trading day: the review is asked once a candle closes there."""
+        """24:00 (ms) of the exit's trading day: the trade's picture is taken once a candle closes there."""
         return day_bounds(trading_day(trade["exit_ms"] + self._base_ms))[1]
 
-    def _pending_review(self, s: dict, conn: sqlite3.Connection) -> dict | None:
-        """The closed trade whose review holds the replay: the oldest unanswered one whose 24:00
-        the cursor has reached."""
+    def _picture_due(self, s: dict, conn: sqlite3.Connection) -> dict | None:
+        """The closed trade whose picture is due: the oldest one without a picture whose 24:00 the
+        cursor has reached (only exits marked `review_due`, i.e. since the picture rule exists)."""
         close = s["cursor_ms"] + self._base_ms
-        return next((t for t in self.store.due_reviews(conn, s["id"]) if close >= self._review_end(t)), None)
+        return next((t for t in self.store.due_pictures(conn, s["id"]) if close >= self._review_end(t)), None)
 
     def _jump_to_day_end(self, s: dict, exit_ms: int) -> int | None:
         """Move the replay to the candle closing at 24:00 of the exit's trading day, so the whole
-        day is on the chart for the review. Nothing happens when the exit is already at or past
+        day is on the chart for its picture. Nothing happens when the exit is already at or past
         24:00 (a night exit) or at the end of the data. Returns the new cursor or None."""
         base = self._base_ms
         _, end = day_bounds(trading_day(exit_ms + base))
@@ -1170,7 +1322,7 @@ class DayEngine:
     # ------------------------------------------------------------------ clock
     def step(self, session_id: str, n: int = 1) -> dict:
         """Advance `n` 15-minute candles, firing the stop / take-profit of an open trade on the way;
-        stops at an exit and where a review becomes due (24:00 of an exit's trading day). After an
+        stops at an exit and where a trade's picture becomes due (24:00 of an exit's trading day). After an
         exit a step means "keep trading": the day goes on (Continue is the jump to the next 06:00)."""
         if not isinstance(n, int) or n < 1:
             raise Invalid("n must be >= 1")
@@ -1178,7 +1330,6 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
-            self._review_gate(s)
             if ds["phase"] == "exited":   # stepping on after an exit: the day goes on
                 with self.store.tx() as conn:
                     self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=_now_iso())
@@ -1189,7 +1340,7 @@ class DayEngine:
                 ev = self._advance(s)
                 if ev:
                     events.append(ev)
-                    if ev["kind"] in ("exit", "review"):
+                    if ev["kind"] in ("exit", "picture"):
                         break
         st = self.state(session_id)
         st["events"] = events
@@ -1201,7 +1352,6 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
-            self._review_gate(s)
             if ds["phase"] == "exited":
                 events.append(self._resume(s, ds))
         st = self.state(session_id)
@@ -1213,7 +1363,6 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
-            self._review_gate(s)
             if ds["phase"] == "exited":
                 ev = self._resume(s, ds)
             else:
@@ -1238,7 +1387,6 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
-            self._review_gate(s)
             if s["cursor_ms"] >= s["data_end_ms"]:
                 raise Conflict("The replay has reached its end.")
             with self.store.tx() as conn:
@@ -1269,7 +1417,6 @@ class DayEngine:
         not with an open trade; Conflict when no such day is left before the replay's end."""
         with self._lock:
             s = self._ready(session_id)
-            self._review_gate(s)
             if s["cursor_ms"] >= s["data_end_ms"]:
                 raise Conflict("The replay has reached its end.")
             with self.store.tx() as conn:
@@ -1291,7 +1438,7 @@ class DayEngine:
         """Jump forward to the next entry signal of a jump strategy (the button "Next signal"): the
         15m candle in which the signal happens becomes the cursor, also in the night. The zone the
         signal came from is added to the session's zones (1h) so the New trade panel can use it.
-        The gates of the other jumps apply: the review first, no open trade, not past the end;
+        The gates of the other jumps apply: no open trade, not past the end;
         Conflict when no signal is left before the replay's end."""
         try:
             js = get_jump_strategy(strategy)
@@ -1301,7 +1448,6 @@ class DayEngine:
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
-            self._review_gate(s)
             if s["cursor_ms"] >= s["data_end_ms"]:
                 raise Conflict("The replay has reached its end.")
             with self.store.tx() as conn:
@@ -1364,7 +1510,7 @@ class DayEngine:
     def _signal_zone(self, session_id: str, sig: dict) -> dict:
         """The signal's zone as a session zone (1h), reusing an identical one. The zones of earlier
         signals go unless a trade uses them, so the chart only shows the current signal's zone
-        next to the zones drawn by hand."""
+        next to the zones drawn by hand; a signal zone close to another zone is merged into it."""
         top, bottom = float(sig["zone_top"]), float(sig["zone_bottom"])
         with self.store.tx() as conn:
             for z in self.store.list_zones(conn, session_id):
@@ -1372,11 +1518,7 @@ class DayEngine:
                     self.store.delete_unused_signal_zones(conn, session_id, keep=z["id"])
                     return self._public_zone(z)
             self.store.delete_unused_signal_zones(conn, session_id)
-        z = self.add_zone(session_id, "1h", top, bottom)
-        with self.store.tx() as conn:
-            self.store.update_zone(conn, z["id"], source="signal")
-        z["source"] = "signal"
-        return z
+        return self.add_zone(session_id, "1h", top, bottom, source="signal")
 
     def _next_ema_above_day(self, s: dict, after: date) -> date | None:
         """The first trading day after `after` whose last completed daily candle closes above the
@@ -1392,7 +1534,7 @@ class DayEngine:
 
     def _advance(self, s: dict) -> dict | None:
         """One 15-minute candle forward, through the night as well. Crossing 06:00 leaves the trading
-        day. Returns an exit event, a review event (a closed trade's 24:00 reached) or None."""
+        day. Returns an exit event, a picture event (a closed trade's 24:00 reached) or None."""
         base = self._base_ms
         nxt = self.candles.nth_at_or_after(s["symbol"], BASE_INTERVAL, s["cursor_ms"] + base, 1)
         nxt = s["data_end_ms"] if nxt is None or nxt > s["data_end_ms"] else nxt
@@ -1406,11 +1548,11 @@ class DayEngine:
                             else LEFT_EXIT if traded else LEFT_END)
         if trade is None:
             self._set_cursor(s, nxt)
-            return self._review_event(s)
+            return self._picture_event(s)
         row = self.candles.get_candles(s["symbol"], BASE_INTERVAL, nxt, nxt)
         self._set_cursor(s, nxt)
         if len(row) != 1:
-            return self._review_event(s)
+            return self._picture_event(s)
         high, low = float(row["high"].iloc[0]), float(row["low"].iloc[0])
         _, entry_day_end = day_bounds(date.fromisoformat(trade["day_date"]))
         if nxt + base > entry_day_end and not trade["overnight"]:
@@ -1421,15 +1563,16 @@ class DayEngine:
             return self._exit(s, trade, nxt, trade["stop_used"], EXIT_STOP)
         if high >= trade["take_profit"]:
             return self._exit(s, trade, nxt, trade["take_profit"], EXIT_TP)
-        return self._review_event(s)
+        return self._picture_event(s)
 
-    def _review_event(self, s: dict) -> dict | None:
-        """A review event when the candle just reached is 24:00 of a closed trade's trading day."""
+    def _picture_event(self, s: dict) -> dict | None:
+        """A picture event when the candle just reached is 24:00 of a closed trade's trading day and
+        its picture is still missing (the step stops there; the frontend takes it)."""
         with self.store.tx() as conn:
-            t = self._pending_review(s, conn)
+            t = self._picture_due(s, conn)
         if t is None or self._review_end(t) != s["cursor_ms"] + self._base_ms:
             return None
-        return {"kind": "review", "trade": self._public_trade(t, s["fee_rate"])}
+        return {"kind": "picture", "trade": self._public_trade(t, s["fee_rate"])}
 
     def _resume(self, s: dict, ds: dict) -> dict:
         with self.store.tx() as conn:
@@ -1493,6 +1636,7 @@ class DayEngine:
         if trade is not None:
             marks.append(trade["entry_ms"])
             marks += [c["at_ms"] for c in trade_changes(trade)]
+            marks += [x["at_ms"] for x in trade_scales(trade)]   # a quarter sold or added back is not undone either
         marks += [t["exit_ms"] for t in closed if t["exit_ms"] is not None]
         return max(m for m in marks if m is not None)
 
@@ -1504,11 +1648,10 @@ class DayEngine:
     def step_back(self, session_id: str) -> dict:
         """One 15-minute candle back (day trading only), never before the floor (_back_floor).
         Crossing 06:00 backwards re-opens the day it returns to (its journal row forgets how it was
-        left). Blocked while a review is due."""
+        left)."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
-            self._review_gate(s)
             target = self._step_back_target(s, ds)
             if target is None:
                 raise Conflict("Can't step back further: the latest trade action or jump is here.")
@@ -1523,18 +1666,10 @@ class DayEngine:
         return self.state(session_id)
 
     # ------------------------------------------------------------------ review
-    def _review_gate(self, s: dict) -> None:
-        """Conflict while a closed trade's review is due (its 24:00 reached) and unanswered: no step,
-        no Continue, no skip, no jump, no step back (and no buy, see _entry_gate) until the three
-        questions are answered."""
-        with self.store.tx() as conn:
-            t = self._pending_review(s, conn)
-        if t is not None:
-            raise Conflict(f"Answer the review questions for trade #{t['seq']} first.")
-
     def review(self, session_id: str, trade_id: int, answers: dict) -> dict:
         """Save the three review marks of a closed trade (all three required, True / False). The
-        answers can be changed later; a trade still open cannot be reviewed."""
+        review is optional and never holds the replay; the answers can be changed later; a trade
+        still open cannot be reviewed."""
         fields: dict = {}
         for key, col, _ in REVIEW_QUESTIONS:
             v = answers.get(key) if isinstance(answers, dict) else None
@@ -1749,6 +1884,10 @@ class DayEngine:
         out["conditions"] = trade_conditions(t)
         out["confidence"] = t.get("confidence")   # 0..10 at the buy; None for trades from before the score existed
         out["changes"] = trade_changes(t)
+        out["quarters_open"] = quarters_open(t)
+        out["coins_open"] = coins_open(t)
+        out["scales"] = [{**x, "reason_label": EXIT_REASON_LABELS.get(x["reason"]) if x.get("reason") else None,
+                          "vs_entry_pct": (x["price"] / t["entry_price"] - 1.0) * 100.0} for x in trade_scales(t)]
         out["stop_initial"] = t["stop_used"] if t.get("stop_initial") is None else t["stop_initial"]
         out["tp_initial"] = t["take_profit"] if t.get("tp_initial") is None else t["tp_initial"]
         out["rr_now"] = reward_to_risk(t["entry_price"], t["stop_used"], t["take_profit"]) if t["stop_used"] < t["entry_price"] else None
@@ -1782,15 +1921,15 @@ class DayEngine:
         }
         out["alts"] = alts_public(t)
         if t["status"] == "open" and price is not None:
-            mv = t["coins"] * price
-            unrealized = mv * (1.0 - fee_rate) - t["position_value"] - t["buy_fee"]  # if sold now, after fees
+            mv = coins_open(t) * price
+            unrealized = scaled_result(t, price, fee_rate)["pnl"]   # the whole trade if the rest were sold now, after fees
             out["market_value"] = mv
             out["unrealized_pnl"] = unrealized
             out["unrealized_pnl_pct"] = unrealized / t["position_value"] * 100.0 if t["position_value"] else None
             out["r_now"] = unrealized / t["risk_amount"] if t["risk_amount"] else None
             # the price against the entry, the stop and the target (percent of the current price)
             out["price_change_pct"] = (price / t["entry_price"] - 1.0) * 100.0
-            out["price_change_usdt"] = t["coins"] * (price - t["entry_price"])   # the position against the buy, before fees
+            out["price_change_usdt"] = coins_open(t) * (price - t["entry_price"])   # what is held against the buy, before fees
             out["to_stop_pct"] = (t["stop_used"] / price - 1.0) * 100.0
             out["to_tp_pct"] = (t["take_profit"] / price - 1.0) * 100.0
         else:

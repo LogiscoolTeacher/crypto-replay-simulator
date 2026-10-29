@@ -17,6 +17,10 @@ const SHORT_NAMES = { ema: 'EMA', sma: 'SMA', bbands: 'BB', rsi: 'RSI', macd: 'M
 export const SERIES_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
 export const UP = '#0ca30c';
 export const DOWN = '#d03b3b';
+// Day trading: the stop and target lines in colours that stand out on the red / green zones.
+export const SL_COLOR = '#e0e0e0';
+export const TP_COLOR = '#ffd600';
+const EXIT_SHORT = { stop: 'SL', 'take-profit': 'TP', 'early exit': 'early' };
 const UP_SOFT = 'rgba(12,163,12,0.45)';
 const DOWN_SOFT = 'rgba(208,59,59,0.45)';
 const INK = '#c3c2b7';
@@ -206,16 +210,16 @@ export class ChartView {
     this.dayLines = [];
     this.dragLines = [];
     if (!trade) return;
-    const tag = `#${trade.seq}`;
+    // short labels (E, SL, TP, X) so they cover as little of the last candles as possible
     const pct = (v) => (v === null || v === undefined ? '' : ` ${v >= 0 ? '+' : '\u2212'}${Math.abs(v).toFixed(2)}%`);
     const open = trade.status === 'open';
     const lines = [
-      [null, trade.entry_price, '#3987e5', LWC.LineStyle.Solid, 2, `${tag} entry${pct(trade.price_change_pct)}`],
-      ['stop', trade.stop_used, DOWN, LWC.LineStyle.Dotted, 1, `${tag} stop${pct(trade.stop_pct)}`],
-      ['take_profit', trade.take_profit, UP, LWC.LineStyle.Dotted, 1, `${tag} target${pct(trade.tp_pct)}`],
+      [null, trade.entry_price, '#3987e5', LWC.LineStyle.Solid, 2, `E${pct(trade.price_change_pct)}`],
+      ['stop', trade.stop_used, SL_COLOR, LWC.LineStyle.Dashed, 2, `SL${pct(trade.stop_pct)}`],
+      ['take_profit', trade.take_profit, TP_COLOR, LWC.LineStyle.Dashed, 2, `TP${pct(trade.tp_pct)}`],
     ];
     if (trade.status === 'closed' && trade.exit_price !== null && trade.exit_price !== undefined) {
-      lines.push([null, trade.exit_price, trade.pnl >= 0 ? UP : DOWN, LWC.LineStyle.Dashed, 2, `${tag} exit (${trade.exit_type})`]);
+      lines.push([null, trade.exit_price, trade.pnl >= 0 ? UP : DOWN, LWC.LineStyle.Dashed, 2, `X ${EXIT_SHORT[trade.exit_type] || trade.exit_type}`]);
     }
     for (const [key, price, color, lineStyle, lineWidth, title] of lines) {
       if (price === null || price === undefined) continue;
@@ -353,7 +357,7 @@ export class ChartView {
         const buy = t.side === 'buy';
         list.push({
           time, position: buy ? 'belowBar' : 'aboveBar', shape: buy ? 'arrowUp' : 'arrowDown',
-          color: buy ? UP : DOWN, text: `${buy ? 'B' : 'S'}${t.seq || ''}`, size: 1.4,
+          color: buy ? UP : DOWN, text: t.text || `${buy ? 'B' : 'S'}${t.seq || ''}`, size: t.text ? 0.9 : 1.4,   // t.text: a quarter step (day trading)
         });
       }
       const s = p.strategy;

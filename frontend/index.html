@@ -146,7 +146,6 @@
             <dt><kbd>K</kbd></dt><dd>Skip day</dd>
             <dt><kbd>J</kbd></dt><dd>Next day &gt; EMA</dd>
             <dt><kbd>E</kbd></dt><dd>Next strategy signal</dd>
-            <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>Enter</kbd></dt><dd>Review marks, save</dd>
           </dl>
         </div>
 
@@ -219,7 +218,7 @@
               <th data-col="trend" title="Trend check: daily close above EMA 200 / higher highs and higher lows">Trend</th>
               <th data-col="cond" title="The entry conditions at the buy (hover for the full list); evaluated in the Conditions tab">Conditions</th>
               <th class="num sortable" data-col="conf" data-key="confidence" title="Your confidence at the buy, 0 to 10">Conf.</th>
-              <th class="sortable" data-col="review" data-key="review_n" title="Your review at 24:00 of the exit day: stop too tight, price later over the target, stop saved me">Review</th>
+              <th class="sortable" data-col="review" data-key="review_n" title="Your review (optional, from the trade's dialog): stop too tight, price later over the target, stop saved me. Rows tinted red have no review yet.">Review</th>
               <th class="num sortable" data-col="entry_price" data-key="entry_price">Entry price</th><th class="num" data-col="rsi" title="RSI 14 of the 15-minute chart at the entry">RSI 15m</th><th class="num" data-col="rsi_1h" title="RSI 14 of the 1-hour chart at the entry">RSI 1h</th><th class="num" data-col="atr" title="ATR 14 of the 15-minute chart at the entry">ATR</th>
               <th class="num" data-col="zone" title="Support zone the entry was based on">Zone</th><th class="num" data-col="stop" title="Stop used (hover for the suggested one)">Stop</th><th class="num" data-col="target">Target</th><th class="num sortable" data-col="rr" data-key="rr" title="Reward-to-risk at the entry">R/R</th>
               <th class="num" data-col="coins">Coins</th><th class="num" data-col="value" title="Position value in USDT">Value</th><th class="num" data-col="risk" title="Risk in USDT (0.1 % of the start, or less when capped)">Risk</th><th data-col="capped" title="Size capped by the cash">Capped</th><th data-col="overnight" title="Still open when the replay passed 24:00">Overnight</th>
@@ -439,23 +438,11 @@
           <b id="dx-title" class="small">Trade closed</b>
           <p id="dx-sub" class="small muted"></p>
           <div class="row-flex">
-            <button type="button" id="btn-dx-end" class="btn small primary" title="Jump to 24:00 of this day; the review is asked there">End the day &rarr; 24:00 <kbd>Enter</kbd></button>
-            <button type="button" id="btn-dx-keep" class="btn small" title="Go on from here as if no trade had happened; the review waits for 24:00">Keep trading <kbd>K</kbd></button>
+            <button type="button" id="btn-dx-end" class="btn small primary" title="Jump to 24:00 of this day; the trade's picture is taken there">End the day &rarr; 24:00 <kbd>Enter</kbd></button>
+            <button type="button" id="btn-dx-keep" class="btn small" title="Go on from here as if no trade had happened; the trade's picture waits for 24:00">Keep trading <kbd>K</kbd></button>
           </div>
           <p class="small muted">A step or a new trade also keeps trading.</p>
         </div>
-        <form class="review-inline hidden" id="day-review" autocomplete="off" aria-labelledby="dr-title">
-          <b id="dr-title" class="small">Review trade</b>
-          <p id="dr-sub" class="small muted"></p>
-          <p id="dr-window" class="small"></p>
-          <div class="review-list" id="dr-list">
-            <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_tight" aria-pressed="false">false</button><span class="review-label">The stop was too tight <kbd>1</kbd></span></div>
-            <div class="review-row"><button type="button" class="btn rv-toggle" data-key="over_target" aria-pressed="false">false</button><span class="review-label">The price later went over the target (out too early) <kbd>2</kbd></span></div>
-            <div class="review-row"><button type="button" class="btn rv-toggle" data-key="stop_saved" aria-pressed="false">false</button><span class="review-label">The stop saved me <kbd>3</kbd></span></div>
-          </div>
-          <p id="dr-error" class="error small" role="alert"></p>
-          <div class="row-flex"><button type="submit" id="btn-dr-save" class="btn small primary">Save review <kbd>Enter</kbd></button><span class="small muted">Continue, step and Buy wait for the answers.</span></div>
-        </form>
         <label class="day-notes-label small muted" for="day-notes">Notes for this day <span id="day-notes-state" class="mono"></span></label>
         <textarea id="day-notes" rows="3" maxlength="4000" placeholder="What you saw, why you traded or did not&hellip; (saved by itself)"></textarea>
         <dl class="kv mtf hidden" id="day-trade">
@@ -469,9 +456,14 @@
           <dt title="The automatic-exit twin of this trade: original stop and target, closed only when one of them is hit (see the Auto exits tab)">Auto twin</dt><dd id="dt-auto" class="mono small">&ndash;</dd>
           <dt>P&amp;L now</dt><dd id="dt-pnl" class="mono gauge">&ndash;</dd>
         </dl>
+        <div class="row-flex hidden" id="dt-scale-row">
+          <button type="button" id="btn-dt-sell-q" class="btn small sell" title="Sell a quarter of the original size at the close of this candle (partial profit; a reason is required). The last quarter goes with Sell.">Sell &frac14;</button>
+          <button type="button" id="btn-dt-add-q" class="btn small" title="Buy a quarter of the original size back at the close of this candle (never above the original size)">Add &frac14;</button>
+          <span id="dt-quarters" class="small muted mono"></span>
+        </div>
         <div class="row-flex hidden" id="dt-move-row">
-          <button type="button" id="btn-dt-move" class="btn small" title="Move the stop and / or the target of the open trade; every move is saved with the trade (M). You can also drag the dotted stop and target lines on the chart." aria-expanded="false">Move stop / target (M)</button>
-          <span class="small muted">or drag the dotted lines on the chart</span>
+          <button type="button" id="btn-dt-move" class="btn small" title="Move the stop and / or the target of the open trade; every move is saved with the trade (M). You can also drag the white stop and yellow target lines on the chart." aria-expanded="false">Move stop / target (M)</button>
+          <span class="small muted">or drag the SL / TP lines on the chart</span>
         </div>
         <form class="dt-move hidden" id="dt-move" autocomplete="off">
           <label for="mv-stop" class="small muted">New stop</label><input type="number" id="mv-stop" step="any" min="0" inputmode="decimal" aria-label="New stop price">
@@ -682,7 +674,7 @@
         <h2 id="exit-title">Sell</h2>
         <button type="button" id="btn-exit-cancel" class="btn icon" aria-label="Close">&times;</button>
       </div>
-      <p class="muted small">Early exit at the close of this candle. One reason is required.</p>
+      <p class="muted small" id="exit-help">Early exit at the close of this candle. One reason is required.</p>
       <div id="exit-reasons" class="reasons-grid exit-grid" role="radiogroup" aria-label="Exit reason"></div>
       <label class="reasons-note">Note <span class="muted">(required for "Other")</span>
         <input id="exit-note" type="text" maxlength="500" autocomplete="off"></label>

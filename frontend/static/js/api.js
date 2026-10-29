@@ -64,6 +64,7 @@ export const api = {
   dayPlan: (id, body) => request('POST', `/api/day/sessions/${id}/plan`, body),
   dayBuy: (id, body) => request('POST', `/api/day/sessions/${id}/buy`, body),
   daySell: (id, body) => request('POST', `/api/day/sessions/${id}/sell`, body),
+  dayScale: (id, body) => request('POST', `/api/day/sessions/${id}/scale`, body),
   dayMoveTrade: (id, body) => request('PATCH', `/api/day/sessions/${id}/trade`, body),
   dayStep: (id, body) => request('POST', `/api/day/sessions/${id}/step`, body),
   dayStepBack: (id, body) => request('POST', `/api/day/sessions/${id}/step-back`, body),

@@ -10,7 +10,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -281,6 +281,12 @@ class DayBuyRequest(DayPlanRequest):
 
 class DaySellRequest(BaseModel):
     reason: str = Field(description="Exit reason key (state.day.exit_reasons)")
+    note: str | None = Field(default=None, max_length=day_rules.NOTE_MAX_CHARS, description="Free text; required for the reason 'other'")
+
+
+class DayScaleRequest(BaseModel):
+    side: Literal["sell", "add"] = Field(description="sell = take a quarter of the original size off, add = buy a quarter back")
+    reason: str | None = Field(default=None, description="Exit reason key (state.day.exit_reasons); required for a sell")
     note: str | None = Field(default=None, max_length=day_rules.NOTE_MAX_CHARS, description="Free text; required for the reason 'other'")
 
 
@@ -680,6 +686,12 @@ def day_sell(session_id: str, req: DaySellRequest) -> dict:
     return day.sell(session_id, req.reason, req.note)
 
 
+@app.post("/api/day/sessions/{session_id}/scale")
+def day_scale(session_id: str, req: DayScaleRequest) -> dict:
+    """Sell a quarter of the open trade's original size (partial profit, with a reason) or add one back."""
+    return day.scale_trade(session_id, req.side, req.reason, req.note)
+
+
 @app.patch("/api/day/sessions/{session_id}/trade")
 def day_move_trade(session_id: str, req: DayMoveRequest) -> dict:
     """Move the stop and / or the take-profit of the open trade; every move is saved with the trade."""
@@ -713,13 +725,13 @@ def day_step_back(session_id: str, req: DayStepBackRequest) -> dict:
 
 @app.post("/api/day/sessions/{session_id}/end-day")
 def day_end_day(session_id: str) -> dict:
-    """After an exit before 24:00: jump to 24:00 of the exit's trading day (the review is asked there)."""
+    """After an exit before 24:00: jump to 24:00 of the exit's trading day (the trade's picture is taken there)."""
     return day.end_day(session_id)
 
 
 @app.post("/api/day/sessions/{session_id}/keep-trading")
 def day_keep_trading(session_id: str) -> dict:
-    """After an exit: go on from the exit candle; the review waits for 24:00."""
+    """After an exit: go on from the exit candle; the trade's picture waits for 24:00."""
     return day.keep_trading(session_id)
 
 
@@ -781,7 +793,7 @@ def day_trade_image(session_id: str, trade_id: int) -> FileResponse:
 
 @app.post("/api/day/sessions/{session_id}/trades/{trade_id}/review")
 def day_trade_review(session_id: str, trade_id: int, req: DayReviewRequest) -> dict:
-    """Answer (or change) the three review marks of a closed trade; the replay waits for them after every exit."""
+    """Answer (or change) the three review marks of a closed trade (optional, never holds the replay)."""
     return day.review(session_id, trade_id, req.model_dump())
 
 

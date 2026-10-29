@@ -69,8 +69,8 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     z = r.json()
     assert z["upper"] == price + 0.5 and z["lower"] == price - 3.0 and z["interval"] == "1h"
     r = client.put(f"{base}/zones/{z['id']}", json={"p1": price + 0.6, "p2": price - 3.0})
-    assert r.status_code == 200 and r.json()["upper"] == price + 0.6
-    assert client.get(f"{base}/zones").json() == [r.json()]
+    assert r.status_code == 200 and r.json()["upper"] == price + 0.6 and r.json()["merged"] == 0
+    assert client.get(f"{base}/zones").json() == [{k: v for k, v in r.json().items() if k != "merged"}]
     assert client.put(f"{base}/zones/424242", json={"p1": 1, "p2": 2}).status_code == 404
 
     # plan
@@ -149,23 +149,21 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert r.json()["cursor_ms"] == st["cursor_ms"] and ev["choice"] is True and r.json()["day"]["exit_choice"] is True
     assert r.json()["day"]["can_step_back"] is False                                               # the exit is the floor
     assert client.post(f"{base}/step-back", json={}).status_code == 409
-    # end the day: the jump to 24:00, where the review is asked
+    # end the day: the jump to 24:00, where the trade's picture is due
     r = client.post(f"{base}/end-day")
     assert r.status_code == 200, r.text
     assert r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["local_time"] == "2018-05-11 00:00"
-    assert r.json()["day"]["review_pending"]["id"] == tid and r.json()["day"]["can_continue"] is False
+    assert r.json()["day"]["picture_due"]["id"] == tid and r.json()["day"]["can_continue"] is True
     assert client.post(f"{base}/end-day").status_code == 409
     assert client.post(f"{base}/sell", json={"reason": "stalls"}).status_code == 409
-    # the review: required before anything moves, all three marks, true / false only
-    assert client.post(f"{base}/continue").status_code == 409
-    assert client.post(f"{base}/step", json={"n": 1}).status_code == 409
+    # the review: optional (nothing waits for it), all three marks, true / false only
     assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": True}).status_code == 422
     assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": 1, "over_target": False, "stop_saved": False}).status_code == 422
     assert client.post(f"{base}/trades/424242/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 404
     r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False})
     assert r.status_code == 200, r.text
     assert r.json()["trade"]["review"]["over_target"] is True and r.json()["trade"]["review"]["reviewed"] is True
-    assert r.json()["state"]["day"]["review_pending"] is None and r.json()["state"]["day"]["can_continue"] is True
+    assert r.json()["state"]["day"]["can_continue"] is True
     assert client.patch(f"{base}/trade", json={"stop": 1.0}).status_code == 409                    # closed: nothing to move
 
     # the picture at the exit
@@ -307,9 +305,19 @@ def test_conditions_routes(client: TestClient, session: dict):
     r = client.get(f"/api/day/sessions/{sid}/conditions")
     assert r.status_code == 200, r.text
     ev = r.json()
-    assert ev["scope"] == "session" and len(ev["conditions"]) == 16 and {"with", "without", "unknown", "key", "label"} <= set(ev["conditions"][0])
+    assert ev["scope"] == "session" and len(ev["conditions"]) == 17 and {"with", "without", "unknown", "key", "label"} <= set(ev["conditions"][0])
     assert client.get(f"/api/day/sessions/{sid}/conditions", params={"scope": "all"}).json()["scope"] == "all"
     assert client.get(f"/api/day/sessions/{sid}/conditions", params={"scope": "week"}).status_code == 422
     r = client.get(f"/api/day/sessions/{sid}/conditions.csv", params={"scope": "all"})
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv") and r.text.startswith("condition,label,")
     assert client.get("/api/day/sessions/nope/conditions").status_code == 404
+
+
+def test_scale_route(client: TestClient, session: dict):
+    """The quarter steps of the open trade: the side is checked, a partial sell needs a reason
+    (the engine's own rules are tested in test_day.py)."""
+    base = f"/api/day/sessions/{session['id']}"
+    assert client.post(f"{base}/scale", json={"side": "half"}).status_code == 422
+    assert client.post(f"{base}/scale", json={"side": "sell"}).status_code == 422
+    assert client.post(f"{base}/scale", json={"side": "sell", "reason": "other"}).status_code == 422
+    assert client.post("/api/day/sessions/nope/scale", json={"side": "add"}).status_code == 404

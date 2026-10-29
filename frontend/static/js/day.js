@@ -11,6 +11,7 @@ const ZONE_INTERVALS = ['1h', '4h'];
 const nextFrame = () => new Promise(r => { const id = setTimeout(r, 100); requestAnimationFrame(() => { clearTimeout(id); r(); }); });
 const PLAN_DEBOUNCE_MS = 150;
 const PLAN_MARGIN_BARS = 30;
+const PIC_MARGIN_BARS = 8;    // empty bars right of the last candle in a trade's picture: the line labels sit there
 // The entry conditions saved with every trade (same keys and order as CONDITIONS in day_engine.py).
 const COND_LABELS = [
   ['uptrend', 'Trend check: uptrend (EMA 200 and higher highs/lows)'],
@@ -29,6 +30,7 @@ const COND_LABELS = [
   ['evening', 'Entry after 18:00'],
   ['stop_moved', 'Stop moved during the trade'],
   ['tp_moved', 'Target moved during the trade'],
+  ['partial', 'Partial profit taken (a quarter sold before the exit)'],
 ];   // empty bars kept right of the last candle while the New trade panel is open
 
 // The Trades tab columns shown by default (data-col names of the table headers); the rest hide until chosen.
@@ -51,8 +53,8 @@ export class DayMode {
     this.sort = { key: 'seq', dir: 1 };
     this.confidence = null;          // the score 0..10 picked in the New trade form (required for the buy)
     this.auto = { trades: [], summary: null };   // the automatic-exit twins (Auto exits tab)
-    this.reviewTrade = null;      // the trade shown in the review dialog (editing from the trade dialog)
-    this.inlineReviewId = null;   // the trade whose pending review is in the side panel (its marks keep the user's clicks)
+    this.reviewTrade = null;      // the trade shown in the review dialog (opened from the trade dialog)
+    this.exitPartial = false;     // the Sell dialog sells a quarter (Sell ¼) instead of the whole trade
     this.hiddenCols = this.loadCols();   // Trades tab: the hidden columns (null = the default set)
     this.conditions = null;        // the Conditions tab's last answer
     this.condScope = 'session';    // 'session' | 'all'
@@ -106,7 +108,6 @@ export class DayMode {
     this.c.chart.setDayLines(null);
     this.c.chart.setTimeZone(on ? (s.day && s.day.timezone) || 'Europe/Malta' : null);
     for (const id of ['dlg-trend', 'dlg-exit', 'dlg-review']) if (this.$(id).open) this.$(id).close();
-    this.inlineReviewId = null;
     if (this.panelOpen()) this.closeNewTrade();
     const dayTab = ['tab-day', 'tab-days', 'tab-cal', 'tab-cond'].some(id => this.$(id).getAttribute('aria-selected') === 'true');
     this.conditions = null;
@@ -236,6 +237,7 @@ export class DayMode {
     const list = [];
     for (const t of this.trades) {
       list.push({ time_ms: t.entry_ms, side: 'buy', seq: t.seq });
+      for (const x of t.scales || []) list.push({ time_ms: x.at_ms, side: x.side === 'sell' ? 'sell' : 'buy', seq: t.seq, text: x.side === 'sell' ? '\u2212\u00bc' : '+\u00bc' });
       if (t.exit_ms !== null && t.exit_ms !== undefined) list.push({ time_ms: t.exit_ms, side: 'sell', seq: t.seq });
     }
     this.c.chart.setTrades(list);
@@ -326,13 +328,13 @@ export class DayMode {
     $('btn-day-continue').classList.toggle('hidden', !(ok && d.can_continue));
     $('btn-day-skip').classList.toggle('hidden', !!(ok && d.can_continue));   // both jump to the next 06:00: one button at a time
     $('btn-day-zone').disabled = !ok || busy;
-    this.renderInlineReview(ok ? d.review_pending : null);
     this.renderExitChoice(ok && d.exit_choice ? d.last_exit : null);
 
     // the open trade
     const t = ok ? d.trade : null;
     $('day-trade').classList.toggle('hidden', !t);
     $('dt-move-row').classList.toggle('hidden', !t);
+    $('dt-scale-row').classList.toggle('hidden', !t);
     if (!t) this.closeMove();
     if (t) {
       const fp = this.c.fmtPrice;
@@ -354,7 +356,14 @@ export class DayMode {
       $('btn-dt-move').disabled = busy || !d.can_sell;
       $('btn-mv-apply').disabled = busy || !d.can_sell;
       if (this.moveOpen()) this.renderMoveHint(t);
-      set('dt-size', `${this.c.qtyFmt(t.coins)} ${this.c.baseAsset()} = ${this.n(t.position_value)} USDT${t.capped ? ' · capped' : ''}`);
+      const q = t.quarters_open === undefined ? 4 : t.quarters_open;
+      set('dt-size', q === 4 ? `${this.c.qtyFmt(t.coins)} ${this.c.baseAsset()} = ${this.n(t.position_value)} USDT${t.capped ? ' · capped' : ''}`
+        : `${q}/4 held: ${this.c.qtyFmt(t.coins_open)} of ${this.c.qtyFmt(t.coins)} ${this.c.baseAsset()}${t.capped ? ' · capped' : ''}`);
+      $('dt-size').title = (t.scales || []).length ? this.scalesText(t) : 'The original size; Sell ¼ / Add ¼ change it in quarters';
+      set('dt-quarters', `size ${q}/4${(t.scales || []).length ? ` · ${t.scales.length} step${t.scales.length === 1 ? '' : 's'}` : ''}`);
+      $('btn-dt-sell-q').disabled = busy || !d.can_sell || q <= 1;
+      $('btn-dt-sell-q').title = q <= 1 ? 'Only the last quarter is left: close it with Sell.' : 'Sell a quarter of the original size at the close of this candle (partial profit; a reason is required). The last quarter goes with Sell.';
+      $('btn-dt-add-q').disabled = busy || !d.can_sell || q >= 4;
       const rrNow = t.rr_now === undefined ? t.rr : t.rr_now;
       set('dt-risk', `${this.n(t.risk_usdt)} USDT · R/R ${this.n(rrNow)}`);
       $('dt-risk').title = rrNow !== t.rr ? `Reward-to-risk now; at the buy ${this.n(t.rr)}` : 'Reward-to-risk of the trade';
@@ -397,6 +406,11 @@ export class DayMode {
     this.$('mv-hint').textContent = parts.join(' ');
   }
   // One line per saved move, oldest first.
+  // The quarter steps of a trade in short, for hover texts.
+  scalesText(t) {
+    const fp = this.c.fmtPrice;
+    return (t.scales || []).map(x => `${x.at_local.slice(11)} ${x.side === 'sell' ? 'sold' : 'added'} ¼ @ ${fp(x.price)} (${this.pctText(x.vs_entry_pct)})${x.reason_label ? ` · ${x.reason_label}` : ''} → ${x.quarters_after}/4`).join('\n') || 'no quarter steps';
+  }
   changesText(t) {
     const fp = this.c.fmtPrice;
     const pe = (v) => this.pctText((v / t.entry_price - 1) * 100);
@@ -524,10 +538,11 @@ export class DayMode {
       const z = await this.c.api.dayAddZone(this.session.id, { interval: this.state.interval, p1: this.draft, p2: snap.price });
       if (!this.c.fresh(t)) return true;
       this.cancelDraw();
-      this.zones.push(z);
+      await this.reloadZones(t);   // a zone close to another one was merged into it on the server
       this.selectedZone = z.id;
       this.renderZones();
-      this.c.toast(`Zone drawn: ${this.c.fmtPrice(z.lower)} – ${this.c.fmtPrice(z.upper)} (${z.interval})`);
+      this.c.toast(z.merged ? `Zone merged with ${z.merged} close zone${z.merged === 1 ? '' : 's'}: ${this.c.fmtPrice(z.lower)} – ${this.c.fmtPrice(z.upper)} (${z.interval})`
+        : `Zone drawn: ${this.c.fmtPrice(z.lower)} – ${this.c.fmtPrice(z.upper)} (${z.interval})`);
     } catch (e) { if (this.c.fresh(t)) { this.c.toast(e.message, true); this.cancelDraw(); } }
     return true;
   }
@@ -566,9 +581,18 @@ export class DayMode {
     try {
       const z = await this.c.api.dayUpdateZone(this.session.id, id, { p1, p2 });
       if (!this.c.fresh(t)) return;
-      this.zones = this.zones.map(x => (x.id === id ? z : x));
+      if (z.merged) {
+        await this.reloadZones(t);
+        if (this.selectedZone === id) this.selectedZone = z.id;
+        this.c.toast(`Zone merged with ${z.merged} close zone${z.merged === 1 ? '' : 's'}: ${this.c.fmtPrice(z.lower)} – ${this.c.fmtPrice(z.upper)}`);
+      } else this.zones = this.zones.map(x => (x.id === id ? z : x));
       this.renderZones();
     } catch (e) { if (this.c.fresh(t)) { this.c.toast(e.message, true); this.renderZones(); } }
+  }
+  // The session's zones fresh from the server (after a merge removed some of them).
+  async reloadZones(t) {
+    const zones = await this.c.api.dayZones(this.session.id);
+    if (this.c.fresh(t)) this.zones = zones;
   }
   async deleteZone(id) {
     if (!this.ready()) return;
@@ -800,10 +824,13 @@ export class DayMode {
   }
 
   // ------------------------------------------------------------ early exit
-  openExit() {
+  // `partial`: Sell ¼ (a quarter of the original size, the trade stays open) instead of the whole trade.
+  openExit(partial = false) {
     const d = this.day;
     if (!this.ready() || this.busy || !d.can_sell) return;
+    if (partial && d.trade && d.trade.quarters_open <= 1) { this.c.toast('Only the last quarter is left: close it with Sell.', true); return; }
     const $ = this.$;
+    this.exitPartial = partial;
     const list = $('exit-reasons');
     list.innerHTML = '';
     for (const r of d.exit_reasons) {
@@ -816,7 +843,13 @@ export class DayMode {
     $('exit-note').value = '';
     $('exit-error').textContent = '';
     const t = d.trade;
-    $('exit-title').textContent = `Sell trade #${t.seq} @ ${this.c.fmtPrice(this.session.price)} · ${this.signed(t.unrealized_pnl)} USDT (${this.signed(t.r_now)} R)`;
+    $('exit-title').textContent = partial
+      ? `Sell ¼ of trade #${t.seq} @ ${this.c.fmtPrice(this.session.price)} · ${this.pctText(t.price_change_pct)} vs the entry`
+      : `Sell trade #${t.seq} @ ${this.c.fmtPrice(this.session.price)} · ${this.signed(t.unrealized_pnl)} USDT (${this.signed(t.r_now)} R)`;
+    $('exit-help').textContent = partial
+      ? `Partial profit: a quarter of the original size at the close of this candle (${t.quarters_open}/4 held now, ${t.quarters_open - 1}/4 after). One reason is required.`
+      : 'Early exit at the close of this candle. One reason is required.';
+    $('btn-exit-confirm').textContent = partial ? 'Sell ¼ now' : 'Sell now';
     $('dlg-exit').showModal();
     const first = list.querySelector('input');
     if (first) first.focus();
@@ -832,6 +865,13 @@ export class DayMode {
     this.busy = true;
     this.render();
     try {
+      if (this.exitPartial) {   // a quarter: the trade stays open
+        const res = await this.c.api.dayScale(this.session.id, { side: 'sell', reason: picked.value, note });
+        if (!this.c.fresh(t)) return;
+        $('dlg-exit').close();
+        this.afterScale(res, 'Sold');
+        return;
+      }
       const st = await this.c.api.daySell(this.session.id, { reason: picked.value, note });
       if (!this.c.fresh(t)) return;
       $('dlg-exit').close();
@@ -841,6 +881,29 @@ export class DayMode {
       await this.handleEvents(events);
     } catch (e) { if (this.c.fresh(t)) $('exit-error').textContent = e.message; }
     finally { this.busy = false; this.render(); }
+  }
+
+  // Add ¼: buy a quarter of the original size back (never above the original size).
+  async addQuarter() {
+    const d = this.day;
+    if (!this.ready() || this.busy || !d.can_sell || !d.trade || d.trade.quarters_open >= 4) return;
+    const t = this.c.token();
+    this.busy = true;
+    this.render();
+    try {
+      const res = await this.c.api.dayScale(this.session.id, { side: 'add' });
+      if (!this.c.fresh(t)) return;
+      this.afterScale(res, 'Added');
+    } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
+    finally { this.busy = false; this.render(); }
+  }
+  afterScale(res, word) {
+    const x = res.trade.scales[res.trade.scales.length - 1];
+    this.c.applyState(res.state);
+    this.trades = this.trades.map(r => (r.id === res.trade.id ? res.trade : r));
+    this.renderMarkers();
+    this.renderTrades();
+    this.c.toast(`${word} ¼ of trade #${res.trade.seq} @ ${this.c.fmtPrice(x.price)} (${this.pctText(x.vs_entry_pct)} vs the entry): ${x.quarters_after}/4 held.`);
   }
 
   // --------------------------------------------------------- skip, continue
@@ -881,12 +944,11 @@ export class DayMode {
     const s = this.strategies.find(x => x.key === this.$('day-strategy').value);
     this.$('day-strategy-note').textContent = s ? s.description : 'No strategies available.';
   }
-  // After an exit: "End the day" jumps to 24:00 of the exit's day (the review is asked there; the
-  // day is not left, so no day picture yet); "Keep trading" goes on from the exit candle.
+  // After an exit: "End the day" jumps to 24:00 of the exit's day (the trade's picture is taken
+  // there; the day is not left, so no day picture yet); "Keep trading" goes on from the exit candle.
   async endDay() {
     if (!this.ready() || this.busy || !this.day.exit_choice) return;
     await this.jump(() => this.c.api.dayEndDay(this.session.id), null, false);
-    this.reviewToast();
   }
   async keepTrading() {
     if (!this.ready() || this.busy || !this.day.exit_choice) return;
@@ -897,7 +959,7 @@ export class DayMode {
       const st = await this.c.api.dayKeepTrading(this.session.id);
       if (!this.c.fresh(t)) return;
       this.c.applyState(st);
-      this.c.toast('Keep trading: buy again or step on. The review comes at 24:00.');
+      this.c.toast('Keep trading: buy again or step on. The trade\'s picture is taken at 24:00.');
     } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
     finally { this.busy = false; this.render(); }
   }
@@ -934,7 +996,7 @@ export class DayMode {
       await this.c.refreshView();
       for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`);
       await this.refresh();   // the journal row of the day just left (how it ended) and the new day's row
-      await this.reviewPicture();   // a jump past an exit's 24:00 makes its review due
+      await this.duePicture();   // a jump past an exit's 24:00 makes its picture due
       if (after && this.c.fresh(t)) after(events);
     } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
     finally { this.busy = false; this.render(); }
@@ -942,34 +1004,29 @@ export class DayMode {
 
   // ----------------------------------------------------------------- events
   // Events of a step or a sell. After an exit by day the replay stays on the exit candle and the
-  // side panel asks: end the day (jump to 24:00) or keep trading. The review and the trade's picture
-  // (15m, from the entry's 06:00 to that 24:00) come once the replay reaches that 24:00 (a 'review'
-  // event); a night exit gets them at once. A jump is only announced.
+  // side panel asks: end the day (jump to 24:00) or keep trading. The trade's picture (15m, from the
+  // entry's 06:00 to that 24:00) is taken once the replay reaches that 24:00 (a 'picture' event; Play
+  // goes on); a night exit gets it at once. The review is optional (the trade's dialog); the Trades
+  // tab tints the trades without one. A jump is only announced.
   async handleEvents(events) {
     if (!this.active()) return;
     for (const ev of events || []) {
       if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`); continue; }
-      if (ev.kind === 'review') { this.c.pause(); await this.refresh(); continue; }
+      if (ev.kind === 'picture') { await this.refresh(); continue; }
       if (ev.kind !== 'exit') continue;
       this.c.pause();
       const tr = ev.trade;
       this.c.toast(`Trade #${tr.seq} closed (${tr.exit_type}) @ ${this.c.fmtPrice(tr.exit_price)}: ${this.signed(tr.pnl)} USDT (${this.pctText(tr.pnl_pct)}, ${this.signed(tr.r_multiple)} R)`, tr.pnl < 0);
       await this.refresh();
     }
-    await this.reviewPicture();
-    if (events.some(ev => ev.kind === 'exit' || ev.kind === 'review')) this.reviewToast();
+    await this.duePicture();
+    if (events.some(ev => ev.kind === 'exit') && this.ready() && this.day.exit_choice) this.c.toast('Trade closed. End the day (Enter) or keep trading (K) in the side panel.');
   }
-  reviewToast() {
+  // The picture of the trade whose 24:00 was just reached, taken once (at its 24:00 or later).
+  async duePicture() {
     const d = this.day;
-    if (!this.ready()) return;
-    if (d.review_pending) this.c.toast(`Review trade #${d.review_pending.seq} in the side panel: keys 1, 2, 3 switch the marks, Enter saves. The replay waits.`);
-    else if (d.exit_choice) this.c.toast('Trade closed. End the day (Enter) or keep trading (K) in the side panel.');
-  }
-  // The picture of the trade whose review just became due, taken once (at its 24:00 or later).
-  async reviewPicture() {
-    const d = this.day;
-    if (!this.ready() || !d.review_pending || d.review_pending.has_image) return;
-    await this.capturePicture(d.review_pending);
+    if (!this.ready() || !d.picture_due || d.picture_due.has_image) return;
+    await this.capturePicture(d.picture_due);
   }
 
   // ---------------------------------------------------------------- columns
@@ -1042,23 +1099,7 @@ export class DayMode {
     return r.reviewed ? { stop_tight: !!r.stop_tight, over_target: !!r.over_target, stop_saved: !!r.stop_saved }
       : { stop_tight: false, over_target: !!r.over_target_suggested, stop_saved: false };
   }
-  // The pending review sits in the side panel, so the chart stays visible while answering. Its marks
-  // are filled once per trade: later renders keep the user's clicks.
-  renderInlineReview(t) {
-    const $ = this.$;
-    $('day-review').classList.toggle('hidden', !t);
-    if (!t) { this.inlineReviewId = null; return; }
-    if (this.inlineReviewId === t.id) return;
-    this.inlineReviewId = t.id;
-    $('dr-title').textContent = this.reviewTitle(t);
-    $('dr-sub').textContent = this.reviewSub(t);
-    $('dr-window').textContent = this.reviewWindowText(t);
-    const values = this.reviewValues(t);
-    for (const b of $('dr-list').querySelectorAll('.rv-toggle')) this.setToggle(b, values[b.dataset.key]);
-    $('dr-error').textContent = '';
-  }
-  inlineReviewOpen() { return !this.$('day-review').classList.contains('hidden'); }
-  // The dialog: editing the answers of any closed trade (from the trade dialog).
+  // The review dialog: answering (optional) or editing the marks of any closed trade, from the trade dialog.
   openReview(t) {
     const $ = this.$;
     if ($('dlg-exit').open) $('dlg-exit').close();
@@ -1073,10 +1114,9 @@ export class DayMode {
     if (!$('dlg-review').open) $('dlg-review').showModal();
   }
   setToggle(b, on) { b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.textContent = on ? 'true' : 'false'; }
-  // Keys 1 / 2 / 3: the dialog when it is open, else the side panel.
+  // Keys 1 / 2 / 3 in the review dialog.
   toggleReview(key) {
-    const list = this.$('dlg-review').open ? 'review-list' : 'dr-list';
-    const b = this.$(list).querySelector(`.rv-toggle[data-key='${key}']`);
+    const b = this.$('review-list').querySelector(`.rv-toggle[data-key='${key}']`);
     if (b) this.setToggle(b, !b.classList.contains('on'));
   }
   reviewAnswers(listId) {
@@ -1101,7 +1141,7 @@ export class DayMode {
       this.c.applyState(res.state);
       this.renderTrades();
       const tags = this.reviewTags(res.trade);
-      this.c.toast(`Review of trade #${res.trade.seq} saved: ${tags.length ? tags.join(', ') : 'no marks'}. You can buy again, step on (also through the night), or press Continue \u2192 06:00.`);
+      this.c.toast(`Review of trade #${res.trade.seq} saved: ${tags.length ? tags.join(', ') : 'no marks'}.`);
       return res;
     } catch (e) { if (this.c.fresh(tok)) $(errId).textContent = e.message; return null; }
     finally { $(btnId).disabled = false; }
@@ -1110,12 +1150,7 @@ export class DayMode {
     const res = await this.submitReview(this.reviewTrade, this.reviewAnswers('review-list'), 'review-error', 'btn-review-save');
     if (res) { this.reviewTrade = null; this.$('dlg-review').close(); }
   }
-  async saveInlineReview() {
-    const d = this.day;
-    if (!d || !d.review_pending) return;
-    await this.submitReview(d.review_pending, this.reviewAnswers('dr-list'), 'dr-error', 'btn-dr-save');
-  }
-  // The trade's picture, taken when its review becomes due (24:00 of the exit day): always the 15-minute chart from 06:00 of the
+  // The trade's picture, taken once the replay reaches 24:00 of the exit day: always the 15-minute chart from 06:00 of the
   // entry's trading day to 24:00 of the exit's (trade.frame; a night exit ends at the exit), with
   // zones, entry, stop, take-profit and the exit line, whatever the zoom on screen. A hold longer than
   // the loaded bars (~6 days) starts at the oldest one. The view and zoom come back afterwards.
@@ -1128,7 +1163,8 @@ export class DayMode {
     let image = null;
     try {
       if (prev !== '15m') await this.c.setInterval('15m');
-      const frame = trade.frame && chart.rangeForTimes(trade.frame.from_s, trade.frame.to_s);
+      const span = trade.frame && chart.rangeForTimes(trade.frame.from_s, trade.frame.to_s);
+      const frame = span && { from: span.from, to: span.to + PIC_MARGIN_BARS };
       if (frame) chart.setRange(frame);
       chart.setDayLines(trade);
       // the range applies on a later frame: wait until the chart shows it, then one more for the paint
@@ -1149,7 +1185,7 @@ export class DayMode {
     try {
       const row = await this.c.api.dayTradeImage(this.session.id, trade.id, image);
       if (!this.c.fresh(t)) return;
-      if (this.day && this.day.review_pending && this.day.review_pending.id === row.id) this.day.review_pending.has_image = true;
+      if (this.day && this.day.picture_due && this.day.picture_due.id === row.id) this.day.picture_due.has_image = true;
       this.trades = this.trades.map(x => (x.id === row.id ? row : x));
       this.renderTrades();
     } catch (e) { if (this.c.fresh(t)) this.c.toast(`Picture not saved: ${e.message}`, true); }
@@ -1277,18 +1313,7 @@ export class DayMode {
         ['Type', t.exit_type || 'open'], ['Reason', t.exit_reason_label || '–'], ['Overnight', t.overnight ? 'yes' : 'no'],
         ['P&L (after fees)', t.pnl === null ? '–' : `${this.signed(t.pnl)} USDT`], ['P&L % of position', this.pctText(t.pnl_pct)], ['R', this.signed(t.r_multiple, 3)]] : [['Trade', 'none']]],
     ];
-    const tb = $('snap-readings');
-    tb.innerHTML = '';
-    for (const [name, rows] of groups) {
-      const h = document.createElement('tr'); h.className = 'section';
-      const hc = document.createElement('td'); hc.colSpan = 2; hc.textContent = name; h.appendChild(hc); tb.appendChild(h);
-      for (const [k, v] of rows) {
-        const tr = document.createElement('tr');
-        const a = document.createElement('td'); a.textContent = k;
-        const b = document.createElement('td'); b.className = 'v'; b.textContent = v;
-        tr.append(a, b); tb.appendChild(tr);
-      }
-    }
+    this.renderReadings(groups, false);
     $('snap-notes').value = r.notes || '';
     $('snap-notes-state').textContent = '';
     $('snap-notes-wrap').classList.remove('hidden');
@@ -1388,7 +1413,9 @@ export class DayMode {
     const fp = this.c.fmtPrice;
     for (const t of rows) {
       const tr = document.createElement('tr');
-      tr.className = 'bucket';
+      const reviewOpen = t.status === 'closed' && !(t.review && t.review.reviewed);
+      tr.className = `bucket${reviewOpen ? ' review-open' : ''}`;   // a light red: the review is still open
+      if (reviewOpen) tr.title = 'Review open: click the row, then Answer review';
       const td = (text, cls, title) => { const c = document.createElement('td'); c.textContent = text; if (cls) c.className = cls; if (title) c.title = title; tr.appendChild(c); return c; };
       const pic = document.createElement('td');
       if (t.has_image) {
@@ -1403,7 +1430,9 @@ export class DayMode {
       td(t.day_date, 'date');
       td(t.entry_local.slice(11), 'date', t.entry_iso);
       td(t.exit_local ? t.exit_local.slice(11) : '–', 'date', t.exit_iso || '');
-      td(`${t.exit_type || 'open'}${(t.changes || []).length ? ' · moved' : ''}`, `exit ${t.exit_type === 'stop' ? 'stop' : t.exit_type === 'take-profit' ? 'target' : ''}`, (t.changes || []).length ? this.changesText(t) : '');
+      const scaled = (t.scales || []).length;
+      td(`${t.exit_type || 'open'}${(t.changes || []).length ? ' · moved' : ''}${scaled ? ' · scaled' : ''}`, `exit ${t.exit_type === 'stop' ? 'stop' : t.exit_type === 'take-profit' ? 'target' : ''}`,
+        [(t.changes || []).length ? this.changesText(t) : '', scaled ? this.scalesText(t) : ''].filter(Boolean).join('\n'));
       td(this.holdText(this.holdHours(t.entry_ms, t.exit_ms)), `num${t.exit_ms === null ? ' muted' : ''}`, t.exit_ms === null ? 'open: held until now' : 'hours from the buy to the exit');
       td(t.exit_reason_label || '', 'reasons', t.exit_note || '');
       td(`${this.flag(t.ema_above)} / ${this.flag(t.hh_hl)}`, '', 'daily close above EMA 200 / higher highs and lows');
@@ -1411,7 +1440,7 @@ export class DayMode {
       const confCell = td('', 'num', 'confidence at the buy, 0 to 10');
       if (t.confidence === null || t.confidence === undefined) confCell.textContent = '–';
       else { const s = document.createElement('span'); s.className = 'conf'; s.textContent = String(t.confidence); confCell.appendChild(s); }
-      const rvCell = td('', 'reasons', t.status === 'open' ? 'reviewed at 24:00 of the exit day' : (t.review && t.review.reviewed ? `reviewed ${t.review.reviewed_at.slice(0, 16).replace('T', ' ')} \u00b7 click the row to change` : 'not reviewed yet'));
+      const rvCell = td('', 'reasons', t.status === 'open' ? 'reviewed after the exit (optional)' : (t.review && t.review.reviewed ? `reviewed ${t.review.reviewed_at.slice(0, 16).replace('T', ' ')} \u00b7 click the row to change` : 'not reviewed yet'));
       const tags = this.reviewTags(t);
       if (t.status === 'open') rvCell.textContent = '';
       else if (tags === null) { rvCell.textContent = '\u2013'; rvCell.classList.add('muted'); }
@@ -1523,6 +1552,36 @@ export class DayMode {
     }
   }
 
+  // The sections of the shared snapshot dialog. `fold`: each section starts folded and its
+  // highlighted headline opens and closes it (click, Enter or Space).
+  renderReadings(groups, fold) {
+    const tb = this.$('snap-readings');
+    tb.innerHTML = '';
+    for (const [name, rows] of groups) {
+      const h = document.createElement('tr'); h.className = fold ? 'section collapsible' : 'section';
+      const hc = document.createElement('td'); hc.colSpan = 2; hc.textContent = fold ? `\u25B8 ${name}` : name; h.appendChild(hc); tb.appendChild(h);
+      const body = [];
+      for (const [k, v] of rows) {
+        const tr = document.createElement('tr');
+        if (fold) tr.className = 'hidden';
+        const a = document.createElement('td'); a.textContent = k;
+        const b = document.createElement('td'); b.className = 'v'; b.textContent = v;
+        tr.append(a, b); tb.appendChild(tr); body.push(tr);
+      }
+      if (!fold) continue;
+      h.tabIndex = 0;
+      h.setAttribute('aria-expanded', 'false');
+      const toggle = () => {
+        const open = h.getAttribute('aria-expanded') !== 'true';
+        h.setAttribute('aria-expanded', String(open));
+        hc.textContent = `${open ? '\u25BE' : '\u25B8'} ${name}`;
+        for (const tr of body) tr.classList.toggle('hidden', !open);
+      };
+      h.addEventListener('click', toggle);
+      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    }
+  }
+
   // The picture and every saved field of a trade, in the shared snapshot dialog.
   openTrade(t) {
     const $ = this.$;
@@ -1551,7 +1610,12 @@ export class DayMode {
       ['Moves during the trade', (t.changes || []).length
         ? t.changes.map(c => [`${c.at_local.slice(0, 10) === t.day_date ? c.at_local.slice(11) : c.at_local} · ${c.field === 'stop' ? 'stop' : 'target'} (price ${fp(c.price)})`, `${this.pctText((c.from / t.entry_price - 1) * 100)} \u2192 ${this.pctText((c.to / t.entry_price - 1) * 100)} (${fp(c.to)})`])
         : [['Moves', 'none']]],
-      ['Position', [['Coins', this.c.qtyFmt(t.coins)], ['Position value', `${this.n(t.position_value)} USDT`], ['Risk', `${this.n(t.risk_usdt)} USDT`], ['Capped', t.capped ? 'yes' : 'no'], ['Buy fee', `${this.n(t.buy_fee)} USDT`]]],
+      ['Position', [['Coins at the buy', this.c.qtyFmt(t.coins)], ['Position value', `${this.n(t.position_value)} USDT`], ['Risk', `${this.n(t.risk_usdt)} USDT`], ['Capped', t.capped ? 'yes' : 'no'], ['Buy fee', `${this.n(t.buy_fee)} USDT`],
+        ['Held at the end', `${t.quarters_open === undefined ? 4 : t.quarters_open}/4 (${this.c.qtyFmt(t.coins_open === undefined ? t.coins : t.coins_open)})`]]],
+      ['Quarter steps (partial sells, added back)', (t.scales || []).length
+        ? t.scales.map(x => [`${x.at_local.slice(0, 10) === t.day_date ? x.at_local.slice(11) : x.at_local} · ${x.side === 'sell' ? 'sold' : 'added'} \u00bc \u2192 ${x.quarters_after}/4`,
+          `${fp(x.price)} (${this.pctText(x.vs_entry_pct)} vs entry) · fee ${this.n(x.fee)}${x.reason_label ? ` · ${x.reason_label}` : ''}${x.note ? ` · ${x.note}` : ''}`])
+        : [['Steps', 'none']]],
       ['Exit', [['Time (Malta)', t.exit_local || '–'], ['Held', this.holdText(this.holdHours(t.entry_ms, t.exit_ms))], ['Price', t.exit_price === null || t.exit_price === undefined ? '–' : fp(t.exit_price)], ['Type', t.exit_type || 'open'],
         ['Reason', t.exit_reason_label || '–'], ['Note', t.exit_note || '–'], ['Overnight', t.overnight ? 'yes' : 'no']]],
       ['Result', [['P&L (after fees)', `${this.signed(t.pnl)} USDT`], ['P&L % of position', this.pctText(t.pnl_pct)], ['Fees', t.fees === null || t.fees === undefined ? '–' : `${this.n(t.fees)} USDT`], ['R', this.signed(t.r_multiple)]]],
@@ -1568,7 +1632,7 @@ export class DayMode {
       ['Alternatives (hands-off, closed at 24:00 at the latest)', t.alts
         ? [['Alt 1: stop and target of the buy', this.altText(t.alts.alt1)], ['Alt 2: same stop, target 1:2', this.altText(t.alts.alt2)], ['Closing candle', t.alts.end_local]]
         : [['Alternatives', `available once the replay reaches ${t.entry_local && t.entry_local.slice(11) < '06:00' ? 'the next' : 'the'} 24:00`]]],
-      ['Review (at 24:00 of the exit day)', t.review && t.review.reviewed
+      ['Review (optional, any time)', t.review && t.review.reviewed
         ? [['Stop too tight', t.review.stop_tight ? 'true' : 'false'], ['Price later went over the target', t.review.over_target ? 'true' : 'false'], ['The stop saved me', t.review.stop_saved ? 'true' : 'false'],
           ['Answered', t.review.reviewed_at.slice(0, 16).replace('T', ' ')]]
         : [['Review', t.status === 'closed' ? 'not answered yet' : 'after the exit']]],
@@ -1578,18 +1642,7 @@ export class DayMode {
     rb.classList.toggle('hidden', t.status !== 'closed');
     rb.textContent = t.review && t.review.reviewed ? 'Edit review' : 'Answer review';
     rb.onclick = () => this.openReview(t);
-    const tb = $('snap-readings');
-    tb.innerHTML = '';
-    for (const [name, rows] of groups) {
-      const h = document.createElement('tr'); h.className = 'section';
-      const hc = document.createElement('td'); hc.colSpan = 2; hc.textContent = name; h.appendChild(hc); tb.appendChild(h);
-      for (const [k, v] of rows) {
-        const tr = document.createElement('tr');
-        const a = document.createElement('td'); a.textContent = k;
-        const b = document.createElement('td'); b.className = 'v'; b.textContent = v;
-        tr.append(a, b); tb.appendChild(tr);
-      }
-    }
+    this.renderReadings(groups, true);   // the trade's many sections start folded
     $('dlg-snapshot').showModal();
   }
 
@@ -1603,11 +1656,6 @@ export class DayMode {
       if (e.key === 'Enter' && !(e.target && e.target.closest && e.target.closest('button'))) { e.preventDefault(); this.endDay(); return true; }
       if (k === 'k') { e.preventDefault(); this.keepTrading(); return true; }
     }
-    if (this.inlineReviewOpen()) {   // the pending review in the side panel
-      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved' };
-      if (keys[e.key]) { e.preventDefault(); this.toggleReview(keys[e.key]); return true; }
-      if (e.key === 'Enter' && !(e.target && e.target.closest && e.target.closest('button'))) { e.preventDefault(); this.saveInlineReview(); return true; }
-    }
     if (this.panelOpen()) {   // New trade panel: Esc closes, the arrows move the stop; the replay keys still work
       if (k === 'escape') { this.closeNewTrade(); return true; }
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); this.moveStop(e.key === 'ArrowUp' ? 1 : -1, e.shiftKey); return true; }
@@ -1617,7 +1665,7 @@ export class DayMode {
     if (k === 'escape' && (this.drawing || this.draft !== null)) { this.cancelDraw(); return true; }
     if (k === 'm') { e.preventDefault(); this.moveOpen() ? this.closeMove() : this.openMove(); return true; }
     if (k === 'n' || k === 'b') { e.preventDefault(); this.openNewTrade(); return true; }
-    if (k === 'x') { e.preventDefault(); this.openExit(); return true; }
+    if (k === 'x') { e.preventDefault(); this.openExit(); return true; }   // the whole trade (Sell ¼ / Add ¼ are buttons only)
     if (k === 'k') { e.preventDefault(); this.skipDay(); return true; }
     if (k === 'j') { e.preventDefault(); this.nextEmaDay(); return true; }
     if (k === 'e') { e.preventDefault(); this.nextSignal(); return true; }
@@ -1638,14 +1686,14 @@ export class DayMode {
     $('btn-review-cancel').addEventListener('click', () => this.closeReview());
     $('dlg-review').addEventListener('cancel', (e) => { e.preventDefault(); this.closeReview(); });
     for (const b of $('review-list').querySelectorAll('.rv-toggle')) b.addEventListener('click', () => this.setToggle(b, !b.classList.contains('on')));
-    $('day-review').addEventListener('submit', (e) => { e.preventDefault(); this.saveInlineReview(); });
-    for (const b of $('dr-list').querySelectorAll('.rv-toggle')) b.addEventListener('click', () => this.setToggle(b, !b.classList.contains('on')));
     $('dlg-review').addEventListener('keydown', (e) => {
       const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved' };
       if (keys[e.key]) { e.preventDefault(); this.toggleReview(keys[e.key]); }
     });
     $('btn-day-new').addEventListener('click', () => this.openNewTrade());
     $('btn-day-sell').addEventListener('click', () => this.openExit());
+    $('btn-dt-sell-q').addEventListener('click', () => this.openExit(true));
+    $('btn-dt-add-q').addEventListener('click', () => this.addQuarter());
     $('btn-day-skip').addEventListener('click', () => this.skipDay());
     $('btn-day-ema').addEventListener('click', () => this.nextEmaDay());
     $('btn-day-signal').addEventListener('click', () => this.nextSignal());

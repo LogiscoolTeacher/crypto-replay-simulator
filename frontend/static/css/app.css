@@ -208,6 +208,12 @@ kbd { display: inline-block; min-width: 18px; padding: 1px 6px; border: 1px soli
 .kv-table td:first-child { color: var(--ink-2); }   /* long labels wrap, the value column stays in view */
 .kv-table td.v { font-family: var(--mono); text-align: right; }
 .kv-table tr.section td { color: var(--muted); font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; padding-top: 10px; border-bottom: 0; }
+/* Day trades: highlighted section headlines that fold their rows (all folded when the dialog opens) */
+.kv-table tr.section.collapsible { cursor: pointer; user-select: none; }
+.kv-table tr.section.collapsible td { color: var(--ink); background: rgba(57,135,229,0.18); border-top: 4px solid var(--page); padding: 6px 8px; }
+.kv-table tr.section.collapsible:hover td { background: rgba(57,135,229,0.28); }
+.kv-table tr.section.collapsible:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kv-table tr.section.collapsible[aria-expanded="true"] td { box-shadow: inset 3px 0 0 var(--accent); }
 table.buckets img.thumb { width: 110px; height: 50px; object-fit: cover; object-position: right top; border: 1px solid var(--border); border-radius: 4px; cursor: zoom-in; display: block; }
 table.buckets img.thumb:hover { border-color: var(--accent); }
 table.buckets td.side.buy { color: var(--good); font-weight: 700; }
@@ -326,6 +332,8 @@ table.buckets .col-hidden { display: none; }
 .cols-list label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
 .cols-list .cols-foot { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); }
 table.buckets tr.bucket:hover td { background: var(--surface-2); }
+table.buckets tr.bucket.review-open td { background: rgba(208,59,59,0.10); }   /* day trades: no review yet */
+table.buckets tr.bucket.review-open:hover td { background: rgba(208,59,59,0.18); }
 table.buckets tr.bucket.selected td { background: rgba(57,135,229,0.14); box-shadow: inset 2px 0 0 var(--accent); }
 table.buckets tr.bucket:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 table.buckets td.pnl { font-weight: 700; }
