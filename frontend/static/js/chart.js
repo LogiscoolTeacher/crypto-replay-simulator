@@ -12,7 +12,7 @@ import { PlanPrimitive } from './plan.js';
 import { RsiZonePrimitive } from './rsi.js';
 
 // Short indicator names for the legend box (the full names stay in the Indicators panel).
-const SHORT_NAMES = { ema: 'EMA', sma: 'SMA', bbands: 'BB', rsi: 'RSI', macd: 'MACD', atr: 'ATR', vwap: 'VWAP', stoch: 'Stoch', obv: 'OBV' };
+const SHORT_NAMES = { ema: 'EMA', sma: 'SMA', bbands: 'BB', rsi: 'RSI', macd: 'MACD', atr: 'ATR', vdelta: 'Vol \u0394', vwap: 'VWAP', stoch: 'Stoch', obv: 'OBV' };
 
 export const SERIES_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
 export const UP = '#0ca30c';
@@ -29,6 +29,7 @@ const AXIS = '#383835';
 const SURFACE = '#1a1a19';
 const PANE_HEIGHT = 140;
 const RSI_PANE_HEIGHT = 130;   // the RSI pane of day-trading mode (15m and 1h lines)
+const MIN_PANE_HEIGHT = 22;    // a minimized indicator pane: only its name and the + button
 const RSI_COLORS = ['#9085e9', '#c98500'];   // one per timeframe, in the order of the request
 const RSI_LOWER = 30;
 const RSI_UPPER = 70;
@@ -114,7 +115,7 @@ export class ChartView {
       timeScale: { borderColor: AXIS, timeVisible: true, secondsVisible: false, rightOffset: 6, barSpacing: 8 },
       localization: { locale: 'en-US', timeFormatter: (t) => this.crosshairLabel(t) },
     });
-    this.tz = null;  // IANA zone for axis and legend labels (day-trading mode: Europe/Malta); null = UTC
+    this.tz = null;  // IANA zone for axis and legend labels; null = UTC (both modes run on UTC now)
     this.chart.timeScale().applyOptions({ tickMarkFormatter: (t, type) => this.tickLabel(t, type) });
     this.precision = 2;
     this.candles = this.chart.addSeries(LWC.CandlestickSeries, {
@@ -141,12 +142,36 @@ export class ChartView {
     this._titles = new Map();  // price line -> its title, so setQuiet can hide and restore it
     this.planLines = [];   // dotted target and stop lines of the selected bucket
     this.levelLines = [];  // support / resistance price lines of the Bitcoin context peek
+    this.levelHistory = []; // stepped stop / target lines of a day trade's moves (pictures only, see setLevelHistory)
+    this.paneInfo = [];     // per indicator pane (index 1, 2, ...): { key, label, series }, see _rebuildPanes
+    this.minPanes = new Set();  // keys of the panes the user minimized ('rsi' or an instance identity)
+    this.onPaneFold = null;     // (keys) => void: the app remembers the minimized panes
+    // The library adds a new pane's row only when it paints: the -/+ buttons go in as soon as it is
+    // there. _renderPaneFolds changes nothing that is already right, so its own button causes no loop.
+    new MutationObserver(() => { if (this.paneInfo.length) this._renderPaneFolds(); }).observe(el, { childList: true, subtree: true });
     this.extremeLines = []; // dashed lines at the 6-month high and low of the coin on screen
     this.trades = [];
     this.targetRange = null;   // range requested but not yet applied by the library
     this.appliedRange = null;  // last range the library reported as applied
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => { this.appliedRange = r; this.targetRange = null; });
-    this.chart.subscribeCrosshairMove((p) => this.renderLegend(p));
+    this.chart.subscribeCrosshairMove((p) => { this.legendParam = p; this.renderLegend(p); });
+    // The legend box folds to one short line with its arrow button; the app remembers the choice.
+    // The button lives outside the rows that every crosshair move rewrites (a click on a button
+    // replaced between mousedown and mouseup would be lost).
+    this.legendMin = false;
+    this.legendParam = null;
+    this.onLegendFold = null;
+    this.legendFold = document.createElement('button');
+    this.legendFold.type = 'button';
+    this.legendFold.className = 'legend-fold';
+    this.legendBody = document.createElement('div');
+    this.legendBody.className = 'legend-body';
+    legendEl.replaceChildren(this.legendFold, this.legendBody);
+    this.setLegendMin(false);
+    this.legendFold.addEventListener('click', () => {
+      this.setLegendMin(!this.legendMin);
+      if (this.onLegendFold) this.onLegendFold(this.legendMin);
+    });
     // Fibonacci retracements live in one primitive on the candle series; clicks go to the app.
     this.fib = new FibPrimitive(fmtPrice);
     this.candles.attachPrimitive(this.fib);
@@ -228,6 +253,47 @@ export class ChartView {
       if (key && open) this.dragLines.push({ key, line, price, title, entry: trade.entry_price });
     }
   }
+  // The history of a day trade's stop and target (the pictures): each level as a stepped line from the
+  // entry to the exit (or the latest candle), changing at the candle after the one it was moved on
+  // (a move takes effect at that candle's close), with a small "SL ↑" / "TP ↓" mark at each move.
+  // Nothing is drawn for a trade whose levels never moved: the dotted price lines already tell it all.
+  // `null` removes it again.
+  setLevelHistory(trade) {
+    for (const s of this.levelHistory || []) this.chart.removeSeries(s);
+    this.levelHistory = [];
+    const changes = trade ? trade.changes || [] : [];
+    if (!changes.length || !this.payload || !this.payload.time || !this.payload.time.length) return;
+    const step = this.intervalMs / 1000;
+    const times = this.payload.time;
+    const startS = Math.floor(trade.entry_ms / 1000);
+    const endS = Math.min(trade.exit_ms !== null && trade.exit_ms !== undefined ? Math.floor(trade.exit_ms / 1000) : Infinity, times[times.length - 1]);
+    const fields = [
+      ['stop', trade.stop_initial, SL_COLOR, 'SL', 'aboveBar'],   // the colours of the live SL / TP lines
+      ['take_profit', trade.tp_initial, TP_COLOR, 'TP', 'belowBar'],
+    ];
+    for (const [field, initial, color, short, position] of fields) {
+      const moves = changes.filter(c => c.field === field);
+      if (!moves.length || initial === null || initial === undefined || endS < startS) continue;
+      // one value per bar time (two moves on one candle: the later one counts), oldest first
+      const at = new Map([[startS, initial]]);
+      const marks = [];
+      for (const c of moves) {
+        const t = Math.min(Math.floor(c.at_ms / 1000) + step, endS);
+        at.set(t, c.to);
+        marks.push({ time: t, position, color, shape: c.to > c.from ? 'arrowUp' : 'arrowDown', text: `${short} ${c.to > c.from ? '↑' : '↓'}`, size: 0.8 });
+      }
+      const pts = [...at.entries()].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
+      if (pts[pts.length - 1].time < endS) pts.push({ time: endS, value: pts[pts.length - 1].value });   // run on to the exit
+      const series = this.chart.addSeries(LWC.LineSeries, {
+        color, lineWidth: 2, lineType: LWC.LineType.WithSteps, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, priceFormat: this.priceFormat(),   // the old levels count for the price scale too
+      }, 0);
+      series.setData(pts);
+      LWC.createSeriesMarkers(series, marks.filter((m, i, all) => all.findIndex(x => x.time === m.time) === i));
+      this.levelHistory.push(series);
+    }
+  }
+
   // Dragging the stop / target line of the open trade (day-trading mode). The pointerdown near a
   // line is taken in the capture phase and default-prevented, so the library never sees the mouse
   // gesture (no pan, no click); the new price goes to onDragLine on release.
@@ -499,6 +565,7 @@ export class ChartView {
     for (const r of this.rsiLines) this.chart.removeSeries(r.series);
     this.rsiLines = [];
     this.rsiZones = null;
+    this.paneInfo = [];
     if (typeof this.chart.removePane === 'function') {
       while (this.chart.panes().length > 1) this.chart.removePane(this.chart.panes().length - 1);
     }
@@ -522,6 +589,7 @@ export class ChartView {
         this.rsiLines.push({ interval, color, series, data: null });
       });
       this.rsiLines[0].series.priceScale().applyOptions({ scaleMargins: { top: 0, bottom: 0 } });
+      this.paneInfo.push({ key: 'rsi', label: `RSI 14 \u00b7 ${this.rsiIntervals.join(' / ')}`, series: this.rsiLines.map(r => r.series) });
     }
     const { instances, catalog } = this.indicatorArgs;
     instances.forEach((instance, i) => {
@@ -560,6 +628,10 @@ export class ChartView {
         }
       }
       this.indicators.push({ instance, ident: instanceIdent(instance), spec, color, outputs, data: null });
+      if (!spec.overlay) {
+        const args = Object.values(instance.params || {});
+        this.paneInfo.push({ key: instanceIdent(instance), label: `${SHORT_NAMES[instance.key] || spec.name}${args.length ? ` (${args.join(', ')})` : ''}`, series: outputs.map(o => o.series) });
+      }
     });
     this._layoutPanes();
     if (withData && this.payload) this.setData(this.payload);
@@ -568,14 +640,66 @@ export class ChartView {
   // Pane heights as stretch factors: a freshly added pane has no height yet, so the library's
   // setHeight (which divides by the current heights) would give it a fraction of what was asked.
   // Every extra pane gets its fixed height, the candles take what is left.
+  // A minimized pane keeps only a thin strip; the candles get the space.
   _layoutPanes() {
     const panes = this.chart.panes();
     if (panes.length < 2 || typeof panes[0].setStretchFactor !== 'function') return;
     const total = Math.max(300, (this.el.clientHeight || 0) - 30);   // minus the time axis
     const rsiPanes = this.rsiLines.length ? 1 : 0;
-    const wanted = panes.map((_, i) => i === 0 ? 0 : i <= rsiPanes ? RSI_PANE_HEIGHT : PANE_HEIGHT);
+    const wanted = panes.map((_, i) => {
+      if (i === 0) return 0;
+      const info = this.paneInfo[i - 1];
+      if (info && this.minPanes.has(info.key)) return MIN_PANE_HEIGHT;
+      return i <= rsiPanes ? RSI_PANE_HEIGHT : PANE_HEIGHT;
+    });
     const rest = Math.max(150, total - wanted.reduce((a, b) => a + b, 0));
     panes.forEach((pane, i) => pane.setStretchFactor(i === 0 ? rest : wanted[i]));
+    this._renderPaneFolds();
+  }
+
+  // The minimized panes, by key (from the app's storage). Keys of panes not on the chart are kept, so
+  // an indicator added again later comes back minimized.
+  setMinPanes(keys) {
+    this.minPanes = new Set(keys || []);
+    this._layoutPanes();
+  }
+  togglePane(key) {
+    if (this.minPanes.has(key)) this.minPanes.delete(key); else this.minPanes.add(key);
+    this._layoutPanes();
+    if (this.onPaneFold) this.onPaneFold([...this.minPanes]);
+  }
+  // A small -/+ button in the top right corner of every indicator pane (inside the pane's own cell, which
+  // the library rebuilds with the panes). A minimized pane hides its lines and shows its name next to +.
+  _renderPaneFolds() {
+    const panes = this.chart.panes();
+    this.paneInfo.forEach((info, k) => {
+      const min = this.minPanes.has(info.key);
+      if (info.series[0] && info.series[0].options().visible === min) {
+        for (const s of info.series) s.applyOptions({ visible: !min });
+        // (the pane's price scale stays: a hidden one breaks takeScreenshot, so the pictures)
+        if (info.key === 'rsi' && this.rsiZones) this.rsiZones.setHidden(min);   // its bands and names too
+      }
+      const pane = panes[k + 1];
+      const row = pane && typeof pane.getHTMLElement === 'function' ? pane.getHTMLElement() : null;
+      const cell = row && row.children[1];
+      if (!cell) return;
+      let btn = cell.querySelector(':scope > .pane-fold');
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'pane-fold';
+        btn.addEventListener('pointerdown', (e) => e.stopPropagation());   // no chart pan from the button
+        btn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePane(btn.dataset.key); });
+        cell.appendChild(btn);
+      }
+      const text = min ? `+ ${info.label}` : '\u2212';
+      if (btn.textContent === text && btn.dataset.key === info.key) return;
+      btn.dataset.key = info.key;
+      btn.classList.toggle('min', min);
+      btn.textContent = text;
+      btn.title = min ? `Show ${info.label} again` : `Minimize ${info.label}`;
+      btn.setAttribute('aria-label', btn.title);
+    });
   }
 
   // ------------------------------------------------------------------ data
@@ -585,9 +709,10 @@ export class ChartView {
 
   // Bounded oscillators (RSI) read fine with 2 decimals; price-derived ones (MACD) need the
   // price precision plus two, otherwise a 0.63 USDT coin shows "0.00" everywhere.
-  paneDecimals(spec) { return spec.range ? 2 : this.precision + 2; }
+  paneDecimals(spec) { return spec.range || spec.key === 'vdelta' ? 2 : this.precision + 2; }
 
   paneFormat(spec) {
+    if (spec.key === 'vdelta') return { type: 'volume', precision: 1 };   // base-coin volume: 1.2K, 3.4M on the axis
     const d = this.paneDecimals(spec);
     return { type: 'price', precision: d, minMove: Math.pow(10, -d) };
   }
@@ -716,9 +841,19 @@ export class ChartView {
   visibleBars() { const r = this.appliedRange || this.chart.timeScale().getVisibleLogicalRange(); return r ? r.to - r.from : null; }
 
   // ---------------------------------------------------------------- legend
+  setLegendMin(min) {
+    this.legendMin = !!min;
+    const label = this.legendMin ? 'Show the full chart box' : 'Make the chart box small';
+    this.legendFold.textContent = this.legendMin ? '\u25B8' : '\u25BE';
+    this.legendFold.setAttribute('aria-expanded', String(!this.legendMin));
+    this.legendFold.setAttribute('aria-label', label);
+    this.legendFold.title = label;
+    this.renderLegend(this.legendParam);
+  }
   renderLegend(param) {
     const p = this.payload;
-    if (!p || !p.count) { this.legendEl.innerHTML = ''; return; }
+    this.legendEl.classList.toggle('blank', !p || !p.count);
+    if (!p || !p.count) { this.legendBody.innerHTML = ''; return; }
     let i = p.count - 1;
     if (param && param.time !== undefined) {
       const idx = p.time.indexOf(param.time);
@@ -729,7 +864,13 @@ export class ChartView {
     const cls = c >= o ? 'up' : 'down';
     const partial = p.partial_last && i === p.count - 1;
     const rows = [];
-    rows.push(`<div class="row"><b>${p.symbol}</b> · ${p.interval} · <span class="mono">${fmtTime(p.time[i], this.intraday, this.tz)} ${this.tz ? 'Malta' : 'UTC'}</span>` +
+    const when = `<span class="mono">${fmtTime(p.time[i], this.intraday, this.tz)} ${this.tz || 'UTC'}</span>`;
+    if (this.legendMin) {   // one line: what, when, the close and its change
+      this.legendBody.innerHTML = `<div class="row"><b>${p.symbol}</b> · ${p.interval} · ${when} · <span class="mono">C <b class="${cls}">${fmtPrice(c)}</b> ` +
+        `<span class="${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span></span>${partial ? ' <span class="partial">forming</span>' : ''}</div>`;
+      return;
+    }
+    rows.push(`<div class="row"><b>${p.symbol}</b> · ${p.interval} · ${when}` +
       (partial ? ' <span class="partial">forming</span>' : '') + '</div>');
     rows.push(`<div class="row mono">O <b>${fmtPrice(o)}</b> H <b>${fmtPrice(h)}</b> L <b>${fmtPrice(l)}</b> C <b class="${cls}">${fmtPrice(c)}</b> ` +
       `<span class="${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span> Vol <b>${fmtNum(p.volume[i], 2)}</b></div>`);
@@ -737,7 +878,8 @@ export class ChartView {
       const ind = view.data;
       if (!ind) continue;
       const key = view.instance ? view.instance.key : '';
-      const label = `${SHORT_NAMES[key] || view.spec.name} (${Object.values(ind.params).join(', ')})`;
+      const args = Object.values(ind.params);
+      const label = `${SHORT_NAMES[key] || view.spec.name}${args.length ? ` (${args.join(', ')})` : ''}`;
       const vals = view.outputs.map(out => {
         const v = (ind.outputs[out.name] || [])[i];
         return `<span class="sw" style="background:${out.color}"></span>${out.label} <b>${v === null || v === undefined ? '–' : fmtNum(v, view.spec.overlay ? undefined : this.paneDecimals(view.spec))}</b>`;
@@ -753,6 +895,6 @@ export class ChartView {
       }).join(' ');
       rows.push(`<div class="row mono"><span>RSI 14</span> ${vals}</div>`);
     }
-    this.legendEl.innerHTML = rows.join('');
+    this.legendBody.innerHTML = rows.join('');
   }
 }

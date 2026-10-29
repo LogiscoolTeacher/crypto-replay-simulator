@@ -55,6 +55,7 @@ class FakeClient:
                         close=prices[-1] + 0.5,
                         volume=10.0 * len(hours),
                         close_time=t + step - 1,
+                        taker_buy=6.0 * len(hours),
                     )
                 )
             t += step
@@ -75,6 +76,11 @@ def quarter_candle(t: int) -> tuple[float, float, float, float, float]:
     """(open, high, low, close, volume) of the 15-minute candle opening at t."""
     o, c = quarter_price(t - Q), quarter_price(t)
     return o, max(o, c) + 0.3, min(o, c) - 0.3, c, 1.0
+
+
+def fake_taker_buy(q: tuple[float, float, float, float, float]) -> float:
+    """Taker-buy volume of a fake 15-minute candle: 60 % of the volume when it closes up, else 40 %."""
+    return (0.6 if q[3] >= q[0] else 0.4) * q[4]
 
 
 class FineFakeClient:
@@ -117,6 +123,7 @@ class FineFakeClient:
                         close=qs[-1][3],
                         volume=sum(q[4] for q in qs),
                         close_time=t + step - 1,
+                        taker_buy=sum(fake_taker_buy(q) for q in qs),
                     )
                 )
             t += step

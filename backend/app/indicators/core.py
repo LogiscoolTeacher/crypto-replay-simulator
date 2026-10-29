@@ -107,3 +107,9 @@ def bollinger(close: pd.Series, period: int = 20, mult: float = 2.0) -> pd.DataF
     middle = sma(c, period)
     sd = c.rolling(period, min_periods=period).std(ddof=0)
     return pd.DataFrame({"upper": middle + mult * sd, "middle": middle, "lower": middle - mult * sd})
+
+
+def volume_delta(volume: pd.Series, taker_buy: pd.Series) -> pd.Series:
+    """Volume delta per candle: taker-buy minus taker-sell volume = 2 x taker_buy - volume (base
+    units). Positive: market buyers were more aggressive. NaN where the taker-buy volume is unknown."""
+    return 2.0 * taker_buy.astype(float) - volume.astype(float)

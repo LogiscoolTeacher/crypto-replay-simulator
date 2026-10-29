@@ -107,7 +107,56 @@ def test_get_candles_window_and_limit(db):
     assert len(df) == 10
     df = store.get_candles("BTCUSDT", "1h", end_ms=LISTING + 19 * H, limit=3)
     assert list(df["time"]) == [(LISTING + k * H) // 1000 for k in (17, 18, 19)]
-    assert list(df.columns) == ["time", "open", "high", "low", "close", "volume"]
+    assert list(df.columns) == ["time", "open", "high", "low", "close", "volume", "taker_buy"]
+    assert df["taker_buy"].tolist() == [6.0, 6.0, 6.0]
+
+
+def test_old_database_gets_the_taker_buy_column_and_a_backfill(db):
+    """A database from before the volume delta: the column is added on open, old rows read NaN,
+    and fill_taker_buy downloads them again with the taker-buy volume (and only those)."""
+    import sqlite3
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE candles (symbol TEXT NOT NULL, interval TEXT NOT NULL, open_time INTEGER NOT NULL, "
+                 "open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, "
+                 "PRIMARY KEY (symbol, interval, open_time)) WITHOUT ROWID")
+    conn.executemany("INSERT INTO candles VALUES (?,?,?,?,?,?,?,?)",
+                     [("BTCUSDT", "1h", LISTING + k * H, 1.0, 2.0, 0.5, 1.5, 10.0) for k in range(5)])
+    conn.commit()
+    conn.close()
+    client = FakeClient(LISTING + 50 * H)
+    store = CandleStore(db, client)
+    df = store.get_candles("BTCUSDT", "1h")
+    assert len(df) == 5 and df["taker_buy"].isna().all()
+    assert store.missing_taker_buy("BTCUSDT", "1h", LISTING, LISTING + 10 * H) == (LISTING, LISTING + 4 * H)
+    assert store.fill_taker_buy("BTCUSDT", "1h", LISTING + H, LISTING + 3 * H) == 3
+    df = store.get_candles("BTCUSDT", "1h")
+    assert df["taker_buy"].isna().tolist() == [True, False, False, False, True]
+    assert df["close"].tolist() == [1.5] * 5            # only the taker-buy volume is written
+    assert store.fill_taker_buy("BTCUSDT", "1h", LISTING + H, LISTING + 3 * H) == 0   # nothing left there
+    assert store.fill_taker_buy_soon("BTCUSDT", "1h", LISTING + H, LISTING + 3 * H) is False
+
+
+def test_taker_buy_backfill_failure_waits_before_the_next_try(db):
+    import threading
+    client = FakeClient(LISTING + 50 * H)
+    store = CandleStore(db, client)
+    store.ensure_range("BTCUSDT", "1h", LISTING, LISTING + 9 * H)
+    with store._conn() as conn:
+        conn.execute("UPDATE candles SET taker_buy=NULL")
+    done = threading.Event()
+
+    def offline(*a, **k):
+        done.set()
+        raise OSError("offline")
+    client.klines = offline
+    assert store.fill_taker_buy_soon("BTCUSDT", "1h", LISTING, LISTING + 9 * H) is True
+    assert done.wait(5)
+    for _ in range(100):   # the thread records the failure right after the call
+        if store._fill_failed:
+            break
+        threading.Event().wait(0.01)
+    assert store.fill_taker_buy_soon("BTCUSDT", "1h", LISTING, LISTING + 9 * H) is False   # waits retry_s
+    assert store.fill_taker_buy_soon("BTCUSDT", "1h", LISTING, LISTING + 9 * H, retry_s=0) is True
 
 
 def test_rejects_unknown_symbol_and_interval(db):

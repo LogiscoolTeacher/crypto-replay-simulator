@@ -110,7 +110,8 @@ export class IndicatorPanel {
       sw.style.background = SERIES_COLORS[Math.min(i, SERIES_COLORS.length - 1)];
       const name = document.createElement('span');
       name.className = 'name';
-      name.textContent = `${spec.name} (${Object.values(inst.params).join(', ')})`;
+      const args = Object.values(inst.params);
+      name.textContent = `${spec.name}${args.length ? ` (${args.join(', ')})` : ''}`;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.title = 'Remove';

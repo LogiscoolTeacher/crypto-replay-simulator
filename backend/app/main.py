@@ -245,14 +245,10 @@ class SellRequest(BaseModel):
 
 class DaySessionCreate(BaseModel):
     symbol: str = Field(examples=["BTCUSDT"])
-    start: str = Field(description="Replay start date (ISO, UTC); the first trading day begins at the next 06:00 Europe/Malta", examples=["2025-01-01"])
+    start: str = Field(description="Replay start date (ISO, UTC); the first trading day is the start date (00:00 to 24:00 UTC)", examples=["2025-01-01"])
     end: str | None = Field(default=None, description="Replay end (ISO, UTC); default = latest closed candle")
     start_balance: float = Field(default=day_rules.DAY_START_BALANCE, gt=0, le=1e12, allow_inf_nan=False, description="Starting capital; the risk per trade is 0.1 % of it")
     name: str | None = Field(default=None, max_length=80)
-
-
-class TrendCheckRequest(BaseModel):
-    hh_hl: StrictBool = Field(description="Higher highs and higher lows on the daily chart, by your own judgment")
 
 
 class ZoneCreate(BaseModel):
@@ -281,6 +277,7 @@ class DayBuyRequest(DayPlanRequest):
 
 class DaySellRequest(BaseModel):
     reason: str = Field(description="Exit reason key (state.day.exit_reasons)")
+    exits: Literal["A", "C", "both"] = Field(default="both", description="Which exit to close; the trade closes once A and C are both closed")
     note: str | None = Field(default=None, max_length=day_rules.NOTE_MAX_CHARS, description="Free text; required for the reason 'other'")
 
 
@@ -294,6 +291,7 @@ class DayReviewRequest(BaseModel):
     stop_tight: bool = Field(strict=True, description="The stop was too tight")
     over_target: bool = Field(strict=True, description="The price later went over the target (out too early)")
     stop_saved: bool = Field(strict=True, description="The stop saved me")
+    stop_moved_up: bool = Field(strict=True, description="I moved the stop too far up")
 
 
 class DayMoveRequest(BaseModel):
@@ -302,7 +300,7 @@ class DayMoveRequest(BaseModel):
 
 
 class DayGotoRequest(BaseModel):
-    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="A later trading day (YYYY-MM-DD) to jump to, at 06:00")
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="A later trading day (YYYY-MM-DD) to jump to, at 00:00")
 
 
 class DayNextSignalRequest(BaseModel):
@@ -643,12 +641,6 @@ def day_prepare(session_id: str, background: BackgroundTasks) -> dict:
     return st
 
 
-@app.post("/api/day/sessions/{session_id}/check")
-def day_trend_check(session_id: str, req: TrendCheckRequest) -> dict:
-    """The user's "higher highs and higher lows" answer for the current trading day."""
-    return day.set_trend_check(session_id, req.hh_hl)
-
-
 @app.get("/api/day/sessions/{session_id}/zones")
 def day_zones(session_id: str) -> list[dict]:
     return day.zones(session_id)
@@ -683,7 +675,7 @@ def day_buy(session_id: str, req: DayBuyRequest) -> dict:
 @app.post("/api/day/sessions/{session_id}/sell")
 def day_sell(session_id: str, req: DaySellRequest) -> dict:
     """Early exit at the close of the current candle."""
-    return day.sell(session_id, req.reason, req.note)
+    return day.sell(session_id, req.reason, req.note, req.exits)
 
 
 @app.post("/api/day/sessions/{session_id}/scale")
@@ -725,7 +717,7 @@ def day_step_back(session_id: str, req: DayStepBackRequest) -> dict:
 
 @app.post("/api/day/sessions/{session_id}/end-day")
 def day_end_day(session_id: str) -> dict:
-    """After an exit before 24:00: jump to 24:00 of the exit's trading day (the trade's picture is taken there)."""
+    """After an exit: jump to 24:00 of the exit's trading day = 00:00 of the next (the day is left, the trade's picture is taken there)."""
     return day.end_day(session_id)
 
 
@@ -737,19 +729,19 @@ def day_keep_trading(session_id: str) -> dict:
 
 @app.post("/api/day/sessions/{session_id}/skip")
 def day_skip(session_id: str) -> dict:
-    """Jump to the next day's 06:00 (no open trade)."""
+    """Jump to the next day's 00:00 (no open trade)."""
     return day.skip_day(session_id)
 
 
 @app.post("/api/day/sessions/{session_id}/goto")
 def day_goto(session_id: str, req: DayGotoRequest) -> dict:
-    """Jump forward to 06:00 of a later trading day (no open trade, never backwards)."""
+    """Jump forward to 00:00 of a later trading day (no open trade, never backwards)."""
     return day.goto_day(session_id, req.date)
 
 
 @app.post("/api/day/sessions/{session_id}/next-ema-day")
 def day_next_ema_day(session_id: str) -> dict:
-    """Jump forward to 06:00 of the next trading day whose daily close is above the EMA 200 (no open trade)."""
+    """Jump forward to 00:00 of the next trading day whose daily close is above the EMA 200 (no open trade)."""
     return day.next_ema_day(session_id)
 
 
@@ -767,7 +759,7 @@ def day_next_signal(session_id: str, req: DayNextSignalRequest) -> dict:
 
 @app.post("/api/day/sessions/{session_id}/continue")
 def day_continue(session_id: str) -> dict:
-    """After an exit: jump to the next 06:00."""
+    """After an exit: jump to the next 00:00 (the same jump as end-day since the day starts at 00:00)."""
     return day.resume(session_id)
 
 
@@ -793,7 +785,7 @@ def day_trade_image(session_id: str, trade_id: int) -> FileResponse:
 
 @app.post("/api/day/sessions/{session_id}/trades/{trade_id}/review")
 def day_trade_review(session_id: str, trade_id: int, req: DayReviewRequest) -> dict:
-    """Answer (or change) the three review marks of a closed trade (optional, never holds the replay)."""
+    """Answer (or change) the four review marks of a closed trade (optional, never holds the replay)."""
     return day.review(session_id, trade_id, req.model_dump())
 
 
@@ -835,7 +827,7 @@ def day_notes(session_id: str, day_date: str, req: DayNotes) -> dict:
 
 @app.post("/api/day/sessions/{session_id}/days/{day_date}/image")
 def day_image_upload(session_id: str, day_date: str, req: DayImage) -> dict:
-    """The end-of-day picture of a trading day (taken by the frontend before the jump to the next 06:00)."""
+    """The end-of-day picture of a trading day (taken by the frontend before the replay leaves the day)."""
     return day.attach_day_image(session_id, day_date, req.image)
 
 

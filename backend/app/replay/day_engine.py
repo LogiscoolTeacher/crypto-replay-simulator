@@ -3,24 +3,25 @@
 The mode shares the session row, the candle data, the view endpoint and the chart with the swing
 (bucket) mode, but has its own clock, rules and trades:
 
-Clock (all local times in Europe/Malta)
+Clock (all times in UTC; until 2026-10-24 it was Europe/Malta)
 * The session's base interval is 15 minutes; the chart may show 15m, 1h, 4h or 1D.
-* A trading day runs from 06:00 to 06:00 the next morning and is named after the local date of
-  its start. 06:00 to 24:00 is the entry window of the checklist, 00:00 to 06:00 the night; both
-  are only labels now: a buy is possible whenever no trade is open (the user asked for "always
-  able to buy"), also at night with an overnight trade just closed, and several times a day.
-* Stepping runs through the night like any other time; crossing 06:00 leaves the trading day
-  (its journal row records how). Skip, Continue, the calendar and the jump buttons still jump to a
-  06:00. After an exit the replay stands on the exit candle: "End the day" jumps to 24:00 of the
-  exit's trading day, "Keep trading" (or a step or a buy) goes on as if no trade had happened.
+* A trading day is the UTC calendar day, 00:00 to 24:00 (until 2026-10-25 it ran 06:00 to 06:00
+  with a "night" from 00:00 to 06:00). A candle belongs to the day its close falls in, and the
+  candle closing at 00:00 starts the new day: "24:00 of a day" and "00:00 of the next" are the same
+  candle. A buy is possible whenever no trade is open, several times a day.
+* Crossing 00:00 leaves the trading day (its journal row records how). Skip, the calendar and the
+  jump buttons land on the candle closing at 00:00. After an exit the replay stands on the exit
+  candle: "End the day" jumps to the next 00:00 (it leaves the day), "Keep trading" (or a step or
+  a buy) goes on as if no trade had happened.
 * The picture of a closed trade is taken once the replay reaches 24:00 of its exit's trading day
-  (at once after a night exit). The three review questions are optional: they can be answered
-  any time from the trade's dialog and never hold the replay (the Trades tab marks open ones).
+  (= the next 00:00). The four review questions are optional: they can be answered any time from
+  the trade's dialog and never hold the replay (the Trades tab marks the trades without one).
 * "Step back" moves one 15-minute candle back, never before the latest trade action (entry, exit,
   stop / target move) or the landing candle of the latest jump; nothing is undone.
-* The trend check of a day: "daily close above EMA 200" is computed from the completed daily
-  candles (UTC days, the exchange's boundary) known at the cursor; "higher highs and higher lows"
-  is the user's answer. Uptrend = both yes; otherwise Buy is blocked for the day.
+* The trend check of a day: "daily close above EMA 200", computed from the completed daily
+  candles (UTC days, the exchange's boundary) known at the cursor. It never blocks a buy; it is
+  saved with the trade. (Until 2026-10-24 the user also answered "higher highs and higher lows"
+  once a day; old rows keep that answer in `hh_hl` / `uptrend`, nothing reads it any more.)
 
 Trading
 * Risk per trade = 0.1 % of the STARTING capital (100 USDT at the default 100 000), fixed. Fee 0.1 % of the trade value on every buy
@@ -35,6 +36,10 @@ Trading
   high >= take-profit -> exit at the take-profit ("take-profit"); both in one candle -> stop. Fills
   are exactly at the level (no gap or slippage model: a known limitation of v1).
 * Early exit by hand at the close of the current candle ("early exit") with a required reason.
+* Exits A and C: two whole-size versions of the exit, recorded side by side (like Alt 1 / Alt 2).
+  A sell closes A, C or both; the trade stays open until both are closed and then closes at the
+  later one (its time, price and reason book the cash, P&L and R). A stop / take-profit hit closes
+  whatever is still open at that level.
 * P&L = sell value - position value - buy fee - sell fee; P&L % of the position value;
   R = P&L / risk_amount (the nominal 0.1 %). "What if" after the exit: highest high and lowest low of
   the 15-minute candles after the exit candle until 24:00 of the exit day (local date of the exit
@@ -81,9 +86,9 @@ BASE_INTERVAL = "15m"
 VIEW_INTERVALS = ("15m", "1h", "4h", "1D")
 ZONE_INTERVALS = ("1h", "4h")      # the user draws zones on these charts (they show on all)
 ZONE_MERGE_GAP = 0.5               # zones closer than this x the smaller one's height are merged into one
-TIMEZONE = "Europe/Malta"
+TIMEZONE = "UTC"                   # the day clock (was Europe/Malta): no daylight-saving shifts, same as the exchange
 TZ = ZoneInfo(TIMEZONE)
-DAY_START_HOUR = 6                 # the trading day starts at 06:00 local time
+DAY_START_HOUR = 0                 # the trading day is the UTC calendar day (it started at 06:00 until 2026-10-25)
 RISK_PCT = 0.1                     # of the starting capital, fixed for the session (was 1 % on 10k)
 DAY_START_BALANCE = 100_000.0      # default starting capital: 0.1 % = 100 USDT risk, no leverage needed down to a ~0.1 % stop
 ATR_PERIOD = 14
@@ -94,16 +99,14 @@ RR_WARN_BELOW = 2.0                # reward-to-risk below this only warns
 RSI_DIP_MAX = 40.0                 # entry rule 3: RSI 14 dropped to 40 or below during the dip
 NOTE_MAX_CHARS = 500
 DAY_NOTES_MAX_CHARS = 4000         # free text per trading day (the daily journal)
-# How a trading day was left (stored on its check row when the replay jumps to the next 06:00).
+# How a trading day was left (stored on its check row when the replay crosses or jumps past the next 00:00).
 LEFT_END, LEFT_SKIP, LEFT_EXIT, LEFT_HELD = "end", "skip", "exit", "held"
-LEFT_LABELS = {LEFT_END: "No trade", LEFT_SKIP: "Skipped", LEFT_EXIT: "Trade closed", LEFT_HELD: "Trade held past 06:00"}
+LEFT_LABELS = {LEFT_END: "No trade", LEFT_SKIP: "Skipped", LEFT_EXIT: "Trade closed", LEFT_HELD: "Trade held overnight"}
 
 # The entry conditions saved with every trade and evaluated afterwards (key, label). Each is
 # yes / no / unknown for a trade; see `trade_conditions`.
 CONDITIONS: tuple[tuple[str, str], ...] = (
-    ("uptrend", "Trend check: uptrend (EMA 200 and higher highs/lows)"),
     ("ema_above", "Daily close above EMA 200"),
-    ("hh_hl", "Higher highs and higher lows (your answer)"),
     ("price_in_zone", "Price inside the support zone"),
     ("rsi_dipped", f"RSI 14 (15m) dipped to {RSI_DIP_MAX:.0f} or below that day"),
     ("close_above_prev_high", "Entry candle closed above the previous high"),
@@ -127,10 +130,7 @@ CONDITION_SCOPES = ("session", "all")
 def trade_conditions(t: dict) -> dict[str, bool | None]:
     """The yes / no / unknown of every condition in CONDITIONS for one trade row."""
     flag = lambda v: None if v is None else bool(v)  # noqa: E731
-    ema, hh = flag(t.get("ema_above")), flag(t.get("hh_hl"))
-    uptrend = flag(t.get("uptrend"))
-    if uptrend is None and ema is not None and hh is not None:
-        uptrend = ema and hh
+    ema = flag(t.get("ema_above"))
     rr = t.get("rr")
     tol = abs(float(t["entry_price"])) * STOP_MATCH_PCT / 100.0
     stop0 = t["stop_used"] if t.get("stop_initial") is None else t["stop_initial"]
@@ -140,9 +140,7 @@ def trade_conditions(t: dict) -> dict[str, bool | None]:
     hour = to_local(int(t["entry_ms"]) + config.interval_ms(BASE_INTERVAL)).hour
     zone_iv = t.get("zone_interval")
     return {
-        "uptrend": uptrend,
         "ema_above": ema,
-        "hh_hl": hh,
         "price_in_zone": flag(t.get("price_in_zone")),
         "rsi_dipped": flag(t.get("rsi_dipped")),
         "close_above_prev_high": flag(t.get("close_above_prev_high")),
@@ -230,6 +228,8 @@ EXIT_STOP, EXIT_TP, EXIT_EARLY = "stop", "take-profit", "early exit"
 EXIT_EOD, EXIT_DATA_END = "end of day", "end of data"
 ALT_RATIO = 2.0
 ALT_KEYS = ("alt1", "alt2")
+AC_KEYS = ("A", "C")                # the two exits a sell chooses from (see DayEngine.sell)
+AC_CHOICES = {"A": ("A",), "C": ("C",), "both": AC_KEYS}
 HOUR_MS = 3_600_000
 EXIT_REASONS: tuple[tuple[str, str], ...] = (
     ("stalls", "Price stalls at resistance"),
@@ -247,6 +247,7 @@ REVIEW_QUESTIONS: tuple[tuple[str, str, str], ...] = (
     ("stop_tight", "review_stop_tight", "The stop was too tight"),
     ("over_target", "review_over_target", "The price later went over the target (out too early)"),
     ("stop_saved", "review_stop_saved", "The stop saved me"),
+    ("stop_moved_up", "review_stop_moved_up", "I moved the stop too far up"),
 )
 WHATIF_FIELDS = ("whatif_n", "whatif_high", "whatif_low", "whatif_above_exit_pct", "whatif_below_exit_pct",
                  "whatif_high_vs_entry_pct", "whatif_low_vs_entry_pct")
@@ -267,22 +268,21 @@ def local_str(ms: int | None) -> str | None:
 
 
 def trading_day(close_ms: int) -> date:
-    """The trading day a candle closing at `close_ms` belongs to, named after the local date of its
-    06:00 start: a close before 06:00 (the night, and 24:00 itself) still belongs to the previous day."""
+    """The trading day a candle closing at `close_ms` belongs to: the date of the close, where the
+    close at 00:00 (= 24:00 of the day before) already counts for the new day."""
     loc = to_local(close_ms)
     return loc.date() if (loc.hour, loc.minute, loc.second, loc.microsecond) >= (DAY_START_HOUR, 0, 0, 0) else loc.date() - timedelta(days=1)
 
 
 def day_bounds(d: date) -> tuple[int, int]:
-    """(06:00, 24:00) local of the trading day `d` in ms. Entries are allowed for candles closing
-    inside these bounds, both included."""
+    """(00:00, 24:00) of the trading day `d` in ms; the second is also 00:00 of the next day."""
     return local_ms(d, DAY_START_HOUR), local_ms(d + timedelta(days=1), 0)
 
 
 def alt_window_end(entry_ms: int) -> int:
-    """24:00 local (ms) at which the alternative trades of a buy at the candle opening at `entry_ms`
-    close at the latest: the 24:00 of the entry's trading day, or, for a buy at 24:00 itself or in
-    the night, the 24:00 of the trading day that follows."""
+    """24:00 (ms) at which the alternative trades of a buy at the candle opening at `entry_ms` close
+    at the latest: the 24:00 of the entry's trading day (a buy on the candle closing at 00:00 belongs
+    to the new day, so it runs to that day's 24:00)."""
     close = entry_ms + config.interval_ms(BASE_INTERVAL)
     d = trading_day(close)
     _, end = day_bounds(d)
@@ -293,20 +293,15 @@ def alt_window_end(entry_ms: int) -> int:
 
 def picture_frame(entry_ms: int, exit_ms: int | None) -> dict | None:
     """The time span (unix seconds, candle open times like the chart's) a trade's picture shows:
-    from the candle closing at 06:00 of the entry's trading day to the candle closing at 24:00 of
-    the exit's trading day, so an overnight trade shows every day it was held. A night exit (past
-    that 24:00) keeps its exit candle. None while the trade is open."""
+    from the candle closing at 00:00 of the entry's trading day to the candle closing at 24:00 of
+    the exit's trading day, so an overnight trade shows every day it was held. None while the trade
+    is open."""
     if exit_ms is None:
         return None
     base = config.interval_ms(BASE_INTERVAL)
     start, _ = day_bounds(trading_day(entry_ms + base))
     _, end = day_bounds(trading_day(exit_ms + base))
     return {"from_s": (start - base) // 1000, "to_s": max(exit_ms, end - base) // 1000}
-
-
-def in_entry_window(close_ms: int, d: date | None = None) -> bool:
-    start, end = day_bounds(d or trading_day(close_ms))
-    return start <= close_ms <= end
 
 
 # ---------------------------------------------------------------- pure numbers
@@ -375,6 +370,34 @@ def alts_public(t: dict) -> dict | None:
     return out
 
 
+def ac_legs(t: dict) -> dict[str, dict | None]:
+    """Exits A and C of a trade: {"A": leg or None, "C": leg or None}; None = still open (also for
+    trades from before the exits existed, whose column is NULL)."""
+    raw = t.get("exits_ac")
+    data = (json.loads(raw) if isinstance(raw, str) else dict(raw)) if raw else {}
+    return {k: data.get(k) for k in AC_KEYS}
+
+
+def ac_public(t: dict) -> dict | None:
+    """Exits A and C for the API: per exit "open", or the closed leg with its local time, hours held,
+    reason label and the difference to the real result (once the trade is closed). None for a trade
+    closed before the exits existed (nothing was recorded)."""
+    if not t.get("exits_ac") and t.get("status") == "closed":
+        return None
+    out: dict[str, Any] = {}
+    for k, leg in ac_legs(t).items():
+        if leg is None:
+            out[k] = {"status": "open"}
+            continue
+        x = dict(leg, status="closed")
+        x["exit_local"] = local_str(x["exit_ms"] + config.interval_ms(BASE_INTERVAL))
+        x["hold_hours"] = hold_hours(t["entry_ms"], x["exit_ms"])
+        x["reason_label"] = EXIT_REASON_LABELS.get(x.get("reason") or "")
+        x["diff"] = (x["pnl"] - t["pnl"]) if t.get("status") == "closed" and t.get("pnl") is not None else None
+        out[k] = x
+    return out
+
+
 def what_if(entry: float, exit_price: float, highest_high: float, lowest_low: float) -> dict:
     """The four "what if" percentages, rounded to 2 decimals."""
     pct = lambda a, b: round((a - b) / b * 100.0, 2)  # noqa: E731
@@ -427,7 +450,7 @@ class DayEngine:
         return f"Day {symbol} from {_iso(start_ms)[:10]}"
 
     def prepare(self, session_id: str, progress=None) -> dict:
-        """Download the data (shared logic), then put the cursor on the first 06:00 candle. Safe to re-run."""
+        """Download the data (shared logic), then put the cursor on the first day's start (_first_day_cursor). Safe to re-run."""
         self._day_row(session_id)
         self.replay.prepare(session_id, progress=progress)
         with self._lock:
@@ -445,7 +468,7 @@ class DayEngine:
         self.replay.delete_session(session_id)  # the day tables cascade
 
     def reset(self, session_id: str) -> dict:
-        """Back to the first 06:00 with the starting capital: trades, trend checks, zones and pictures gone."""
+        """Back to the first day's start with the starting capital: trades, trend checks, zones and pictures gone."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -498,7 +521,6 @@ class DayEngine:
                 self._fill_alternatives(st, conn, picture)   # its 24:00 has passed: the alternatives can be settled
         # just closed before its 24:00: end the day there or keep trading
         exit_choice = last_exit is not None and close < self._review_end(last_exit)
-        uptrend = None if check["hh_hl"] is None or check["ema_above"] is None else bool(check["ema_above"] == 1 and check["hh_hl"] == 1)
         allowed, reason = self._entry_gate(st, ds, close, end, trade, traded)
         loc = to_local(close)
         out.update({
@@ -507,8 +529,7 @@ class DayEngine:
             "day_start_local": local_str(start), "day_end_local": local_str(end),
             "local_time": local_str(close), "local_iso": loc.isoformat(),
             "utc_offset_min": int((loc.utcoffset() or timedelta()).total_seconds() // 60),
-            "in_window": start <= close <= end, "night": close > end,
-            "check": self._public_check(check), "uptrend": uptrend,
+            "check": self._public_check(check),
             "entries_allowed": allowed, "block_reason": reason,
             "trade": self._public_trade(trade, st["fee_rate"], st["price"]) if trade else None,
             "auto": self._auto_of(sid, trade["id"], trade) if trade else None,   # the open trade's automatic twin
@@ -520,6 +541,8 @@ class DayEngine:
             "leaving_next": self._leaving_next(st, ds, trade),
             "can_skip": ds["phase"] == "trading" and trade is None and not st["finished"],
             "can_sell": ds["phase"] == "trading" and trade is not None,
+            # which of exits A / C a sell may still close (both while neither is closed)
+            "open_exits": [k for k, leg in ac_legs(trade).items() if leg is None] if trade is not None else [],
             "can_continue": ds["phase"] == "exited" and not exit_choice,
             "exit_choice": exit_choice,
             "can_step_back": self._step_back_target(st, ds) is not None,
@@ -527,8 +550,8 @@ class DayEngine:
         return out
 
     def _leaving_next(self, st: dict, ds: dict, trade: dict | None) -> bool:
-        """True when the next step leaves this trading day: the next candle closes after 06:00 of
-        the next one. The frontend takes the day's picture before that step."""
+        """True when the next step leaves this trading day: the next candle closes at or after 00:00
+        of the next one. The frontend takes the day's picture before that step."""
         if st["finished"]:
             return False
         base = self._base_ms
@@ -543,7 +566,7 @@ class DayEngine:
             return False, "The replay has reached its end."
         if trade is not None:
             return False, "A trade is open."
-        # Nothing else blocks: not the night, not a trade already made today, not a trade just closed,
+        # Nothing else blocks: not the time of day, not a trade already made today, not a trade just closed,
         # not an unanswered review, not the trend check. The conditions are saved with the trade and
         # evaluated later.
         return True, None
@@ -585,7 +608,7 @@ class DayEngine:
         try:
             with self.store.tx() as conn:
                 return self.store.add_check(conn, session_id=s["id"], day_date=d.isoformat(), day_start_ms=start, day_end_ms=end,
-                                            hh_hl=None, updated_at=_now_iso(), **ema)
+                                            updated_at=_now_iso(), **ema)
         except sqlite3.IntegrityError:  # created meanwhile by a parallel request
             with self.store.tx() as conn:
                 return self.store.get_check(conn, s["id"], d.isoformat())  # type: ignore[return-value]
@@ -607,20 +630,6 @@ class DayEngine:
             ema = v if math.isfinite(v) else None
         return {"daily_close": close, "daily_close_ms": close_ms, "ema200": ema, "ema_above": None if ema is None else int(close > ema)}
 
-    def set_trend_check(self, session_id: str, hh_hl: bool) -> dict:
-        """The user's answer to "higher highs and higher lows" for the current trading day."""
-        if not isinstance(hh_hl, bool):
-            raise Invalid("hh_hl must be true or false")
-        with self._lock:
-            s = self._ready(session_id)
-            close = s["cursor_ms"] + self._base_ms
-            d = trading_day(close)
-            start, end = day_bounds(d)
-            check = self._trend_check(s, d, start, end)
-            with self.store.tx() as conn:
-                self.store.update_check(conn, check["id"], hh_hl=int(hh_hl), updated_at=_now_iso())
-        return self.state(session_id)
-
     @staticmethod
     def _public_check(c: dict) -> dict:
         flag = lambda v: None if v is None else bool(v)  # noqa: E731
@@ -631,8 +640,6 @@ class DayEngine:
             "daily_close_iso": _iso(c["daily_close_ms"]) if c["daily_close_ms"] is not None else None,
             "ema200": c["ema200"],
             "ema_above": flag(c["ema_above"]),
-            "hh_hl": flag(c["hh_hl"]),
-            "uptrend": None if c["hh_hl"] is None else bool(c["ema_above"] == 1 and c["hh_hl"] == 1),
             "notes": c.get("notes"),
             "has_image": bool(c.get("image_path")),
             "image_local": local_str(c["image_ms"] + config.interval_ms(BASE_INTERVAL)) if c.get("image_ms") is not None else None,
@@ -812,13 +819,13 @@ class DayEngine:
                 rr = reward_to_risk(price, stop_used, tp)
                 if rr < RR_WARN_BELOW:
                     warnings.append(f"Reward-to-risk {rr:.2f} is below {RR_WARN_BELOW:.1f}.")
-        if day["uptrend"] is None:
-            warnings.append("Trend check not answered: the trend is saved as unknown with the trade."
-                            if day["check"]["hh_hl"] is None else "EMA 200 not available: the trend is saved as unknown with the trade.")
-        elif not day["uptrend"]:
-            warnings.append("No uptrend by the trend check (saved with the trade).")
+        ema_above = day["check"]["ema_above"]
+        if ema_above is None:
+            warnings.append("EMA 200 not available: the trend is saved as unknown with the trade.")
+        elif not ema_above:
+            warnings.append("The daily close is below the EMA 200 (saved with the trade).")
         signals = {
-            "uptrend": day["uptrend"],
+            "ema_above": ema_above,
             "price_in_zone": zone["lower"] <= price <= zone["upper"],
             "rsi": rsi,
             "rsi_1h": rsi_1h,
@@ -875,10 +882,8 @@ class DayEngine:
                 t = self.store.add_trade(
                     conn, session_id=session_id, status="open", day_date=day["date"],
                     ema_above=None if check["ema_above"] is None else int(check["ema_above"]),
-                    hh_hl=None if check["hh_hl"] is None else int(check["hh_hl"]),
                     entry_ms=s["cursor_ms"], entry_price=p["entry_price"], entry_rsi=p["signals"]["rsi"], entry_rsi_1h=sg["rsi_1h"], entry_atr=p["atr"],
                     zone_id=p["zone"]["id"], zone_upper=p["zone"]["upper"], zone_lower=p["zone"]["lower"], zone_interval=p["zone"]["interval"],
-                    uptrend=None if sg["uptrend"] is None else int(sg["uptrend"]),
                     price_in_zone=int(bool(sg["price_in_zone"])), rsi_dipped=None if sg["rsi_dipped"] is None else int(sg["rsi_dipped"]),
                     rsi_day_min=sg["rsi_day_min"], prev_high=sg["prev_high"],
                     close_above_prev_high=None if sg["close_above_prev_high"] is None else int(sg["close_above_prev_high"]),
@@ -896,7 +901,7 @@ class DayEngine:
                     created_at=now, updated_at=now,
                 )
                 if self.store.get_day_session(conn, session_id)["phase"] == "exited":
-                    # a new trade right after an exit: the day goes on, no jump to the next 06:00
+                    # a new trade right after an exit: the day goes on, no jump to the next 00:00
                     self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=now)
             with self.sessions.tx() as conn:
                 self.sessions.update_session(conn, session_id, cash=cash_after, updated_at=now)
@@ -1002,9 +1007,13 @@ class DayEngine:
         st = self.state(session_id)
         return {"trade": self._public_trade(trade, s["fee_rate"], st["price"]), "state": st}
 
-    def sell(self, session_id: str, reason: str, note: str | None = None) -> dict:
+    def sell(self, session_id: str, reason: str, note: str | None = None, exits: str = "both") -> dict:
         """Early exit by hand at the close of the current candle; a reason from EXIT_REASONS is
-        required, "other" needs a note."""
+        required, "other" needs a note. `exits` closes exit A, C or both (= whatever is still open):
+        while one of them is still open the trade stays open (cash untouched, an "exit_leg" event);
+        the sell that closes the last one closes the trade at this candle (the later exit is the real one)."""
+        if exits not in AC_CHOICES:
+            raise Invalid(f"exits must be one of {list(AC_CHOICES)}")
         if reason not in EXIT_REASON_LABELS:
             raise Invalid(f"reason must be one of {list(EXIT_REASON_LABELS)}")
         note = self._note(note, "note")
@@ -1019,11 +1028,37 @@ class DayEngine:
                 trade = self.store.open_trade(conn, session_id)
             if trade is None:
                 raise Conflict("No trade is open.")
+            legs = ac_legs(trade)
+            if exits != "both" and legs[exits] is not None:   # "both" closes whatever is still open
+                raise Conflict(f"Exit {exits} is already closed.")
             price = self.replay._price(s)
-            ev = self._exit(s, trade, s["cursor_ms"], price, EXIT_EARLY, reason, note)
+            still_open = self._close_legs(s, trade, AC_CHOICES[exits], s["cursor_ms"], price, EXIT_EARLY, reason, note)
+            if still_open:
+                ev = {"kind": "exit_leg", "closed": [k for k in AC_CHOICES[exits] if legs[k] is None], "open": still_open,
+                      "trade": self._public_trade(trade, s["fee_rate"], price)}
+            else:
+                ev = self._exit(s, trade, s["cursor_ms"], price, EXIT_EARLY, reason, note)
         st = self.state(session_id)
         st["events"] = [ev]
         return st
+
+    def _close_legs(self, s: dict, trade: dict, keys: tuple[str, ...], exit_ms: int, exit_price: float,
+                    exit_type: str, reason: str | None = None, note: str | None = None) -> list[str]:
+        """Close exits `keys` (those still open) of `trade` at `exit_price`, each a whole-size result
+        like the alternatives; saved at once. Returns the exits still open afterwards."""
+        legs = ac_legs(trade)
+        for k in keys:
+            if legs[k] is not None:
+                continue
+            res = trade_result(trade["entry_price"], exit_price, trade["coins"], trade["position_value"], trade["buy_fee"],
+                               s["fee_rate"], trade["risk_amount"])
+            legs[k] = {"exit_ms": exit_ms, "exit_price": exit_price, "exit_type": exit_type, "reason": reason, "note": note,
+                       "pnl": res["pnl"], "pnl_pct": res["pnl_pct"], "r_multiple": res["r_multiple"]}
+        raw = json.dumps(legs)
+        with self.store.tx() as conn:
+            self.store.update_trade(conn, trade["id"], exits_ac=raw, updated_at=_now_iso())
+        trade["exits_ac"] = raw
+        return [k for k in AC_KEYS if legs[k] is None]
 
     def _exit(self, s: dict, trade: dict, exit_ms: int, exit_price: float, exit_type: str,
               reason: str | None = None, note: str | None = None) -> dict:
@@ -1046,16 +1081,16 @@ class DayEngine:
             self.sessions.update_session(conn, s["id"], cash=cash_after, updated_at=now)
         s["cash"] = cash_after
         trade.update(fields)
-        # before its 24:00 the user chooses: end the day there (end_day) or keep trading; a night
-        # exit gets its picture at once
+        # the user chooses: end the day (end_day, the jump to the next 00:00) or keep trading; the
+        # exit candle always closes before its day's 24:00, so the choice is always offered
         choice = exit_ms + self._base_ms < self._review_end(trade)
         return {"kind": "exit", "exit_type": exit_type, "trade": self._public_trade(trade, s["fee_rate"]),
                 "choice": choice, "jumped_to_ms": None, "jumped_to_local": None}
 
     def end_day(self, session_id: str) -> dict:
-        """After an exit before 24:00 ("End the day"): jump to the candle closing at 24:00 of the
-        exit's trading day, where the trade's picture is taken. The phase stays "exited", so Continue
-        goes on to the next 06:00."""
+        """After an exit ("End the day"): jump to the candle closing at 24:00 of the exit's trading day.
+        That candle is 00:00 of the next day, so the day is left ("Trade closed") and the trade's
+        picture is taken on landing. Since the 00:00 day start this is the same jump as Continue (resume)."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -1063,12 +1098,9 @@ class DayEngine:
                 last = self.store.get_trade(conn, session_id, ds["last_exit_id"]) if ds["phase"] == "exited" and ds["last_exit_id"] else None
             if last is None:
                 raise Conflict("No trade has just closed.")
-            jumped = self._jump_to_day_end(s, last["exit_ms"])
-            if jumped is None:
-                raise Conflict("The day of this exit has already ended.")
-            self._set_floor(s, jumped)
-            ev = {"kind": "jump", "to_ms": jumped, "to_iso": _iso(jumped), "to_local": local_str(jumped + self._base_ms),
-                  "reason": "Day ended: 24:00."}
+            if s["cursor_ms"] >= s["data_end_ms"]:
+                raise Conflict("The replay has reached its end.")
+            ev = self._resume(s, ds)
         st = self.state(session_id)
         st["events"] = [ev]
         return st
@@ -1093,21 +1125,6 @@ class DayEngine:
         cursor has reached (only exits marked `review_due`, i.e. since the picture rule exists)."""
         close = s["cursor_ms"] + self._base_ms
         return next((t for t in self.store.due_pictures(conn, s["id"]) if close >= self._review_end(t)), None)
-
-    def _jump_to_day_end(self, s: dict, exit_ms: int) -> int | None:
-        """Move the replay to the candle closing at 24:00 of the exit's trading day, so the whole
-        day is on the chart for its picture. Nothing happens when the exit is already at or past
-        24:00 (a night exit) or at the end of the data. Returns the new cursor or None."""
-        base = self._base_ms
-        _, end = day_bounds(trading_day(exit_ms + base))
-        if exit_ms + base >= end:
-            return None
-        nxt = self.candles.first_at_or_after(s["symbol"], BASE_INTERVAL, end - base)
-        target = s["data_end_ms"] if nxt is None or nxt > s["data_end_ms"] else nxt
-        if target <= s["cursor_ms"]:
-            return None
-        self._set_cursor(s, target)
-        return target
 
     def _excursion(self, s: dict, trade: dict, exit_ms: int) -> dict:
         """MAE / MFE: the lowest low and the highest high of the 15-minute candles after the entry
@@ -1190,7 +1207,7 @@ class DayEngine:
     def _what_if(self, s: dict, trade: dict, exit_ms: int, exit_price: float) -> dict:
         """Highest high and lowest low of the 15-minute candles after the exit candle until 24:00 of
         the exit's trading day (the window the review shows); all None when there are none, e.g.
-        after a night exit."""
+        after an exit on the day's last candle."""
         _, end = day_bounds(trading_day(exit_ms + self._base_ms))
         df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, exit_ms + self._base_ms, end - self._base_ms)
         if len(df) == 0:
@@ -1202,7 +1219,7 @@ class DayEngine:
     def _settle_auto(self, s: dict) -> None:
         """Close every open automatic twin whose exit the candles up to the cursor already show: the
         original stop (a candle low at or below it; the stop wins when both levels are hit in one
-        candle) or the original target (a high at or above it). The twin runs through the night and
+        candle) or the original target (a high at or above it). The twin runs overnight and
         across days until one of them is hit. Only the candles after the last checked one are read,
         and nothing beyond the cursor, so a twin never knows the future."""
         with self._lock:
@@ -1286,6 +1303,17 @@ class DayEngine:
                 "compared": len(same), "manual_pnl": sum(m["pnl"] for _, m in same), "alt_pnl": sum(x["pnl"] for x, _ in same),
             }
             summary[k]["diff"] = summary[k]["alt_pnl"] - summary[k]["manual_pnl"]
+        for k in AC_KEYS:   # exits A and C, over the trades where that exit has closed
+            legs = [a["exits_ac"][k] for a in out if a["exits_ac"] and a["exits_ac"][k]["status"] == "closed"]
+            same = [(a["exits_ac"][k], a["manual"]) for a in out
+                    if a["exits_ac"] and a["exits_ac"][k]["status"] == "closed" and a["manual"] and a["manual"]["status"] == "closed"]
+            summary[k] = {
+                "count": len(legs), "wins": sum(1 for x in legs if x["pnl"] > 0),
+                "pnl": sum(x["pnl"] for x in legs), "avg_r": avg([x["r_multiple"] for x in legs if x["r_multiple"] is not None]),
+                "by_type": {typ: sum(1 for x in legs if x["exit_type"] == typ) for typ in (EXIT_STOP, EXIT_TP, EXIT_EARLY)},
+                "compared": len(same), "manual_pnl": sum(m["pnl"] for _, m in same), "leg_pnl": sum(x["pnl"] for x, _ in same),
+            }
+            summary[k]["diff"] = summary[k]["leg_pnl"] - summary[k]["manual_pnl"]
         return {"trades": out, "summary": summary, "price": st["price"]}
 
     @classmethod
@@ -1317,13 +1345,14 @@ class DayEngine:
         out["manual"] = m
         out["diff"] = (a["pnl"] - manual["pnl"]) if (m and a["status"] == "closed" and manual["status"] == "closed") else None
         out["alts"] = alts_public(manual) if manual is not None else None
+        out["exits_ac"] = ac_public(manual) if manual is not None else None
         return out
 
     # ------------------------------------------------------------------ clock
     def step(self, session_id: str, n: int = 1) -> dict:
         """Advance `n` 15-minute candles, firing the stop / take-profit of an open trade on the way;
         stops at an exit and where a trade's picture becomes due (24:00 of an exit's trading day). After an
-        exit a step means "keep trading": the day goes on (Continue is the jump to the next 06:00)."""
+        exit a step means "keep trading": the day goes on (End the day is the jump to the next 00:00)."""
         if not isinstance(n, int) or n < 1:
             raise Invalid("n must be >= 1")
         events: list[dict] = []
@@ -1347,7 +1376,7 @@ class DayEngine:
         return st
 
     def resume(self, session_id: str) -> dict:
-        """After an exit: jump to the next 06:00 (idempotent while already trading)."""
+        """After an exit: jump to the next 00:00 (idempotent while already trading)."""
         events: list[dict] = []
         with self._lock:
             s = self._ready(session_id)
@@ -1359,7 +1388,7 @@ class DayEngine:
         return st
 
     def skip_day(self, session_id: str) -> dict:
-        """Jump to the next day's 06:00 (only without an open trade)."""
+        """Jump to the next day's 00:00 (only without an open trade)."""
         with self._lock:
             s = self._ready(session_id)
             ds = self._day_row(session_id)
@@ -1371,13 +1400,13 @@ class DayEngine:
                         raise Conflict("A trade is open: close it before skipping the day.")
                 if s["cursor_ms"] >= s["data_end_ms"]:
                     raise Conflict("The replay has reached its end.")
-                ev = self._jump(s, trading_day(s["cursor_ms"] + self._base_ms) + timedelta(days=1), "Skipped to the next day at 06:00.", LEFT_SKIP)
+                ev = self._jump(s, trading_day(s["cursor_ms"] + self._base_ms) + timedelta(days=1), "Skipped to the next day at 00:00.", LEFT_SKIP)
         st = self.state(session_id)
         st["events"] = [ev]
         return st
 
     def goto_day(self, session_id: str, day_date: str) -> dict:
-        """Jump forward to 06:00 of a later trading day (from the calendar). Never backwards, not
+        """Jump forward to 00:00 of a later trading day (from the calendar). Never backwards, not
         with an open trade, not past the replay's end. The current day is left as skipped (or as
         'trade closed' when its trade had just closed); the days in between are never seen."""
         try:
@@ -1406,13 +1435,13 @@ class DayEngine:
             self._set_cursor(s, target)
             self._set_floor(s, target)
             ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(target + self._base_ms),
-                  "reason": f"Jumped to {day_date} at 06:00."}
+                  "reason": f"Jumped to {day_date} at 00:00."}
         st = self.state(session_id)
         st["events"] = [ev]
         return st
 
     def next_ema_day(self, session_id: str) -> dict:
-        """Jump forward to 06:00 of the next trading day whose trend check says "daily close above
+        """Jump forward to 00:00 of the next trading day whose trend check says "daily close above
         EMA 200" (the button "Next day > EMA 200"). The rules of goto_day apply: never backwards,
         not with an open trade; Conflict when no such day is left before the replay's end."""
         with self._lock:
@@ -1436,7 +1465,7 @@ class DayEngine:
 
     def next_signal(self, session_id: str, strategy: str, params: dict | None = None) -> dict:
         """Jump forward to the next entry signal of a jump strategy (the button "Next signal"): the
-        15m candle in which the signal happens becomes the cursor, also in the night. The zone the
+        15m candle in which the signal happens becomes the cursor, at any time of day. The zone the
         signal came from is added to the session's zones (1h) so the New trade panel can use it.
         The gates of the other jumps apply: no open trade, not past the end;
         Conflict when no signal is left before the replay's end."""
@@ -1468,9 +1497,8 @@ class DayEngine:
             self._set_floor(s, target)
             zone = self._signal_zone(session_id, sig)
             close = target + base
-            night = "" if in_entry_window(close) else " (night, outside 06:00–24:00)"
             ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(close),
-                  "reason": f"{js.name}: {js.describe_signal(sig)}{night}.",
+                  "reason": f"{js.name}: {js.describe_signal(sig)}.",
                   "strategy": js.key, "signal": {k: v for k, v in sig.items() if k != "bar"}, "zone_id": zone["id"]}
         st = self.state(session_id)
         st["events"] = [ev]
@@ -1522,7 +1550,7 @@ class DayEngine:
 
     def _next_ema_above_day(self, s: dict, after: date) -> date | None:
         """The first trading day after `after` whose last completed daily candle closes above the
-        EMA 200, judged at that day's 06:00 exactly like the trend check (`_daily_ema`)."""
+        EMA 200, judged at that day's 00:00 exactly like the trend check (`_daily_ema`)."""
         limit = s["data_end_ms"] + self._base_ms
         d = after + timedelta(days=1)
         while local_ms(d, DAY_START_HOUR) <= limit:
@@ -1533,7 +1561,7 @@ class DayEngine:
         return None
 
     def _advance(self, s: dict) -> dict | None:
-        """One 15-minute candle forward, through the night as well. Crossing 06:00 leaves the trading
+        """One 15-minute candle forward. Crossing 00:00 leaves the trading
         day. Returns an exit event, a picture event (a closed trade's 24:00 reached) or None."""
         base = self._base_ms
         nxt = self.candles.nth_at_or_after(s["symbol"], BASE_INTERVAL, s["cursor_ms"] + base, 1)
@@ -1560,8 +1588,10 @@ class DayEngine:
                 self.store.update_trade(conn, trade["id"], overnight=1, updated_at=_now_iso())
             trade["overnight"] = 1
         if low <= trade["stop_used"]:  # both reached in one candle counts as the stop
+            self._close_legs(s, trade, AC_KEYS, nxt, trade["stop_used"], EXIT_STOP)   # whatever of A / C is still open
             return self._exit(s, trade, nxt, trade["stop_used"], EXIT_STOP)
         if high >= trade["take_profit"]:
+            self._close_legs(s, trade, AC_KEYS, nxt, trade["take_profit"], EXIT_TP)
             return self._exit(s, trade, nxt, trade["take_profit"], EXIT_TP)
         return self._picture_event(s)
 
@@ -1580,7 +1610,7 @@ class DayEngine:
             self.store.update_day_session(conn, s["id"], phase="trading", updated_at=_now_iso())
         ds["phase"] = "trading"
         close = (last["exit_ms"] if last and last["exit_ms"] is not None else s["cursor_ms"]) + self._base_ms
-        return self._jump(s, trading_day(close) + timedelta(days=1), "Trade closed: next day at 06:00.", LEFT_EXIT)
+        return self._jump(s, trading_day(close) + timedelta(days=1), "Day ended: next day at 00:00.", LEFT_EXIT)
 
     def _jump(self, s: dict, d: date, reason: str, how: str) -> dict:
         self._mark_left(s, d - timedelta(days=1), how)
@@ -1599,16 +1629,18 @@ class DayEngine:
             self.store.delete_unused_signal_zones(conn, s["id"])
 
     def _first_day_cursor(self, s: dict, from_ms: int) -> int:
-        """The base candle closing at the first 06:00 that the candle opening at `from_ms` can reach."""
+        """Where the replay starts: the day of the candle opening at `from_ms` when the data begins
+        right at its 00:00 (then on that first candle, the 00:00 one is not in the session), else
+        the candle closing at the next 00:00."""
         base = self._base_ms
         d = trading_day(from_ms + base)
         start, _ = day_bounds(d)
-        if start - base < from_ms:
+        if start < from_ms:
             d += timedelta(days=1)
-        return self._cursor_at_day_start(s, d)
+        return max(self._cursor_at_day_start(s, d), from_ms)
 
     def _cursor_at_day_start(self, s: dict, d: date) -> int:
-        """Open time of the stored base candle that closes at 06:00 of day `d` (the first one after
+        """Open time of the stored base candle that closes at 00:00 of day `d` (the first one after
         it on a data gap), clamped to the session's last candle."""
         start, _ = day_bounds(d)
         nxt = self.candles.first_at_or_after(s["symbol"], BASE_INTERVAL, start - self._base_ms)
@@ -1626,9 +1658,9 @@ class DayEngine:
 
     # --------------------------------------------------------------- step back
     def _back_floor(self, s: dict, ds: dict) -> int:
-        """The earliest candle Step back may return to: the latest of the first 06:00, the latest
-        jump's landing candle, the open trade's entry and its last stop / target move, and the exit
-        of the latest closed trade. Nothing before it is undone."""
+        """The earliest candle Step back may return to: the latest of the first day's start, the latest
+        jump's landing candle, the open trade's entry, its last stop / target move and its closed
+        exit A / C, and the exit of the latest closed trade. Nothing before it is undone."""
         marks = [s["data_start_ms"], ds.get("start_cursor_ms"), ds.get("back_floor_ms")]
         with self.store.tx() as conn:
             trade = self.store.open_trade(conn, s["id"])
@@ -1637,6 +1669,7 @@ class DayEngine:
             marks.append(trade["entry_ms"])
             marks += [c["at_ms"] for c in trade_changes(trade)]
             marks += [x["at_ms"] for x in trade_scales(trade)]   # a quarter sold or added back is not undone either
+            marks += [leg["exit_ms"] for leg in ac_legs(trade).values() if leg is not None]
         marks += [t["exit_ms"] for t in closed if t["exit_ms"] is not None]
         return max(m for m in marks if m is not None)
 
@@ -1647,7 +1680,7 @@ class DayEngine:
 
     def step_back(self, session_id: str) -> dict:
         """One 15-minute candle back (day trading only), never before the floor (_back_floor).
-        Crossing 06:00 backwards re-opens the day it returns to (its journal row forgets how it was
+        Crossing 00:00 backwards re-opens the day it returns to (its journal row forgets how it was
         left)."""
         with self._lock:
             s = self._ready(session_id)
@@ -1667,7 +1700,7 @@ class DayEngine:
 
     # ------------------------------------------------------------------ review
     def review(self, session_id: str, trade_id: int, answers: dict) -> dict:
-        """Save the three review marks of a closed trade (all three required, True / False). The
+        """Save the four review marks of a closed trade (all four required, True / False). The
         review is optional and never holds the replay; the answers can be changed later; a trade
         still open cannot be reviewed."""
         fields: dict = {}
@@ -1756,7 +1789,7 @@ class DayEngine:
         return {"days": [self._public_day(c, by_day.get(c["day_date"], []), st["fee_rate"], st["price"]) for c in checks]}
 
     def days_csv(self, session_id: str) -> str:
-        cols = ["date", "daily_close", "ema200", "ema_above", "hh_hl", "uptrend", "outcome", "left_label", "left_local",
+        cols = ["date", "daily_close", "ema200", "ema_above", "outcome", "left_label", "left_local",
                 "trade_seq", "exit_type", "exit_reason", "pnl", "pnl_pct", "r_multiple", "has_image", "image_local", "notes"]
         out = io.StringIO()
         w = csv.DictWriter(out, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
@@ -1878,8 +1911,9 @@ class DayEngine:
         out["capped"] = bool(t["capped"])
         out["overnight"] = bool(t["overnight"])
         out["ema_above"] = flag(t["ema_above"])
-        out["hh_hl"] = flag(t["hh_hl"])
-        for key in ("uptrend", "price_in_zone", "rsi_dipped", "close_above_prev_high"):
+        for key in ("hh_hl", "uptrend"):   # the retired daily answer (see the module docstring)
+            out.pop(key, None)
+        for key in ("price_in_zone", "rsi_dipped", "close_above_prev_high"):
             out[key] = flag(t.get(key))
         out["conditions"] = trade_conditions(t)
         out["confidence"] = t.get("confidence")   # 0..10 at the buy; None for trades from before the score existed
@@ -1920,6 +1954,7 @@ class DayEngine:
             "high_vs_entry_pct": t["whatif_high_vs_entry_pct"], "low_vs_entry_pct": t["whatif_low_vs_entry_pct"],
         }
         out["alts"] = alts_public(t)
+        out["exits_ac"] = ac_public(t)
         if t["status"] == "open" and price is not None:
             mv = coins_open(t) * price
             unrealized = scaled_result(t, price, fee_rate)["pnl"]   # the whole trade if the rest were sold now, after fees

@@ -159,10 +159,20 @@ def test_period_validation():
 
 # ------------------------------------------------------------------ registry
 def test_registry_describes_all_indicators():
-    assert set(INDICATORS) == {"sma", "ema", "rsi", "macd", "bbands", "atr"}
+    assert set(INDICATORS) == {"sma", "ema", "rsi", "macd", "bbands", "atr", "vdelta"}
     for spec in INDICATORS.values():
         d = spec.describe()
-        assert d["key"] == spec.key and d["params"] and d["outputs"]
+        assert d["key"] == spec.key and d["outputs"] and (d["params"] or spec.key == "vdelta")
+
+
+def test_volume_delta_is_taker_buy_minus_taker_sell():
+    df = pd.DataFrame({"close": [1.0, 2.0, 3.0], "volume": [10.0, 4.0, 6.0], "taker_buy": [7.0, 1.0, float("nan")]})
+    params, out = compute_indicator(df, "vdelta", {})
+    assert params == {} and list(out.columns) == ["delta"]
+    assert out["delta"].iloc[:2].tolist() == [4.0, -2.0]   # 7 bought - 3 sold; 1 bought - 3 sold
+    assert math.isnan(out["delta"].iloc[2])                 # no taker-buy volume stored: no bar
+    _, out = compute_indicator(df.drop(columns="taker_buy"), "vdelta", {})   # e.g. an aggregated context frame
+    assert out["delta"].isna().all()
 
 
 def test_registry_compute_defaults_and_params():

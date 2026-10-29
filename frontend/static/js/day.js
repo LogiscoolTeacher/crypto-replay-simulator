@@ -14,9 +14,7 @@ const PLAN_MARGIN_BARS = 30;
 const PIC_MARGIN_BARS = 8;    // empty bars right of the last candle in a trade's picture: the line labels sit there
 // The entry conditions saved with every trade (same keys and order as CONDITIONS in day_engine.py).
 const COND_LABELS = [
-  ['uptrend', 'Trend check: uptrend (EMA 200 and higher highs/lows)'],
   ['ema_above', 'Daily close above EMA 200'],
-  ['hh_hl', 'Higher highs and higher lows (your answer)'],
   ['price_in_zone', 'Price inside the support zone'],
   ['rsi_dipped', 'RSI 14 (15m) dipped to 40 or below that day'],
   ['close_above_prev_high', 'Entry candle closed above the previous high'],
@@ -44,7 +42,6 @@ export class DayMode {
     this.selectedZone = null;
     this.drawing = false;
     this.draft = null;         // first zone edge (price) after the first click
-    this.askedDay = null;      // "<session>:<date>" of the last automatic trend-check dialog
     this.planTimer = null;
     this.plan = null;          // last plan preview from the server
     this.planCursor = null;    // cursor the open plan was computed for; a new candle refreshes it
@@ -74,7 +71,7 @@ export class DayMode {
   get day() { const s = this.session; return s && s.mode === 'day' ? s.day : null; }
   active() { const s = this.session; return !!s && s.mode === 'day'; }
   ready() { return this.active() && this.session.status === 'ready' && !!this.day && !!this.day.date; }
-  dialogOpen() { return ['dlg-trend', 'dlg-exit', 'dlg-review'].some(id => this.$(id).open); }
+  dialogOpen() { return ['dlg-exit', 'dlg-review'].some(id => this.$(id).open); }
   n(v, digits = 2) { return v === null || v === undefined || Number.isNaN(v) ? '–' : v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
   signed(v, digits = 2) { return v === null || v === undefined ? '–' : `${v >= 0 ? '+' : ''}${this.n(v, digits)}`; }
   pctText(v) { return v === null || v === undefined ? '–' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`; }
@@ -106,8 +103,8 @@ export class DayMode {
     this.cancelDraw();
     this.c.chart.setUserZones([]);
     this.c.chart.setDayLines(null);
-    this.c.chart.setTimeZone(on ? (s.day && s.day.timezone) || 'Europe/Malta' : null);
-    for (const id of ['dlg-trend', 'dlg-exit', 'dlg-review']) if (this.$(id).open) this.$(id).close();
+    this.c.chart.setTimeZone(null);   // the day clock is UTC, like the exchange (was Europe/Malta)
+    for (const id of ['dlg-exit', 'dlg-review']) if (this.$(id).open) this.$(id).close();
     if (this.panelOpen()) this.closeNewTrade();
     const dayTab = ['tab-day', 'tab-days', 'tab-cal', 'tab-cond'].some(id => this.$(id).getAttribute('aria-selected') === 'true');
     this.conditions = null;
@@ -140,8 +137,8 @@ export class DayMode {
   // ------------------------------------------------------------ calendar
   // One month, a week per row from Monday to Sunday: the P&L (after fees) and the trades of every
   // day the replay has seen, the week's and the month's total. A past day opens its journal; a
-  // later day inside the replay jumps there (06:00).
-  localDate(ms) { return ms === null || ms === undefined ? null : new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'Europe/Malta' }); }
+  // later day inside the replay jumps there (00:00).
+  localDate(ms) { return ms === null || ms === undefined ? null : new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'UTC' }); }
   calShown() {
     if (this.calMonth) return this.calMonth;
     return this.day && this.day.date ? this.day.date.slice(0, 7) : null;
@@ -211,7 +208,7 @@ export class DayMode {
           if (ds !== today) { cls.push('click'); td.title = `${ds}: open the day's journal`; td.addEventListener('click', () => this.openDay(r)); }
           else td.title = `${ds}: the current day (${this.day.local_time.slice(11)})`;
         } else if (inRange && ds > today && !this.session.finished) {
-          cls.push('click'); td.title = `${ds}: jump there (06:00). No trade may be open.`;
+          cls.push('click'); td.title = `${ds}: jump there (00:00). No trade may be open.`;
           td.addEventListener('click', () => this.gotoDay(ds));
         } else if (inRange && ds < today) {
           td.title = `${ds}: not visited (jumped over)`;
@@ -246,11 +243,11 @@ export class DayMode {
   // Top-bar time of the cursor candle's close in the local zone.
   cursorText() {
     const d = this.day;
-    return d && d.local_time ? `${d.local_time} Malta` : null;
+    return d && d.local_time ? `${d.local_time} UTC` : null;
   }
 
-  // The bar at the top right: how much of the trading day (06:00-24:00 Malta) has passed at the
-  // cursor candle's close, and the hours still left; full once the day is over (the night).
+  // The bar at the top right: how much of the trading day (00:00-24:00 UTC) has passed at the
+  // cursor candle's close, and the hours still left.
   renderProgress(s) {
     const bar = this.$('day-progress'), fill = this.$('day-progress-fill'), text = this.$('day-progress-text');
     const d = s && s.day;
@@ -261,7 +258,7 @@ export class DayMode {
     fill.style.width = `${((total - left) / total * 100).toFixed(1)}%`;
     bar.classList.toggle('over', left <= 0);
     text.textContent = left <= 0 ? 'day over' : `${Number(left.toFixed(2))} h left`;
-    bar.title = `Trading day ${d.day_start_local.slice(11)}–24:00 Malta · now ${d.local_time.slice(11)} · ${left <= 0 ? 'over' : `${Number(left.toFixed(2))} hours left`}`;
+    bar.title = `Trading day ${d.day_start_local.slice(11)}–24:00 UTC · now ${d.local_time.slice(11)} · ${left <= 0 ? 'over' : `${Number(left.toFixed(2))} hours left`}`;
   }
 
   // ---------------------------------------------------------------- panel
@@ -274,14 +271,14 @@ export class DayMode {
     const ok = this.ready();
     const set = (id, text, cls) => { const el = $(id); el.textContent = text; if (cls !== undefined) el.className = cls; };
     set('day-date', ok ? d.date : '–');
-    set('day-time', ok ? `${d.local_time.slice(11)} Malta${d.night ? ' · night' : ''}` : '');
+    set('day-time', ok ? d.local_time.slice(11) : '');
     const phase = $('day-phase');
     phase.className = 'badge';
     if (!ok) phase.textContent = '';
     else if (s.finished) { phase.textContent = 'end of replay'; phase.classList.add('good'); }
     else if (d.phase === 'exited') { phase.textContent = 'trade closed'; phase.classList.add('warn'); }
     else if (d.trade) { phase.textContent = 'in a trade'; phase.classList.add('good'); }
-    else phase.textContent = d.in_window ? 'trading hours' : 'night';
+    else phase.textContent = 'no trade';
     this.renderProgress(ok ? s : null);
 
     const chk = ok ? d.check : null;
@@ -290,22 +287,14 @@ export class DayMode {
       const detail = chk.ema200 === null ? 'EMA 200 n/a' : `close ${this.c.fmtPrice(chk.daily_close)} vs EMA ${this.c.fmtPrice(chk.ema200)}`;
       set('day-ema', this.flag(ema), `mono gauge ${ema === null ? '' : ema ? 'up' : 'down'}`);
       $('day-ema').title = detail;
-      $('btn-hh-yes').classList.toggle('on', chk.hh_hl === true);
-      $('btn-hh-no').classList.toggle('on', chk.hh_hl === false);
-      set('day-uptrend', this.flag(chk.uptrend), `gauge ${chk.uptrend === null ? '' : chk.uptrend ? 'up' : 'down'}`);
     } else {
       set('day-ema', '–', 'mono gauge');
       $('day-ema').title = '';
-      set('day-uptrend', '–', 'gauge');
-      $('btn-hh-yes').classList.remove('on');
-      $('btn-hh-no').classList.remove('on');
     }
-    set('day-risk', ok ? `${this.n(d.risk_amount)} USDT (${d.risk_pct} %)` : '–');
     const gate = $('day-gate');
     gate.textContent = ok ? (d.entries_allowed
-      ? (d.check.hh_hl === null ? 'Entries allowed. The trend check is not answered: a trade would save the trend as unknown.'
-        : d.uptrend === null ? 'Entries allowed. EMA 200 not available: a trade saves the trend as unknown.'
-          : d.uptrend ? 'Entries allowed. Uptrend by the trend check.' : 'Entries allowed. No uptrend by the trend check (saved with the trade).')
+      ? (d.check.ema_above === null ? 'Entries allowed. EMA 200 not available: a trade saves the trend as unknown.'
+        : d.check.ema_above ? 'Entries allowed. Daily close above the EMA 200.' : 'Entries allowed. Daily close below the EMA 200 (saved with the trade).')
       : d.block_reason) : '';
     gate.className = `small ${ok && d.entries_allowed ? 'up' : 'muted'}`;
 
@@ -318,24 +307,18 @@ export class DayMode {
     if (ok && d.date !== this.notesDate) { clearTimeout(this.notesTimer); this.notesDate = d.date; ta.value = d.check.notes || ''; $('day-notes-state').textContent = ''; }
     else if (!ok && this.notesDate !== null) { this.notesDate = null; ta.value = ''; }
     const busy = this.busy || this.state.busy;
-    $('btn-hh-yes').disabled = $('btn-hh-no').disabled = !ok || busy || s.finished;
     $('btn-day-new').disabled = !ok || busy || !d.entries_allowed;
     $('btn-day-sell').disabled = !ok || busy || !d.can_sell;
     $('btn-day-skip').disabled = !ok || busy || !d.can_skip;
-    $('btn-day-ema').disabled = !ok || busy || !(d.can_skip || d.can_continue);   // any state without an open trade
-    $('btn-day-signal').disabled = !ok || busy || !(d.can_skip || d.can_continue) || !$('day-strategy').value;
-    $('btn-day-continue').disabled = !ok || busy || !d.can_continue;
-    $('btn-day-continue').classList.toggle('hidden', !(ok && d.can_continue));
-    $('btn-day-skip').classList.toggle('hidden', !!(ok && d.can_continue));   // both jump to the next 06:00: one button at a time
+    $('btn-day-ema').disabled = !ok || busy || !d.can_skip;   // any state without an open trade or an exit choice
+    $('btn-day-signal').disabled = !ok || busy || !d.can_skip || !$('day-strategy').value;
     $('btn-day-zone').disabled = !ok || busy;
     this.renderExitChoice(ok && d.exit_choice ? d.last_exit : null);
 
     // the open trade
     const t = ok ? d.trade : null;
     $('day-trade').classList.toggle('hidden', !t);
-    $('dt-move-row').classList.toggle('hidden', !t);
     $('dt-scale-row').classList.toggle('hidden', !t);
-    if (!t) this.closeMove();
     if (t) {
       const fp = this.c.fmtPrice;
       const away = (v, word) => (v === null || v === undefined ? '' : ` · ${Math.abs(v).toFixed(2)}% ${word}`);
@@ -349,13 +332,11 @@ export class DayMode {
       const usdt = t.price_change_usdt === undefined ? t.coins * (this.session.price - t.entry_price) : t.price_change_usdt;
       set('dt-change', `${this.signed(usdt)} USDT · ${this.pctText(t.price_change_pct)}`, `mono gauge ${this.cls(t.price_change_pct)}`);
       set('dt-auto', this.autoText(d.auto));
+      set('dt-ac', this.acText(t.exits_ac));
       set('dt-stop', `${fp(t.stop_used)} · ${this.pctText(t.stop_pct)}`);
       $('dt-stop').title = `${this.pctText(t.stop_pct)} from the entry${away(t.to_stop_pct, 'below the price now')}${stopMoved ? ` · at the buy ${fp(t.stop_initial)} (${this.pctText((t.stop_initial / t.entry_price - 1) * 100)}) · ${this.changesText(t)}` : ''}`;
       set('dt-tp', `${fp(t.take_profit)} · ${this.pctText(t.tp_pct)}`);
       $('dt-tp').title = `${this.pctText(t.tp_pct)} from the entry${away(t.to_tp_pct, 'above the price now')}${tpMoved ? ` · at the buy ${fp(t.tp_initial)} (${this.pctText((t.tp_initial / t.entry_price - 1) * 100)}) · ${this.changesText(t)}` : ''}`;
-      $('btn-dt-move').disabled = busy || !d.can_sell;
-      $('btn-mv-apply').disabled = busy || !d.can_sell;
-      if (this.moveOpen()) this.renderMoveHint(t);
       const q = t.quarters_open === undefined ? 4 : t.quarters_open;
       set('dt-size', q === 4 ? `${this.c.qtyFmt(t.coins)} ${this.c.baseAsset()} = ${this.n(t.position_value)} USDT${t.capped ? ' · capped' : ''}`
         : `${q}/4 held: ${this.c.qtyFmt(t.coins_open)} of ${this.c.qtyFmt(t.coins)} ${this.c.baseAsset()}${t.capped ? ' · capped' : ''}`);
@@ -370,41 +351,11 @@ export class DayMode {
       set('dt-pnl', `${this.signed(t.unrealized_pnl)} (${this.pctText(t.unrealized_pnl_pct)}) · ${this.signed(t.r_now, 2)} R`, `mono gauge ${this.cls(t.unrealized_pnl)}`);
     }
     this.c.chart.setDayLines(t);
-    this.maybeAskTrend();
+    this.c.renderCardSums();   // the summary of the minimized card
   }
 
   // ------------------------------------------------- move the stop / target
-  moveOpen() { return !this.$('dt-move').classList.contains('hidden'); }
-  openMove() {
-    const t = this.day && this.day.trade;
-    if (!this.ready() || !t || !this.day.can_sell) return;
-    const $ = this.$;
-    $('mv-stop').value = this.roundPrice(t.stop_used);
-    $('mv-tp').value = this.roundPrice(t.take_profit);
-    $('mv-error').textContent = '';
-    $('dt-move').classList.remove('hidden');
-    $('btn-dt-move').setAttribute('aria-expanded', 'true');
-    this.renderMoveHint(t);
-    $('mv-stop').focus();
-    $('mv-stop').select();
-  }
-  closeMove() {
-    const $ = this.$;
-    if (!this.moveOpen()) return;
-    $('dt-move').classList.add('hidden');
-    $('btn-dt-move').setAttribute('aria-expanded', 'false');
-    $('mv-error').textContent = '';
-  }
-  renderMoveHint(t) {
-    const price = this.session.price;
-    const stop = parseFloat(this.$('mv-stop').value), tp = parseFloat(this.$('mv-tp').value);
-    const parts = [`Price now ${this.c.fmtPrice(price)}.`];
-    if (Number.isFinite(stop) && stop > 0) parts.push(`Stop ${this.pctText((stop / t.entry_price - 1) * 100)} from the entry${stop >= price ? ' (must be below the price now)' : ''}.`);
-    if (Number.isFinite(tp) && tp > 0) parts.push(`Target ${this.pctText((tp / t.entry_price - 1) * 100)} from the entry${tp <= price ? ' (must be above the price now)' : ''}.`);
-    if (Number.isFinite(stop) && stop > 0 && stop < t.entry_price) parts.push(`Risk from here ${this.n((t.entry_price - stop) * t.coins)} USDT (${this.n((t.entry_price - stop) * t.coins / t.risk_amount)} R of the risk at the buy).`);
-    else if (Number.isFinite(stop) && stop >= t.entry_price && stop < price) parts.push('The stop is above the entry: the trade can no longer lose on the price.');
-    this.$('mv-hint').textContent = parts.join(' ');
-  }
+  // (by dragging the dotted lines on the chart; see onDragLine)
   // One line per saved move, oldest first.
   // The quarter steps of a trade in short, for hover texts.
   scalesText(t) {
@@ -415,20 +366,6 @@ export class DayMode {
     const fp = this.c.fmtPrice;
     const pe = (v) => this.pctText((v / t.entry_price - 1) * 100);
     return (t.changes || []).map(c => `${c.at_local.slice(11)} ${c.field === 'stop' ? 'stop' : 'target'} ${pe(c.from)} \u2192 ${pe(c.to)}`).join(' · ') || 'no moves';
-  }
-  async applyMove() {
-    if (!this.ready() || this.busy) return;
-    const t = this.day.trade;
-    if (!t) return;
-    const $ = this.$;
-    const stop = parseFloat($('mv-stop').value), tp = parseFloat($('mv-tp').value);
-    const body = {};
-    // a field left as it was filled in (the rounded current level) is no move
-    if (Number.isFinite(stop) && stop > 0 && $('mv-stop').value !== this.roundPrice(t.stop_used)) body.stop = stop;
-    if (Number.isFinite(tp) && tp > 0 && $('mv-tp').value !== this.roundPrice(t.take_profit)) body.take_profit = tp;
-    if (!Object.keys(body).length) { $('mv-error').textContent = 'Nothing changed.'; return; }
-    const ok = await this.moveTrade(body, (msg) => { $('mv-error').textContent = msg; });
-    if (ok) this.closeMove();
   }
   // Send a move to the server; `onError` shows the message (default: a toast). Returns true when saved.
   async moveTrade(body, onError = null) {
@@ -452,48 +389,6 @@ export class DayMode {
       if (this.c.fresh(tok)) { if (onError) onError(e.message); else this.c.toast(e.message, true); }
       return false;
     } finally { this.busy = false; this.render(); }
-  }
-
-  // The trend check opens by itself at 06:00 of every new day until it is answered.
-  maybeAskTrend() {
-    const d = this.day;
-    if (!this.ready() || this.session.finished || !d.check || d.check.hh_hl !== null || d.phase !== 'trading') return;
-    const key = `${this.session.id}:${d.date}`;
-    if (this.askedDay === key || this.dialogOpen() || this.$('dlg-session').open) return;
-    this.askedDay = key;
-    this.c.pause();   // playing runs through 06:00 now: stop for the new day's check
-    this.openTrend();
-  }
-
-  // ---------------------------------------------------------- trend check
-  openTrend() {
-    const d = this.day;
-    if (!d || !d.check) return;
-    const c = d.check;
-    this.$('trend-date').textContent = d.date;
-    const ema = this.$('trend-ema');
-    if (c.ema200 === null) { ema.textContent = 'n/a (fewer than 200 daily candles)'; ema.className = 'mono'; }
-    else {
-      ema.textContent = `${c.ema_above ? 'YES' : 'NO'} · close ${this.c.fmtPrice(c.daily_close)} vs EMA 200 ${this.c.fmtPrice(c.ema200)}`;
-      ema.className = `mono ${c.ema_above ? 'up' : 'down'}`;
-    }
-    this.$('trend-close-day').textContent = c.daily_close_iso ? `completed UTC day ${c.daily_close_iso.slice(0, 10)}` : '';
-    this.$('dlg-trend').showModal();
-    this.$('btn-trend-yes').focus();
-  }
-  async answerTrend(yes) {
-    if (!this.ready() || this.busy) return;
-    const t = this.c.token();
-    this.busy = true;
-    try {
-      const st = await this.c.api.dayCheck(this.session.id, yes);
-      if (!this.c.fresh(t)) return;
-      if (this.$('dlg-trend').open) this.$('dlg-trend').close();
-      this.c.applyState(st);
-      const d = st.day;
-      this.c.toast(d.uptrend ? 'Uptrend by the trend check.' : 'No uptrend by the trend check: it is saved with every trade of today.');
-    } catch (e) { this.c.toast(e.message, true); }
-    finally { this.busy = false; this.render(); }
   }
 
   // ---------------------------------------------------------------- zones
@@ -668,7 +563,7 @@ export class DayMode {
   }
   setPanelTitle() {
     const d = this.day;
-    this.$('nt-title').textContent = `New trade · ${this.c.baseAsset()} @ ${this.c.fmtPrice(this.session.price)} · ${d.local_time.slice(11)} Malta`;
+    this.$('nt-title').textContent = `New trade · ${this.c.baseAsset()} @ ${this.c.fmtPrice(this.session.price)} · ${d.local_time.slice(11)}`;
   }
   // The stop moves in steps of 0.05 % of the entry price (Shift: five steps).
   stopStep(big) {
@@ -758,7 +653,7 @@ export class DayMode {
     set('np-rr', p.rr === null ? '–' : `${this.n(p.rr)} : 1`, rrCls);
     const sg = p.signals;
     const rules = [
-      ['1. Trend check says uptrend', sg.uptrend],
+      ['1. Daily close above the EMA 200', sg.ema_above],
       ['2. Price inside the support zone', sg.price_in_zone],
       [`3. RSI 14 (15m) dipped to ${this.day.rsi_dip_max} or below today · now ${sg.rsi === null ? '–' : sg.rsi.toFixed(1)}, day low ${sg.rsi_day_min === null ? '–' : sg.rsi_day_min.toFixed(1)}`, sg.rsi_dipped],
       [`4. Trigger: this candle closed above the previous high${sg.prev_high === null ? '' : ` (${fp(sg.prev_high)})`}`, sg.close_above_prev_high],
@@ -842,6 +737,14 @@ export class DayMode {
     }
     $('exit-note').value = '';
     $('exit-error').textContent = '';
+    // exits A / C: an exit already closed can't be chosen; Both while both are open, else the one left
+    const open = d.open_exits || ['A', 'C'];
+    for (const rb of $('exit-legs').querySelectorAll('input')) {
+      rb.disabled = rb.value !== 'both' && !open.includes(rb.value);
+      rb.checked = open.length === 2 ? rb.value === 'both' : rb.value === open[0];
+    }
+    $('exit-legs').querySelector('input[value="both"]').disabled = open.length < 2;
+    $('exit-legs').classList.toggle('hidden', partial);   // A / C are whole-size exits: not for a quarter
     const t = d.trade;
     $('exit-title').textContent = partial
       ? `Sell ¼ of trade #${t.seq} @ ${this.c.fmtPrice(this.session.price)} · ${this.pctText(t.price_change_pct)} vs the entry`
@@ -872,7 +775,8 @@ export class DayMode {
         this.afterScale(res, 'Sold');
         return;
       }
-      const st = await this.c.api.daySell(this.session.id, { reason: picked.value, note });
+      const leg = $('exit-legs').querySelector('input:checked');
+      const st = await this.c.api.daySell(this.session.id, { reason: picked.value, note, exits: leg ? leg.value : 'both' });
       if (!this.c.fresh(t)) return;
       $('dlg-exit').close();
       const events = st.events || [];
@@ -913,19 +817,19 @@ export class DayMode {
   }
   // Jump to the next trading day whose daily close is above the EMA 200 (the trend check's first line).
   async nextEmaDay() {
-    if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
+    if (!this.ready() || this.busy || !this.day.can_skip) return;
     await this.jump(() => this.c.api.dayNextEma(this.session.id));
   }
   // Jump to the selected strategy's next entry signal; the zone it came from is added and selected.
   async nextSignal() {
-    if (!this.ready() || this.busy || !(this.day.can_skip || this.day.can_continue)) return;
+    if (!this.ready() || this.busy || !this.day.can_skip) return;
     const key = this.$('day-strategy').value;
     if (!key) return;
     await this.jump(() => this.c.api.dayNextSignal(this.session.id, { strategy: key }), (events) => {
       const ev = events.find(x => x.kind === 'jump' && x.signal);
       if (!ev) return;
       if (this.zones.some(z => z.id === ev.zone_id)) { this.selectedZone = ev.zone_id; this.renderZones(); }
-      this.$('day-signal-last').textContent = `${ev.to_local} Malta · ${ev.reason}`;
+      this.$('day-signal-last').textContent = `${ev.to_local} · ${ev.reason}`;
     });
   }
   async loadStrategies() {
@@ -944,11 +848,11 @@ export class DayMode {
     const s = this.strategies.find(x => x.key === this.$('day-strategy').value);
     this.$('day-strategy-note').textContent = s ? s.description : 'No strategies available.';
   }
-  // After an exit: "End the day" jumps to 24:00 of the exit's day (the trade's picture is taken
-  // there; the day is not left, so no day picture yet); "Keep trading" goes on from the exit candle.
+  // After an exit: "End the day" jumps to 24:00 of the exit's day, which is 00:00 of the next: the day
+  // is left (its picture first) and the trade's picture is taken there; "Keep trading" goes on from the exit candle.
   async endDay() {
     if (!this.ready() || this.busy || !this.day.exit_choice) return;
-    await this.jump(() => this.c.api.dayEndDay(this.session.id), null, false);
+    await this.jump(() => this.c.api.dayEndDay(this.session.id));
   }
   async keepTrading() {
     if (!this.ready() || this.busy || !this.day.exit_choice) return;
@@ -973,19 +877,13 @@ export class DayMode {
     $('btn-dx-end').disabled = $('btn-dx-keep').disabled = busy;
   }
   exitChoiceOpen() { return !this.$('day-exit-choice').classList.contains('hidden'); }
-  async continueDay() {
-    if (!this.ready() || this.busy || !this.day.can_continue) return;
-    await this.jump(() => this.c.api.dayContinue(this.session.id));
-  }
-  // `leaving`: the jump leaves the trading day, so its journal picture is taken first.
-  async jump(call, after = null, leaving = true) {
+  // Every jump leaves the trading day (since days start at 00:00 also "End the day"), so its journal picture is taken first.
+  async jump(call, after = null) {
     this.busy = true;
     this.render();
-    if (leaving) {
-      try {
-        await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
-      } catch (e) { this.c.toast(`Day picture not saved: ${e.message}`, true); }
-    }
+    try {
+      await this.captureDayPicture();   // the journal picture of the day being left (also switches the generation)
+    } catch (e) { this.c.toast(`Day picture not saved: ${e.message}`, true); }
     const t = this.c.token();
     try {
       const st = await call();
@@ -994,7 +892,7 @@ export class DayMode {
       delete st.events;
       this.c.applyState(st);
       await this.c.refreshView();
-      for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`);
+      for (const ev of events) if (ev.kind === 'jump') this.c.toast(`${ev.reason} Now ${ev.to_local}.`);
       await this.refresh();   // the journal row of the day just left (how it ended) and the new day's row
       await this.duePicture();   // a jump past an exit's 24:00 makes its picture due
       if (after && this.c.fresh(t)) after(events);
@@ -1005,14 +903,21 @@ export class DayMode {
   // ----------------------------------------------------------------- events
   // Events of a step or a sell. After an exit by day the replay stays on the exit candle and the
   // side panel asks: end the day (jump to 24:00) or keep trading. The trade's picture (15m, from the
-  // entry's 06:00 to that 24:00) is taken once the replay reaches that 24:00 (a 'picture' event; Play
-  // goes on); a night exit gets it at once. The review is optional (the trade's dialog); the Trades
-  // tab tints the trades without one. A jump is only announced.
+  // entry's 00:00 to that 24:00) is taken once the replay reaches that 24:00 (a 'picture' event; Play
+  // goes on). The review is optional (the trade's dialog); the Trades tab tints the trades without
+  // one. A jump is only announced.
   async handleEvents(events) {
     if (!this.active()) return;
     for (const ev of events || []) {
-      if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local} Malta.`); continue; }
+      if (ev.kind === 'jump') { this.c.toast(`${ev.reason} Now ${ev.to_local}.`); continue; }
       if (ev.kind === 'picture') { await this.refresh(); continue; }
+      if (ev.kind === 'exit_leg') {   // exit A or C closed, the other one keeps the trade open
+        const legs = ev.trade.exits_ac;
+        const done = ev.closed.map(k => `Exit ${k} closed @ ${this.c.fmtPrice(legs[k].exit_price)} · ${this.signed(legs[k].r_multiple)} R`).join(', ');
+        this.c.toast(`${done}. ${ev.open.join(' and ')} still open: the trade stays open.`);
+        await this.refresh();
+        continue;
+      }
       if (ev.kind !== 'exit') continue;
       this.c.pause();
       const tr = ev.trade;
@@ -1032,6 +937,19 @@ export class DayMode {
   // ---------------------------------------------------------------- columns
   // The Trades table shows a short set of columns by default; the "Hide cols" menu adds or removes
   // any of them, and the choice is kept in this browser.
+  // "A 10:00 @ 101.00 · +0.45 R · C open": exits A and C of a trade in one line.
+  acText(ac) {
+    if (!ac) return '–';
+    return ['A', 'C'].map(k => {
+      const x = ac[k];
+      return !x || x.status === 'open' ? `${k} open` : `${k} ${x.exit_local.slice(11)} @ ${this.c.fmtPrice(x.exit_price)} \u00b7 ${this.signed(x.r_multiple)} R`;
+    }).join(' \u00b7 ');
+  }
+  legText(x) {
+    if (!x || x.status === 'open') return 'open';
+    const fp = this.c.fmtPrice;
+    return `${x.exit_type === 'take-profit' ? 'target' : x.exit_type} at ${x.exit_local} @ ${fp(x.exit_price)}${x.reason_label ? ` (${x.reason_label}${x.note ? `: ${x.note}` : ''})` : ''} \u00b7 ${this.signed(x.pnl)} USDT \u00b7 ${this.signed(x.r_multiple)} R${x.diff === null ? '' : ` \u00b7 ${this.signed(x.diff)} USDT vs the real exit`}`;
+  }
   altText(x) {
     const fp = this.c.fmtPrice;
     return `${x.exit_type === 'take-profit' ? 'target' : x.exit_type} at ${x.exit_local} @ ${fp(x.exit_price)} \u00b7 ${this.signed(x.pnl)} USDT \u00b7 ${this.signed(x.r_multiple)} R \u00b7 stop ${fp(x.stop)}, target ${fp(x.take_profit)}${x.diff === null ? '' : ` \u00b7 ${this.signed(x.diff)} USDT vs your exit`}`;
@@ -1077,12 +995,12 @@ export class DayMode {
   }
 
   // ----------------------------------------------------------------- review
-  // Three marks per closed trade, asked at 24:00 of the exit day (the replay waits for them) and
+  // Four marks per closed trade, asked at 24:00 of the exit day (the replay waits for them) and
   // editable later from the trade dialog. 'over the target' is pre-ticked from the candles after the exit.
   reviewTags(t) {
     const r = t.review;
     if (!r || !r.reviewed) return null;
-    return [['stop_tight', 'tight stop'], ['over_target', 'over target'], ['stop_saved', 'stop saved']].filter(([k]) => r[k]).map(([, label]) => label);
+    return [['stop_tight', 'tight stop'], ['over_target', 'over target'], ['stop_saved', 'stop saved'], ['stop_moved_up', 'stop moved too far up']].filter(([k]) => r[k]).map(([, label]) => label);
   }
   reviewCount(t) { const tags = this.reviewTags(t); return tags === null ? -1 : tags.length; }
   reviewTitle(t) { const fp = this.c.fmtPrice; return `Review trade #${t.seq} \u00b7 ${t.exit_type} @ ${fp(t.exit_price)} \u00b7 ${this.signed(t.pnl)} USDT (${this.signed(t.r_multiple)} R)`; }
@@ -1096,8 +1014,8 @@ export class DayMode {
   // The saved answers, or the defaults (all false, 'over the target' from the data).
   reviewValues(t) {
     const r = t.review || {};
-    return r.reviewed ? { stop_tight: !!r.stop_tight, over_target: !!r.over_target, stop_saved: !!r.stop_saved }
-      : { stop_tight: false, over_target: !!r.over_target_suggested, stop_saved: false };
+    return r.reviewed ? { stop_tight: !!r.stop_tight, over_target: !!r.over_target, stop_saved: !!r.stop_saved, stop_moved_up: !!r.stop_moved_up }
+      : { stop_tight: false, over_target: !!r.over_target_suggested, stop_saved: false, stop_moved_up: false };
   }
   // The review dialog: answering (optional) or editing the marks of any closed trade, from the trade dialog.
   openReview(t) {
@@ -1150,9 +1068,9 @@ export class DayMode {
     const res = await this.submitReview(this.reviewTrade, this.reviewAnswers('review-list'), 'review-error', 'btn-review-save');
     if (res) { this.reviewTrade = null; this.$('dlg-review').close(); }
   }
-  // The trade's picture, taken once the replay reaches 24:00 of the exit day: always the 15-minute chart from 06:00 of the
-  // entry's trading day to 24:00 of the exit's (trade.frame; a night exit ends at the exit), with
-  // zones, entry, stop, take-profit and the exit line, whatever the zoom on screen. A hold longer than
+  // The trade's picture, taken once the replay reaches 24:00 of the exit day: always the 15-minute chart from 00:00 of the
+  // entry's trading day to 24:00 of the exit's (trade.frame) plus PIC_MARGIN_BARS empty bars, with
+  // zones, entry, stop, take-profit, every earlier stop / target level (chart.setLevelHistory) and the exit line, whatever the zoom on screen. A hold longer than
   // the loaded bars (~6 days) starts at the oldest one. The view and zoom come back afterwards.
   async capturePicture(trade) {
     if (!this.ready() || this.capturing) return;
@@ -1167,6 +1085,7 @@ export class DayMode {
       const frame = span && { from: span.from, to: span.to + PIC_MARGIN_BARS };
       if (frame) chart.setRange(frame);
       chart.setDayLines(trade);
+      chart.setLevelHistory(trade);   // every stop / target move, not only the last levels
       // the range applies on a later frame: wait until the chart shows it, then one more for the paint
       // (a frame falls back to a timer, so a hidden page cannot hang here)
       for (let k = 0; k < 10; k++) {
@@ -1176,10 +1095,11 @@ export class DayMode {
       }
       await nextFrame();
       try { image = chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
+      chart.setLevelHistory(null);
       chart.setDayLines(this.day ? this.day.trade : null);
       if (prev !== '15m' && this.state.interval === '15m') await this.c.setInterval(prev);
       if (range && this.state.interval === prev) chart.setRange(range);
-    } finally { this.capturing = false; }
+    } finally { chart.setLevelHistory(null); this.capturing = false; }
     if (!image) return;
     const t = this.c.token();
     try {
@@ -1207,11 +1127,11 @@ export class DayMode {
     try {
       if (prev !== '15m') await this.c.setInterval('15m');
       const closed = d.last_exit && d.last_exit.day_date === d.date ? d.last_exit : null;
-      if (closed) this.c.chart.setDayLines(closed);
+      if (closed) { this.c.chart.setDayLines(closed); this.c.chart.setLevelHistory(closed); }
       await nextFrame(); await nextFrame();   // let the chart paint
       let image = null;
       try { image = this.c.chart.chart.takeScreenshot().toDataURL('image/png'); } catch { image = null; }
-      if (closed) this.c.chart.setDayLines(d.trade);
+      if (closed) { this.c.chart.setLevelHistory(null); this.c.chart.setDayLines(d.trade); }
       if (image) {
         const t = this.c.token();
         try {
@@ -1277,8 +1197,6 @@ export class DayMode {
       td(r.date, 'date');
       td(r.ema200 === null ? 'n/a' : this.flag(r.ema_above), r.ema_above === null ? '' : r.ema_above ? 'up' : 'down',
         r.ema200 === null ? 'fewer than 200 daily candles' : `close ${fp(r.daily_close)} vs EMA ${fp(r.ema200)}`);
-      td(this.flag(r.hh_hl).replace('n/a', '–'), r.hh_hl === null ? '' : r.hh_hl ? 'up' : 'down');
-      td(this.flag(r.uptrend).replace('n/a', '–'), r.uptrend === null ? '' : r.uptrend ? 'up' : 'down');
       td(this.outcomeText(r), `outcome ${r.outcome.replace(' ', '-')}`, (r.trade_seqs || []).length > 1 ? `${r.trade_count} trades this day · day P&L ${this.signed(r.day_pnl)} USDT after fees · the row shows the last one` : '');
       td(r.left_local ? r.left_local.slice(11) : '–', 'date', r.left_label || '');
       const t = r.trade;
@@ -1307,7 +1225,7 @@ export class DayMode {
     const t = r.trade;
     const groups = [
       ['Trend check', [['Daily close', r.daily_close === null ? 'n/a' : fp(r.daily_close)], ['EMA 200 (1D)', r.ema200 === null ? 'n/a' : fp(r.ema200)],
-        ['Close above EMA 200', this.flag(r.ema_above)], ['Higher highs and higher lows', this.flag(r.hh_hl)], ['Uptrend', this.flag(r.uptrend)]]],
+        ['Close above EMA 200', this.flag(r.ema_above)]]],
       ['Day', [['Outcome', this.outcomeText(r)], ['Left', r.left_label ? `${r.left_label} · ${r.left_local}` : 'still in progress'], ['Picture taken', r.image_local || '–']]],
       ['Trade', t ? [['Number', `#${t.seq}`], ['Entry', `${t.entry_local} @ ${fp(t.entry_price)}`], ['Exit', t.exit_local ? `${t.exit_local} @ ${fp(t.exit_price)}` : 'open'],
         ['Type', t.exit_type || 'open'], ['Reason', t.exit_reason_label || '–'], ['Overnight', t.overnight ? 'yes' : 'no'],
@@ -1352,6 +1270,12 @@ export class DayMode {
         const types = Object.entries(a.by_type).filter(([, n]) => n).map(([typ, n]) => `${n} ${typ === 'take-profit' ? 'target' : typ}`).join(' · ');
         return `${k === 'alt1' ? 'Alt 1' : 'Alt 2'} ${this.signed(a.pnl)} USDT on ${a.count} (${types})${a.avg_r === null ? '' : ` · avg ${this.signed(a.avg_r)} R`}${a.compared ? ` · vs manual ${this.signed(a.diff)}` : ''}`;
       }),
+      ...['A', 'C'].map(k => {
+        const a = sm[k];
+        if (!a || !a.count) return '';
+        const types = Object.entries(a.by_type).filter(([, n]) => n).map(([typ, n]) => `${n} ${typ === 'take-profit' ? 'target' : typ}`).join(' · ');
+        return `Exit ${k} ${this.signed(a.pnl)} USDT on ${a.count} (${types})${a.avg_r === null ? '' : ` · avg ${this.signed(a.avg_r)} R`}${a.compared ? ` · vs real ${this.signed(a.diff)}` : ''}`;
+      }),
     ].filter(Boolean).join('   |   ');
     const fp = this.c.fmtPrice;
     for (const a of rows) {
@@ -1387,6 +1311,14 @@ export class DayMode {
       };
       altCells(al && al.alt1, false);
       altCells(al && al.alt2, true);
+      for (const k of ['A', 'C']) {   // exits A and C of the manual trade
+        const x = a.exits_ac && a.exits_ac[k];
+        if (!x || x.status === 'open') { td(a.exits_ac ? 'open' : '–', 'muted'); td('', 'num'); td('', 'num'); continue; }
+        td(`${x.exit_type === 'take-profit' ? 'target' : x.exit_type} ${x.exit_local.slice(11)}`, `exit ${x.exit_type === 'stop' ? 'stop' : x.exit_type === 'take-profit' ? 'target' : ''}`,
+          `@ ${fp(x.exit_price)}${x.reason_label ? ` · ${x.reason_label}` : ''}${x.note ? ` · ${x.note}` : ''} · held ${this.holdText(x.hold_hours)}${x.diff === null ? '' : ` · ${this.signed(x.diff)} USDT vs the real exit`}`);
+        td(this.signed(x.pnl), `num pnl ${this.cls(x.pnl)}`);
+        td(this.signed(x.r_multiple), `num ${this.cls(x.r_multiple)}`);
+      }
       const manualTrade = this.trades.find(t => t.id === a.trade_id);
       if (manualTrade) tr.addEventListener('click', () => this.openTrade(manualTrade));
       tbody.appendChild(tr);
@@ -1435,7 +1367,7 @@ export class DayMode {
         [(t.changes || []).length ? this.changesText(t) : '', scaled ? this.scalesText(t) : ''].filter(Boolean).join('\n'));
       td(this.holdText(this.holdHours(t.entry_ms, t.exit_ms)), `num${t.exit_ms === null ? ' muted' : ''}`, t.exit_ms === null ? 'open: held until now' : 'hours from the buy to the exit');
       td(t.exit_reason_label || '', 'reasons', t.exit_note || '');
-      td(`${this.flag(t.ema_above)} / ${this.flag(t.hh_hl)}`, '', 'daily close above EMA 200 / higher highs and lows');
+      td(this.flag(t.ema_above), t.ema_above === null || t.ema_above === undefined ? '' : t.ema_above ? 'up' : 'down', 'daily close above EMA 200');
       td(this.condShort(t.conditions), 'reasons', this.condLong(t.conditions));
       const confCell = td('', 'num', 'confidence at the buy, 0 to 10');
       if (t.confidence === null || t.confidence === undefined) confCell.textContent = '–';
@@ -1484,18 +1416,18 @@ export class DayMode {
     const empty = $('day-trade-empty');
     empty.classList.toggle('hidden', rows.length > 0);
     if (!rows.length && this.trades.length) empty.textContent = `No trade matches the filter (${this.trades.length} hidden).`;
-    else if (!rows.length) empty.textContent = 'No trades yet. Answer the trend check at 06:00, draw a support zone on the 1h or 4h chart, then New trade.';
+    else if (!rows.length) empty.textContent = 'No trades yet. Draw a support zone on the 1h or 4h chart, then New trade.';
     $('day-trade-count').textContent = String(this.trades.length);
   }
 
   // ---------------------------------------------------------- conditions
-  // Short "trend ✓ · zone ✓ · …" for the trades table, the full list for its hover text.
+  // Short "EMA ✓ · zone ✓ · …" for the trades table, the full list for its hover text.
   condShort(c) {
     if (!c) return '';
     const yn = (v) => v === null || v === undefined ? '–' : v ? '✓' : '✗';
     const stop = c.stop_middle ? 'middle' : c.stop_atr ? 'ATR' : c.stop_own ? 'own' : '–';
     const when = c.morning ? 'morning' : c.afternoon ? 'afternoon' : c.evening ? 'evening' : '–';
-    return `trend ${yn(c.uptrend)} · zone ${yn(c.price_in_zone)} · RSI dip ${yn(c.rsi_dipped)} · trigger ${yn(c.close_above_prev_high)} · R/R ${yn(c.rr_ok)} · stop ${stop} · ${c.zone_4h === null ? '–' : c.zone_4h ? '4h' : '1h'} · ${when}`;
+    return `EMA ${yn(c.ema_above)} · zone ${yn(c.price_in_zone)} · RSI dip ${yn(c.rsi_dipped)} · trigger ${yn(c.close_above_prev_high)} · R/R ${yn(c.rr_ok)} · stop ${stop} · ${c.zone_4h === null ? '–' : c.zone_4h ? '4h' : '1h'} · ${when}`;
   }
   condLong(c) {
     if (!c) return '';
@@ -1598,11 +1530,11 @@ export class DayMode {
     const groups = [
       ['Basics', [['Coin', this.session.symbol], ['Trading day', t.day_date], ['Confidence at the buy', t.confidence === null || t.confidence === undefined ? 'not scored' : `${t.confidence} / 10`],
         ['Checklist', `v1 · risk ${this.n(t.risk_amount)} USDT`]]],
-      ['Trend check', [['Daily close above EMA 200', this.flag(t.ema_above)], ['Higher highs and higher lows', this.flag(t.hh_hl)]]],
+      ['Trend check', [['Daily close above EMA 200', this.flag(t.ema_above)]]],
       ['Conditions at the buy', [...COND_LABELS.map(([k, label]) => [label, this.flag(t.conditions ? t.conditions[k] : null)]),
         ['RSI 14 (15m) at the buy', t.entry_rsi === null || t.entry_rsi === undefined ? 'n/a' : t.entry_rsi.toFixed(2)],
         ['RSI 14 (1h) at the buy', t.entry_rsi_1h === null || t.entry_rsi_1h === undefined ? 'n/a' : t.entry_rsi_1h.toFixed(2)]]],
-      ['Entry', [['Time (Malta)', t.entry_local], ['Time (UTC)', t.entry_iso], ['Price', fp(t.entry_price)], ['RSI 14 (15m)', t.entry_rsi === null ? 'n/a' : t.entry_rsi.toFixed(2)],
+      ['Entry', [['Time (UTC)', t.entry_local], ['Price', fp(t.entry_price)], ['RSI 14 (15m)', t.entry_rsi === null ? 'n/a' : t.entry_rsi.toFixed(2)],
         ['ATR 14 (15m)', t.entry_atr === null ? 'n/a' : fp(t.entry_atr)], ['Zone upper edge', fp(t.zone_upper)], ['Zone lower edge', fp(t.zone_lower)]]],
       ['Plan', [['Default stop (zone middle)', t.stop_suggested === null ? 'n/a' : fp(t.stop_suggested)], ['ATR stop (zone low − 0.5 × ATR)', t.stop_atr === null || t.stop_atr === undefined ? 'n/a' : fp(t.stop_atr)],
         ['Stop at the buy', fp(t.stop_initial === undefined ? t.stop_used : t.stop_initial)], ['Take-profit at the buy', fp(t.tp_initial === undefined ? t.take_profit : t.tp_initial)], ['Reward-to-risk at the buy', `${this.n(t.rr)} : 1`],
@@ -1616,7 +1548,7 @@ export class DayMode {
         ? t.scales.map(x => [`${x.at_local.slice(0, 10) === t.day_date ? x.at_local.slice(11) : x.at_local} · ${x.side === 'sell' ? 'sold' : 'added'} \u00bc \u2192 ${x.quarters_after}/4`,
           `${fp(x.price)} (${this.pctText(x.vs_entry_pct)} vs entry) · fee ${this.n(x.fee)}${x.reason_label ? ` · ${x.reason_label}` : ''}${x.note ? ` · ${x.note}` : ''}`])
         : [['Steps', 'none']]],
-      ['Exit', [['Time (Malta)', t.exit_local || '–'], ['Held', this.holdText(this.holdHours(t.entry_ms, t.exit_ms))], ['Price', t.exit_price === null || t.exit_price === undefined ? '–' : fp(t.exit_price)], ['Type', t.exit_type || 'open'],
+      ['Exit', [['Time (UTC)', t.exit_local || '–'], ['Held', this.holdText(this.holdHours(t.entry_ms, t.exit_ms))], ['Price', t.exit_price === null || t.exit_price === undefined ? '–' : fp(t.exit_price)], ['Type', t.exit_type || 'open'],
         ['Reason', t.exit_reason_label || '–'], ['Note', t.exit_note || '–'], ['Overnight', t.overnight ? 'yes' : 'no']]],
       ['Result', [['P&L (after fees)', `${this.signed(t.pnl)} USDT`], ['P&L % of position', this.pctText(t.pnl_pct)], ['Fees', t.fees === null || t.fees === undefined ? '–' : `${this.n(t.fees)} USDT`], ['R', this.signed(t.r_multiple)]]],
       ['MAE / MFE (between the entry and the exit)', x
@@ -1629,11 +1561,15 @@ export class DayMode {
           ['Worst move below the exit (MAE after)', `${this.pctText(w.below_exit_pct)} of the exit${w.below_exit_r === null ? '' : ` \u00b7 ${this.signed(w.below_exit_r)} R`} (low ${fp(w.low)})`],
           ['High vs entry', this.pctText(w.high_vs_entry_pct)], ['Low vs entry', this.pctText(w.low_vs_entry_pct)]]
         : [['Window', t.status === 'closed' ? 'n/a (no candles before 24:00)' : 'trade still open']]],
+      ['Exits A and C (each for the whole position; the later one is the real exit)', t.exits_ac
+        ? [['Exit A', this.legText(t.exits_ac.A)], ['Exit C', this.legText(t.exits_ac.C)]]
+        : [['Exits', 'n/a']]],
       ['Alternatives (hands-off, closed at 24:00 at the latest)', t.alts
         ? [['Alt 1: stop and target of the buy', this.altText(t.alts.alt1)], ['Alt 2: same stop, target 1:2', this.altText(t.alts.alt2)], ['Closing candle', t.alts.end_local]]
-        : [['Alternatives', `available once the replay reaches ${t.entry_local && t.entry_local.slice(11) < '06:00' ? 'the next' : 'the'} 24:00`]]],
+        : [['Alternatives', 'available once the replay reaches 24:00 of the entry day']]],
       ['Review (optional, any time)', t.review && t.review.reviewed
         ? [['Stop too tight', t.review.stop_tight ? 'true' : 'false'], ['Price later went over the target', t.review.over_target ? 'true' : 'false'], ['The stop saved me', t.review.stop_saved ? 'true' : 'false'],
+          ['Moved the stop too far up', t.review.stop_moved_up === null ? '\u2013 (reviewed before this mark existed)' : t.review.stop_moved_up ? 'true' : 'false'],
           ['Answered', t.review.reviewed_at.slice(0, 16).replace('T', ' ')]]
         : [['Review', t.status === 'closed' ? 'not answered yet' : 'after the exit']]],
       ['Notes', [['Notes', t.notes || '–']]],
@@ -1661,9 +1597,7 @@ export class DayMode {
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); this.moveStop(e.key === 'ArrowUp' ? 1 : -1, e.shiftKey); return true; }
       if (['n', 'b', 'x', 'k', 'z'].includes(k)) return true;
     }
-    if (k === 'escape' && this.moveOpen()) { this.closeMove(); return true; }
     if (k === 'escape' && (this.drawing || this.draft !== null)) { this.cancelDraw(); return true; }
-    if (k === 'm') { e.preventDefault(); this.moveOpen() ? this.closeMove() : this.openMove(); return true; }
     if (k === 'n' || k === 'b') { e.preventDefault(); this.openNewTrade(); return true; }
     if (k === 'x') { e.preventDefault(); this.openExit(); return true; }   // the whole trade (Sell ¼ / Add ¼ are buttons only)
     if (k === 'k') { e.preventDefault(); this.skipDay(); return true; }
@@ -1676,18 +1610,12 @@ export class DayMode {
   // ---------------------------------------------------------------- init
   init() {
     const $ = this.$;
-    $('btn-hh-yes').addEventListener('click', () => this.answerTrend(true));
-    $('btn-hh-no').addEventListener('click', () => this.answerTrend(false));
-    $('btn-trend-yes').addEventListener('click', () => this.answerTrend(true));
-    $('btn-trend-no').addEventListener('click', () => this.answerTrend(false));
-    $('btn-trend-later').addEventListener('click', () => $('dlg-trend').close());
-    $('dlg-trend').addEventListener('cancel', (e) => { e.preventDefault(); $('dlg-trend').close(); });
     $('form-review').addEventListener('submit', (e) => { e.preventDefault(); this.saveReview(); });
     $('btn-review-cancel').addEventListener('click', () => this.closeReview());
     $('dlg-review').addEventListener('cancel', (e) => { e.preventDefault(); this.closeReview(); });
     for (const b of $('review-list').querySelectorAll('.rv-toggle')) b.addEventListener('click', () => this.setToggle(b, !b.classList.contains('on')));
     $('dlg-review').addEventListener('keydown', (e) => {
-      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved' };
+      const keys = { 1: 'stop_tight', 2: 'over_target', 3: 'stop_saved', 4: 'stop_moved_up' };
       if (keys[e.key]) { e.preventDefault(); this.toggleReview(keys[e.key]); }
     });
     $('btn-day-new').addEventListener('click', () => this.openNewTrade());
@@ -1701,19 +1629,13 @@ export class DayMode {
     this.loadStrategies();
     this.buildColsMenu();
     document.addEventListener('click', (e) => { const m = $('day-cols'); if (m.open && !m.contains(e.target)) m.open = false; });
-    $('btn-day-continue').addEventListener('click', () => this.continueDay());
     $('btn-dx-end').addEventListener('click', () => this.endDay());
     $('btn-dx-keep').addEventListener('click', () => this.keepTrading());
     $('btn-cal-prev').addEventListener('click', () => this.moveCal(-1));
     $('btn-cal-next').addEventListener('click', () => this.moveCal(1));
     $('btn-cal-now').addEventListener('click', () => { this.calMonth = null; this.renderCal(); });
     $('btn-day-zone').addEventListener('click', () => (this.drawing ? this.cancelDraw() : this.startDraw()));
-    // move the stop / target of the open trade: the form and the dragged chart lines
-    $('btn-dt-move').addEventListener('click', () => (this.moveOpen() ? this.closeMove() : this.openMove()));
-    $('btn-mv-cancel').addEventListener('click', () => this.closeMove());
-    $('dt-move').addEventListener('submit', (e) => { e.preventDefault(); this.applyMove(); });
-    for (const id of ['mv-stop', 'mv-tp']) $(id).addEventListener('input', () => { if (this.day && this.day.trade) this.renderMoveHint(this.day.trade); });
-    $('dt-move').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); this.closeMove(); } e.stopPropagation(); });
+    // move the stop / target of the open trade by dragging its dotted chart lines
     this.c.chart.onDragLine = (key, price) => {
       const t = this.day && this.day.trade;
       if (!t) return;

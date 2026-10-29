@@ -198,6 +198,21 @@ _register(
     )
 )
 
+_register(
+    IndicatorSpec(
+        key="vdelta",
+        name="Volume delta",
+        overlay=False,
+        params=(),
+        outputs=(OutputSpec("delta", "Delta", "histogram"),),
+        # empty (NaN) where the candles were stored before taker-buy volumes were kept; the view
+        # then fills them in the background (CandleStore.fill_taker_buy_soon)
+        compute=lambda df, p: pd.DataFrame({"delta": core.volume_delta(
+            df["volume"], df["taker_buy"] if "taker_buy" in df else pd.Series(float("nan"), index=df.index))}),
+        levels=(0.0,),
+    )
+)
+
 
 def get_indicator(key: str) -> IndicatorSpec:
     try:

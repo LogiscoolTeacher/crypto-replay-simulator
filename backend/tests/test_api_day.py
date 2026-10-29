@@ -12,7 +12,7 @@ from tests.fakes import DAY, H, LISTING, FineFakeClient
 START = LISTING + 300 * DAY          # 2018-05-10 00:00 UTC
 END = START + 6 * DAY
 NOW = START + 10 * DAY + 1
-FIRST_CURSOR = START + 3 * H + 45 * 60_000   # closes at 06:00 Europe/Malta (summer time)
+FIRST_CURSOR = START                 # the first candle of 2018-05-10 (the day starts at 00:00 UTC)
 SYMBOL = "SOLUSDT"   # a coin no other test module downloads, so their stored candles stay untouched
 PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
@@ -44,7 +44,7 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     base = f"/api/day/sessions/{sid}"
     st = session
     assert st["base_interval"] == "15m" and st["cursor_ms"] == FIRST_CURSOR and st["fee_rate"] == 0.001
-    assert st["day"]["date"] == "2018-05-10" and st["day"]["risk_amount"] == 100 and st["day"]["check"]["hh_hl"] is None
+    assert st["day"]["date"] == "2018-05-10" and st["day"]["risk_amount"] == 100 and "hh_hl" not in st["day"]["check"]
     assert st["day"]["entries_allowed"] is True and st["prepare_progress"] is None   # the trend check never blocks
     assert st["name"] == f"Day {SYMBOL} from 2018-05-10"
     # the shared listing shows the mode; the bucket controls refuse the session; the swing state still answers
@@ -55,10 +55,10 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert client.get(f"/api/sessions/{sid}").json()["mode"] == "day"
     assert client.post(f"{base}/prepare").json()["status"] == "ready"
 
-    # trend check
-    assert client.post(f"{base}/check", json={"hh_hl": "yes"}).status_code == 422
-    st = client.post(f"{base}/check", json={"hh_hl": True}).json()
-    assert st["day"]["check"]["hh_hl"] is True and st["day"]["uptrend"] is True and st["day"]["entries_allowed"] is True
+    # the daily "higher highs and higher lows" answer is gone: no /check route any more
+    assert client.post(f"{base}/check", json={"hh_hl": True}).status_code in (404, 405)
+    st = client.get(f"/api/day/sessions/{sid}").json()
+    assert st["day"]["check"]["ema_above"] is True and st["day"]["entries_allowed"] is True
     price = st["price"]
 
     # zones
@@ -140,7 +140,11 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     # early exit
     assert client.post(f"{base}/sell", json={"reason": "other"}).status_code == 422
     assert client.post(f"{base}/sell", json={"reason": "nonsense"}).status_code == 422
-    r = client.post(f"{base}/sell", json={"reason": "stalls"})
+    assert client.post(f"{base}/sell", json={"reason": "stalls", "exits": "B"}).status_code == 422
+    r = client.post(f"{base}/sell", json={"reason": "stalls", "exits": "A"})   # exit A only: the trade stays open
+    assert r.status_code == 200 and r.json()["events"][0]["kind"] == "exit_leg" and r.json()["day"]["open_exits"] == ["C"]
+    assert client.post(f"{base}/sell", json={"reason": "stalls", "exits": "A"}).status_code == 409
+    r = client.post(f"{base}/sell", json={"reason": "stalls"})                  # "both": closes what is left (C)
     assert r.status_code == 200, r.text
     ev = r.json()["events"][0]
     assert ev["kind"] == "exit" and ev["exit_type"] == "early exit" and r.json()["day"]["phase"] == "exited"
@@ -149,21 +153,23 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     assert r.json()["cursor_ms"] == st["cursor_ms"] and ev["choice"] is True and r.json()["day"]["exit_choice"] is True
     assert r.json()["day"]["can_step_back"] is False                                               # the exit is the floor
     assert client.post(f"{base}/step-back", json={}).status_code == 409
-    # end the day: the jump to 24:00, where the trade's picture is due
+    # end the day: the jump to 24:00 (= 00:00 of the next day), where the trade's picture is due
     r = client.post(f"{base}/end-day")
     assert r.status_code == 200, r.text
     assert r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["local_time"] == "2018-05-11 00:00"
-    assert r.json()["day"]["picture_due"]["id"] == tid and r.json()["day"]["can_continue"] is True
+    assert r.json()["day"]["date"] == "2018-05-11" and r.json()["day"]["phase"] == "trading"
+    assert r.json()["day"]["picture_due"]["id"] == tid and r.json()["day"]["can_skip"] is True   # nothing waits for the review
     assert client.post(f"{base}/end-day").status_code == 409
     assert client.post(f"{base}/sell", json={"reason": "stalls"}).status_code == 409
-    # the review: optional (nothing waits for it), all three marks, true / false only
+    # the review: optional, all four marks, true / false only
     assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": True}).status_code == 422
-    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": 1, "over_target": False, "stop_saved": False}).status_code == 422
-    assert client.post(f"{base}/trades/424242/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 404
-    r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False})
+    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": False, "stop_saved": False}).status_code == 422
+    assert client.post(f"{base}/trades/{tid}/review", json={"stop_tight": 1, "over_target": False, "stop_saved": False, "stop_moved_up": False}).status_code == 422
+    assert client.post(f"{base}/trades/424242/review", json={"stop_tight": False, "over_target": False, "stop_saved": False, "stop_moved_up": False}).status_code == 404
+    r = client.post(f"{base}/trades/{tid}/review", json={"stop_tight": False, "over_target": True, "stop_saved": False, "stop_moved_up": False})
     assert r.status_code == 200, r.text
     assert r.json()["trade"]["review"]["over_target"] is True and r.json()["trade"]["review"]["reviewed"] is True
-    assert r.json()["state"]["day"]["can_continue"] is True
+    assert r.json()["state"]["day"]["can_skip"] is True
     assert client.patch(f"{base}/trade", json={"stop": 1.0}).status_code == 409                    # closed: nothing to move
 
     # the picture at the exit
@@ -176,10 +182,10 @@ def test_day_session_lifecycle(client: TestClient, session: dict):
     rows = client.get(f"{base}/trades").json()["trades"]
     assert len(rows) == 1 and rows[0]["exit_reason_label"] == "Price stalls at resistance" and rows[0]["has_image"]
 
-    # continue -> next 06:00; skip -> the day after; reset -> back to the start
+    # continue: nothing left to continue (End the day already started the next day); skip -> the day
+    # after; reset -> back to the start
     r = client.post(f"{base}/continue")
-    assert r.status_code == 200 and r.json()["events"][0]["kind"] == "jump" and r.json()["day"]["date"] == "2018-05-11"
-    assert r.json()["day"]["phase"] == "trading" and r.json()["day"]["check"]["hh_hl"] is None
+    assert r.status_code == 200 and r.json()["events"] == [] and r.json()["day"]["date"] == "2018-05-11"
     r = client.post(f"{base}/skip")
     assert r.status_code == 200 and r.json()["day"]["date"] == "2018-05-12"
     r = client.post(f"{base}/reset")
@@ -301,11 +307,11 @@ def test_next_signal_routes(client: TestClient, session: dict):
 def test_conditions_routes(client: TestClient, session: dict):
     sid = session["id"]
     r = client.get(f"/api/day/sessions/{sid}/trades")
-    assert r.status_code == 200 and all("conditions" in t and "uptrend" in t for t in r.json()["trades"])
+    assert r.status_code == 200 and all("conditions" in t and "ema_above" in t for t in r.json()["trades"])
     r = client.get(f"/api/day/sessions/{sid}/conditions")
     assert r.status_code == 200, r.text
     ev = r.json()
-    assert ev["scope"] == "session" and len(ev["conditions"]) == 17 and {"with", "without", "unknown", "key", "label"} <= set(ev["conditions"][0])
+    assert ev["scope"] == "session" and len(ev["conditions"]) == 15 and {"with", "without", "unknown", "key", "label"} <= set(ev["conditions"][0])
     assert client.get(f"/api/day/sessions/{sid}/conditions", params={"scope": "all"}).json()["scope"] == "all"
     assert client.get(f"/api/day/sessions/{sid}/conditions", params={"scope": "week"}).status_code == 422
     r = client.get(f"/api/day/sessions/{sid}/conditions.csv", params={"scope": "all"})

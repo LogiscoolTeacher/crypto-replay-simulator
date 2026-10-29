@@ -30,7 +30,7 @@ def test_catalogues(client: TestClient):
     assert [c["symbol"] for c in client.get("/api/coins").json()][:2] == ["BTCUSDT", "ETHUSDT"]
     assert [i["name"] for i in client.get("/api/intervals").json()] == ["1m", "5m", "15m", "1h", "4h", "1D"]
     inds = client.get("/api/indicators").json()
-    assert {i["key"] for i in inds} == {"sma", "ema", "rsi", "macd", "bbands", "atr"}
+    assert {i["key"] for i in inds} == {"sma", "ema", "rsi", "macd", "bbands", "atr", "vdelta"}
     strats = client.get("/api/strategies").json()
     assert {s["key"] for s in strats} == {"rsi_reversal", "ema_cross", "macd_cross", "bb_bounce"}
 

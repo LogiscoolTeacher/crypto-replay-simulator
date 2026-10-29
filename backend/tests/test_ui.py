@@ -174,10 +174,8 @@ def test_ui_end_to_end(page, server_url, tmp_path: Path):
     page.wait_for_function("window.__app.state.playing === true")
     page.keyboard.press("P")
     page.wait_for_function("window.__app.state.playing === false")
-    # The same zoom via the footer buttons.
-    page.click("#btn-zoom-in"); wait_bars(w0 / 1.25)
-    page.click("#btn-zoom-out"); page.click("#btn-zoom-out"); wait_bars(w0 * 1.25)
-    page.click("#btn-zoom-reset"); wait_bars(w0)
+    # The footer has no zoom buttons any more: the keys above are the zoom.
+    assert page.locator("#btn-zoom-in").count() == 0
 
     # ---------------------------------------------------------------- trading
     page.click("button.tf[data-interval='1h']")

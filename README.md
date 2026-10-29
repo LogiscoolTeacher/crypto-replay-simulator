@@ -67,8 +67,8 @@ Open http://127.0.0.1:8000 in a browser. Interactive API docs: http://127.0.0.1:
    touches with a bonus for recent ones and for the window's extremes; each line is labelled
    R1-R3 / S1-S3 nearest-first with its number of touches. Only candles known at the replay
    day are used, so nothing from the future leaks in.
-   Chart zoom: Up arrow or the + button zooms in, Down arrow or the − button zooms out (hold the
-   key to keep going), Space or the reset button returns to the default zoom of the last 160 candles. Zooming keeps the latest candle at the right edge;
+   Chart zoom: Up arrow zooms in, Down arrow zooms out (hold the
+   key to keep going), Space returns to the default zoom of the last 160 candles. Zooming keeps the latest candle at the right edge;
    mouse wheel and drag still work as usual.
 5. **Strategy**: pick one of the built-in strategies and tune its parameters with the gear button.
    Its indicators are drawn automatically. The ENTER light is on while the strategy sees an entry

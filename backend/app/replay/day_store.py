@@ -16,7 +16,7 @@ from typing import Any
 SCHEMA = """
 -- One row per day-trading session: the fixed risk per trade and where the replay stands.
 -- phase: "trading" (stepping through candles) or "exited" (a trade has just closed: end the day,
--- keep trading, or "continue" to the next 06:00). start_cursor_ms: the first 06:00 candle (set once).
+-- the jump to the next 00:00, or keep trading). start_cursor_ms: the first day's start candle (set once).
 CREATE TABLE IF NOT EXISTS day_sessions (
     session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     timezone         TEXT    NOT NULL,
@@ -29,8 +29,9 @@ CREATE TABLE IF NOT EXISTS day_sessions (
     updated_at       TEXT    NOT NULL
 );
 
--- The trend check of one trading day (06:00 to 06:00, local date of its start).
--- ema_above is computed (1/0, NULL = EMA 200 not available), hh_hl is the user's answer (NULL = not yet).
+-- The trend check of one trading day (the UTC date, 00:00 to 24:00; 06:00 to 06:00 until 2026-10-25).
+-- ema_above is computed (1/0, NULL = EMA 200 not available); hh_hl was the user's daily answer
+-- (retired 2026-10-24, old rows keep it, nothing reads it).
 CREATE TABLE IF NOT EXISTS day_checks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id    TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -161,14 +162,19 @@ MIGRATIONS = {
         "confidence": "INTEGER",
         # the three review marks answered at 24:00 of the exit day (0 / 1) and when they were answered
         "review_stop_tight": "INTEGER", "review_over_target": "INTEGER", "review_stop_saved": "INTEGER", "reviewed_at": "TEXT",
+        # the fourth review mark, "I moved the stop too far up" (added 2026-10-25; NULL on trades reviewed before)
+        "review_stop_moved_up": "INTEGER",
         # RSI 14 of the 1-hour chart at the buy (the 15m one is entry_rsi)
         "entry_rsi_1h": "REAL",
         # maximum adverse / favourable excursion between the entry and the exit, percent of the entry and in R
         "mae_pct": "REAL", "mfe_pct": "REAL", "mae_r": "REAL", "mfe_r": "REAL",
         # the two hands-off alternatives (JSON: end_ms, alt1, alt2), filled once the replay reached their 24:00
         "alts": "TEXT",
+        # exits A and C (JSON: {"A": leg | null, "C": leg | null}, null = still open; NULL column = both
+        # open), each a whole-size version of the exit; the trade closes with the later one (see DayEngine.sell)
+        "exits_ac": "TEXT",
         # 1 = the trade's picture is taken once the replay reaches 24:00 of the exit's trading day (exits
-        # from this rule on; older trades keep NULL). Until 2026-10 it also held the replay for the review.
+        # from this rule on; older trades keep NULL). Until 2026-10-29 it also held the replay for the review.
         "review_due": "INTEGER",
         # scaling in quarters of the original size: how many are still held (NULL = 4) and the steps
         # (JSON list: at_ms, side sell/add, coins, price, value, fee, reason, note), see DayEngine.scale_trade
