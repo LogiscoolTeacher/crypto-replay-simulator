@@ -12,6 +12,7 @@ const nextFrame = () => new Promise(r => { const id = setTimeout(r, 100); reques
 const PLAN_DEBOUNCE_MS = 150;
 const PLAN_MARGIN_BARS = 30;
 const PIC_MARGIN_BARS = 8;    // empty bars right of the last candle in a trade's picture: the line labels sit there
+const AUTO_PICTURE_TRIES = 3;   // autorun: the same picture asked for this often in a row stops the run
 // The entry conditions saved with every trade (same keys and order as CONDITIONS in day_engine.py).
 const COND_LABELS = [
   ['ema_above', 'Daily close above EMA 200'],
@@ -834,14 +835,19 @@ export class DayMode {
   }
   // ---------------------------------------------------------------- autorun
   // The automatic run of a jump strategy (backend autorun.py), driven from here so the pictures are
-  // taken exactly as in a manual replay. Each call lets the server run until it needs the day
-  // picture (taken here, then the next call goes on), or something happened: a jump, a buy, an
-  // exit, or a trade picture due (handleEvents takes it). No button: start it from the console with
-  // __app.day.autoRun() once the run exists (POST …/autorun); autoStop() ends the loop after the
-  // current call. `autoStatus` holds the latest status (trades, signal outcomes, phase).
+  // taken exactly as in a manual replay. Each call lets the server run until it needs a picture
+  // (`need`: the day picture, or a trade picture that is due; taken here, then the next call goes
+  // on) or something happened (a jump, a buy, an exit). The server never steps past a missing
+  // picture; when the same one is still asked for after AUTO_PICTURE_TRIES attempts the loop stops
+  // with an error instead of spinning. No button: start it from the console with __app.day.autoRun()
+  // once the run exists (POST …/autorun); autoStop() ends the loop after the current call.
+  // `autoStatus` holds the latest status (trades, signal outcomes, phase), `autoError` a stop reason.
   async autoRun({ onProgress } = {}) {
     if (!this.ready() || this.autoRunning) return null;
     this.autoRunning = true;
+    this.autoError = null;
+    let lastNeed = null;
+    let tries = 0;
     try {
       while (this.autoRunning) {
         const st = await this.c.api.dayAutorunAdvance(this.session.id, {});
@@ -852,7 +858,12 @@ export class DayMode {
         this.c.applyState(st);
         await this.c.refreshView();
         this.autoStatus = run;
+        const needKey = run.need ? `${run.need}@${st.cursor_ms}` : null;
+        tries = needKey && needKey === lastNeed ? tries + 1 : 0;
+        lastNeed = needKey;
+        if (tries >= AUTO_PICTURE_TRIES) throw new Error(`the ${run.need.replace('_', ' ')} could not be saved (${AUTO_PICTURE_TRIES} tries)`);
         if (run.need === 'day_picture') await this.captureDayPicture();
+        else if (run.need === 'trade_picture') await this.duePicture();
         else {
           if (events.some(ev => ev.kind === 'jump' || ev.kind === 'autorun_buy')) await this.refresh();   // zones, trades, days
           for (const ev of events) if (ev.kind === 'autorun_buy') this.c.toast(`Autorun: trade ${ev.n} (${ev.pattern}) @ ${this.c.fmtPrice(ev.trade.entry_price)}.`);

@@ -77,7 +77,7 @@ def run_all(day, ar: Autorun, sid: str, pictures: bool = False) -> list[dict]:
         calls.append(st)
         if st["autorun"]["need"] == "day_picture":
             day.attach_day_image(sid, st["day"]["date"], PNG)
-        if pictures and st["day"]["picture_due"]:
+        if pictures and st["day"]["picture_due"] and not st["day"]["picture_due"]["has_image"]:
             day.attach_image(sid, st["day"]["picture_due"]["id"], PNG)
         if st["autorun"]["phase"] == "done":
             return calls
@@ -260,3 +260,41 @@ def test_autorun_api(tmp_path: Path, monkeypatch):
         assert client.get(f"{base}/signals.csv").text.startswith("seq")
     finally:
         client.delete(f"/api/sessions/{sid}")
+
+
+def test_a_missing_trade_picture_holds_the_run(env):
+    day, ar, sid, fake = env
+    # D1: the hammer trade (target the same day); D1 + 3h: an engulfing trade that runs until the D4 break
+    fake[:] = [sig(D1, P(D1) + 0.5, P(D1) - 2.0), sig(D1 + 3 * H, P(D1) + 0.5, P(D1) - 2.0), sig(D3, P(D3) + 0.5, P(D3) - 2.0)]
+    ar.start(sid, {})
+    for _ in range(200):
+        st = ar.advance(sid)
+        if st["autorun"]["need"] == "day_picture":
+            day.attach_day_image(sid, st["day"]["date"], PNG)
+        elif st["autorun"]["need"] == "trade_picture":
+            break
+    else:
+        raise AssertionError("no trade picture asked for")
+    held = st["cursor_ms"]
+    due = st["day"]["picture_due"]["id"]
+    for _ in range(3):                        # nobody takes it: the run does not move on
+        st = ar.advance(sid)
+        assert st["autorun"]["need"] == "trade_picture" and st["cursor_ms"] == held
+    day.attach_image(sid, due, PNG)
+    run_all(day, ar, sid, pictures=True)
+    trades = day.trades(sid)["trades"]
+    assert len(trades) == 2 and all(t["has_image"] for t in trades)
+    # the held run passed no signal by mistake: the D3 one came while the second trade was really open
+    rows = ar.signals(sid)
+    assert [r["outcome"] for r in rows] == ["traded", "traded", "trade_open"]
+    assert trades[1]["entry_ms"] < rows[2]["signal_ms"] < trades[1]["exit_ms"]
+
+
+def test_autorun_signal_zones_are_not_merged(env):
+    day, ar, sid, fake = env
+    near = sig(D3, P(D1) + 0.6, P(D1) - 1.9)            # next to the D1 trade's zone: the app would merge it
+    fake[:] = [sig(D1, P(D1) + 0.5, P(D1) - 2.0), near]
+    ar.start(sid, {"engulfing": False, "pictures": False})
+    run_all(day, ar, sid)
+    zones = day.zones(sid)
+    assert any(z["upper"] == pytest.approx(P(D1) + 0.5) and z["lower"] == pytest.approx(P(D1) - 2.0) for z in zones)   # the trade's own zone

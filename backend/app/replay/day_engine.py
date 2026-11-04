@@ -657,16 +657,18 @@ class DayEngine:
         with self.store.tx() as conn:
             return [self._public_zone(z) for z in self.store.list_zones(conn, session_id)]
 
-    def add_zone(self, session_id: str, interval: str, p1: float, p2: float, source: str | None = None) -> dict:
+    def add_zone(self, session_id: str, interval: str, p1: float, p2: float, source: str | None = None,
+                 merge: bool = True) -> dict:
         """Add a zone; a zone close to an existing one is merged into it (see _merge_zones), so the
-        result may be an older zone with wider edges. `merged` = how many zones were folded in."""
+        result may be an older zone with wider edges. `merged` = how many zones were folded in.
+        `merge=False` keeps it as it is (the autorun: every trade keeps its signal's own zone)."""
         self._day_row(session_id)
         upper, lower = self._zone_edges(interval, p1, p2)
         now = _now_iso()
         with self._lock, self.store.tx() as conn:
             z = self.store.add_zone(conn, session_id=session_id, interval=interval, upper=upper, lower=lower, source=source,
                                     created_at=now, updated_at=now)
-            z, merged = self._merge_zones(conn, session_id, z["id"])
+            z, merged = self._merge_zones(conn, session_id, z["id"]) if merge else (z, 0)
         return {**self._public_zone(z), "merged": merged}
 
     def update_zone(self, session_id: str, zone_id: int, p1: float, p2: float) -> dict:
@@ -1465,7 +1467,7 @@ class DayEngine:
         """The strategies the "Next signal" button can jump with."""
         return [j.describe() for j in JUMP_STRATEGIES.values()]
 
-    def next_signal(self, session_id: str, strategy: str, params: dict | None = None) -> dict:
+    def next_signal(self, session_id: str, strategy: str, params: dict | None = None, merge_zone: bool = True) -> dict:
         """Jump forward to the next entry signal of a jump strategy (the button "Next signal"): the
         15m candle in which the signal happens becomes the cursor, at any time of day. The zone the
         signal came from is added to the session's zones (1h) so the New trade panel can use it.
@@ -1497,7 +1499,7 @@ class DayEngine:
                     self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=_now_iso())
             self._set_cursor(s, target)
             self._set_floor(s, target)
-            zone = self._signal_zone(session_id, sig)
+            zone = self._signal_zone(session_id, sig, merge=merge_zone)
             close = target + base
             ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(close),
                   "reason": f"{js.name}: {js.describe_signal(sig)}.",
@@ -1537,7 +1539,7 @@ class DayEngine:
         hit = q[q["low"] <= sig.get("entry_level", sig["zone_top"])]
         return int(hit["time"].iloc[0]) * 1000 if len(hit) else None
 
-    def _signal_zone(self, session_id: str, sig: dict) -> dict:
+    def _signal_zone(self, session_id: str, sig: dict, merge: bool = True) -> dict:
         """The signal's zone as a session zone (1h), reusing an identical one. The zones of earlier
         signals go unless a trade uses them, so the chart only shows the current signal's zone
         next to the zones drawn by hand; a signal zone close to another zone is merged into it."""
@@ -1548,7 +1550,7 @@ class DayEngine:
                     self.store.delete_unused_signal_zones(conn, session_id, keep=z["id"])
                     return self._public_zone(z)
             self.store.delete_unused_signal_zones(conn, session_id)
-        return self.add_zone(session_id, "1h", top, bottom, source="signal")
+        return self.add_zone(session_id, "1h", top, bottom, source="signal", merge=merge)
 
     def _next_ema_above_day(self, s: dict, after: date) -> date | None:
         """The first trading day after `after` whose last completed daily candle closes above the

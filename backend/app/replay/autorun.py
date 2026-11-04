@@ -26,9 +26,14 @@ trade still runs to its exit) or at the end of the data.
 
 **Pictures** (`pictures`, on by default): the frontend takes them (day.js). `advance` therefore
 returns before every step or jump that leaves a day whose day picture is missing (`need:
-"day_picture"`), and after a `picture` event (the trade picture at 24:00 of the exit day). The
-frontend loop (`DayMode.autoRun`) takes the picture and calls `advance` again. Without pictures
-(tests, headless) nothing waits.
+"day_picture"`), and whenever a trade picture is due (its exit day's 24:00 reached) and still
+missing (`need: "trade_picture"`). It never steps on while one is missing, so a picture that fails
+holds the run instead of letting it pass signals. The frontend loop (`DayMode.autoRun`) takes the
+picture and calls `advance` again, and stops with an error when the same picture keeps failing.
+Without pictures (tests, headless) nothing waits.
+
+**Zones**: the autorun's signal zones are never merged into nearby ones (`merge_zone=False`), so
+every trade keeps the zone its signal came from.
 
 **Report** (`report`): the signal funnel, the trades, and two "what if" results per signal. *Raw*
 enters at the signal candle's close; *confirmed* enters at the confirmation close (for every
@@ -246,7 +251,7 @@ class Autorun:
     def advance(self, session_id: str, max_steps: int = MAX_STEPS_PER_CALL) -> dict:
         """Run until the frontend has something to do (see the module docstring), the run is done or
         `max_steps` candles have been stepped. Returns the session state with `events` and `autorun`
-        (the status plus `need`: "day_picture" or None)."""
+        (the status plus `need`: "day_picture", "trade_picture" or None)."""
         events: list[dict] = []
         need = None
         with self.day._lock:
@@ -255,6 +260,9 @@ class Autorun:
             st = self.day.state(session_id)
             steps = 0
             while run["phase"] != "done" and steps < max_steps:
+                if rules.pictures and st["day"].get("picture_due") and not st["day"]["picture_due"]["has_image"]:
+                    need = "trade_picture"   # never step past a missing trade picture
+                    break
                 if st["finished"]:
                     self._end_of_data(session_id, run, st)
                     break
@@ -299,7 +307,7 @@ class Autorun:
             leaves = trading_day(nxt["cursor_ms"] + base) != trading_day(s["cursor_ms"] + base)
             if leaves and not st["day"]["check"]["has_image"]:
                 return st, "day_picture", True, 0   # the jump leaves the day: its picture first
-        st = self.day.next_signal(sid, rules.strategy, rules.params)
+        st = self.day.next_signal(sid, rules.strategy, rules.params, merge_zone=False)
         evs = st.pop("events", [])
         events.extend(evs)
         ev = next((e for e in evs if e["kind"] == "jump"), None)
@@ -399,7 +407,7 @@ class Autorun:
             self._close_signal(sid, run, "invalid", **fields_)
             return st, False
         stop = sig["zone_bottom"] - rules.stop_atr_mult * atr
-        zone = self.day._signal_zone(sid, sig)   # back if crossing 00:00 removed the unused signal zone
+        zone = self.day._signal_zone(sid, sig, merge=False)   # back if crossing 00:00 removed the unused signal zone
         p = self.day.plan(sid, zone["id"], stop=stop, ratio=rules.ratio)
         entry = p["entry_price"]
         fields_.update(entry=entry, stop=stop, take_profit=p["take_profit"],

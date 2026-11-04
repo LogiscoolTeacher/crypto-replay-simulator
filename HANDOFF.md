@@ -184,10 +184,17 @@ Routes: `POST /api/day/sessions/{id}/autorun` (start, `rules`), `POST …/autoru
 `GET …/autorun`, `…/autorun/report`, `…/autorun/signals(.csv)`.
 
 **Pictures**: the frontend takes them, so the browser drives the run: `__app.day.autoRun()` (stop with
-`autoStop()`, last status in `autoStatus`). `advance` returns with `need: "day_picture"` before a step
-or jump that leaves a day without its picture, and after a `picture` event. `pictures: false` runs
-headless. There's no button yet. Keep the browser pane visible during a run (requestAnimationFrame).
-A reset clears the run and its log.
+`autoStop()`, last status in `autoStatus`, a stop reason in `autoError`). `advance` returns with
+`need: "day_picture"` before a step or jump that leaves a day without its picture, and with `need:
+"trade_picture"` while a due trade picture is missing. It never steps past a missing picture: the first
+CTest__01 attempt lost one picture (`capturePicture` gives up silently) and then stepped for weeks,
+logging the signals it passed as "waiting". The loop stops after 3 failed tries of the same picture.
+`pictures: false` runs headless. There's no button yet. Keep the browser pane visible during a run
+(requestAnimationFrame), and don't click in the page while it runs.
+
+**Zones**: autorun signal zones aren't merged (`merge_zone=False` on `next_signal`, `merge=False` on
+`add_zone`). Merging folded every new signal zone into the zone of an old trade (which stays), so that
+zone grew to ~7 % and no new zone showed. A reset clears the run and its log.
 
 ## RLine_Retest (`backend/app/strategies/rline.py`)
 
@@ -242,6 +249,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-04 Autorun fix: a missing trade picture holds the run (`need: "trade_picture"`), the frontend
+  stops after 3 failed tries; autorun signal zones are not merged.
 - 2026-11-04 Autorun (`autorun.py`, `day_signal_log`, `day_sessions.autorun`, `/autorun` routes,
   `DayMode.autoRun`): automatic RLine_Retest trading with hammer / engulfing confirmation, a zone-break
   cancel, a zone stop − 0.25 ATR 1h, a 2R target and a fee filter (< 20 % of the risk). Every signal is
