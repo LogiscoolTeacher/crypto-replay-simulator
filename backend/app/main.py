@@ -22,6 +22,7 @@ from . import config
 from .data.candle_store import CandleStore
 from .indicators.registry import INDICATORS, get_indicator, validate_params
 from .replay import day_engine as day_rules
+from .replay.autorun import Autorun
 from .replay.day_engine import DayEngine
 from .replay.day_store import DayStore
 from .replay import engine as engine_rules
@@ -39,6 +40,7 @@ store = CandleStore(config.DB_PATH)
 sessions = SessionStore(config.DB_PATH)
 engine = ReplayEngine(store, sessions)
 day = DayEngine(engine, DayStore(config.DB_PATH))  # day-trading mode on top of the shared sessions and data
+autorun = Autorun(day)  # a day session trading a jump strategy's signals by itself (data collection)
 
 
 @app.exception_handler(RequestValidationError)
@@ -311,6 +313,14 @@ class DayNextSignalRequest(BaseModel):
 class DayStepRequest(BaseModel):
     n: int = Field(default=1, ge=1, le=100_000, description="15-minute candles to advance (stops at an exit)")
     view: ViewRequest | None = Field(default=None, description="If given, the response also carries this view")
+
+
+class AutorunStart(BaseModel):
+    rules: dict[str, Any] = Field(default_factory=dict, description="AutorunRules fields (autorun.py); missing ones keep their defaults")
+
+
+class AutorunAdvance(BaseModel):
+    max_steps: int = Field(default=400, ge=1, le=100_000, description="15-minute steps at most in this call")
 
 
 class DayImage(BaseModel):
@@ -812,6 +822,41 @@ def day_conditions(session_id: str, scope: str = Query(default="session", patter
 def day_conditions_csv(session_id: str, scope: str = Query(default="session", pattern="^(session|all)$")) -> PlainTextResponse:
     body = day.conditions_csv(session_id, scope)
     return PlainTextResponse(body, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="conditions_{scope}_{session_id}.csv"'})
+
+
+@app.post("/api/day/sessions/{session_id}/autorun")
+def day_autorun_start(session_id: str, req: AutorunStart) -> dict:
+    """Start the session's autorun with these rules (one run per session; it advances with /autorun/advance)."""
+    return autorun.start(session_id, req.rules)
+
+
+@app.get("/api/day/sessions/{session_id}/autorun")
+def day_autorun_status(session_id: str) -> dict:
+    return autorun.status(session_id)
+
+
+@app.post("/api/day/sessions/{session_id}/autorun/advance")
+def day_autorun_advance(session_id: str, req: AutorunAdvance) -> dict:
+    """Run on until the frontend has to take a picture (autorun.need), something happened (a jump, a
+    buy, an exit) or the run is done. The state carries `events` and `autorun`."""
+    return autorun.advance(session_id, req.max_steps)
+
+
+@app.get("/api/day/sessions/{session_id}/autorun/report")
+def day_autorun_report(session_id: str) -> dict:
+    """Signal funnel, trades and the raw / confirmed what-ifs, split by the daily trend."""
+    return autorun.report(session_id)
+
+
+@app.get("/api/day/sessions/{session_id}/autorun/signals")
+def day_autorun_signals(session_id: str) -> list[dict]:
+    return autorun.signals(session_id)
+
+
+@app.get("/api/day/sessions/{session_id}/autorun/signals.csv")
+def day_autorun_signals_csv(session_id: str) -> PlainTextResponse:
+    body = autorun.signals_csv(session_id)
+    return PlainTextResponse(body, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="signals_{session_id}.csv"'})
 
 
 @app.get("/api/day/sessions/{session_id}/days.csv")

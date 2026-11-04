@@ -146,9 +146,49 @@ CREATE TABLE IF NOT EXISTS day_auto_trades (
     updated_at      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS day_auto_trades_session ON day_auto_trades(session_id, seq);
+-- The signal log of an autorun (see autorun.py): one row per signal of the jump strategy the run
+-- met, traded or not, with what became of it (outcome), the confirmation, the planned trade and,
+-- filled by the report, the "what if" results of a raw entry at the signal and of the confirmed entry.
+CREATE TABLE IF NOT EXISTS day_signal_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    signal_ms       INTEGER,
+    bar_ms          INTEGER NOT NULL,
+    zone_top        REAL    NOT NULL,
+    zone_bottom     REAL    NOT NULL,
+    entry_level     REAL    NOT NULL,
+    rules           TEXT,
+    touches         INTEGER,
+    ema_above       INTEGER,
+    outcome         TEXT,
+    confirm_ms      INTEGER,
+    pattern         TEXT,
+    entry           REAL,
+    stop            REAL,
+    take_profit     REAL,
+    stop_dist_pct   REAL,
+    atr             REAL,
+    est_fees        REAL,
+    fee_share       REAL,
+    trade_id        INTEGER,
+    raw_entry       REAL,
+    raw_stop        REAL,
+    raw_result      TEXT,
+    raw_r           REAL,
+    raw_net_r       REAL,
+    raw_exit_ms     INTEGER,
+    conf_result     TEXT,
+    conf_r          REAL,
+    conf_net_r      REAL,
+    conf_exit_ms    INTEGER,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS day_signal_log_session ON day_signal_log(session_id, seq);
 """
 
-TABLES = ("day_sessions", "day_checks", "day_zones", "day_trades", "day_auto_trades")
+TABLES = ("day_sessions", "day_checks", "day_zones", "day_trades", "day_auto_trades", "day_signal_log")
 # Columns added after the first release, created on databases that predate them (additive only).
 MIGRATIONS = {
     "day_trades": {
@@ -181,7 +221,9 @@ MIGRATIONS = {
         "quarters_open": "INTEGER", "scales": "TEXT",
     },
     # the earliest candle "Step back" may return to, set by every jump (the candles jumped over were never seen)
-    "day_sessions": {"back_floor_ms": "INTEGER"},
+    # autorun: the automatic run of a jump strategy's signals (JSON: rules, phase, current signal,
+    # counters; NULL = no run), see autorun.py
+    "day_sessions": {"back_floor_ms": "INTEGER", "autorun": "TEXT"},
     # the daily journal: notes, the end-of-day picture and how / when the day was left
     # who made a zone: "signal" = the "Next signal" button (removed again while no trade uses it), NULL = drawn by hand
     "day_zones": {"source": "TEXT"},
@@ -385,3 +427,18 @@ class DayStore:
 
     def delete_auto_trades(self, conn: sqlite3.Connection, session_id: str) -> None:
         conn.execute("DELETE FROM day_auto_trades WHERE session_id=?", (session_id,))
+
+    # ------------------------------------------------------------- signal log
+    def add_signal(self, conn: sqlite3.Connection, **f: Any) -> dict:
+        n = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM day_signal_log WHERE session_id=?", (f["session_id"],)).fetchone()[0]
+        lid = self._insert(conn, "day_signal_log", {**f, "seq": int(n) + 1})
+        return _row(conn.execute("SELECT * FROM day_signal_log WHERE id=?", (lid,)).fetchone())  # type: ignore[return-value]
+
+    def list_signals(self, conn: sqlite3.Connection, session_id: str) -> list[dict]:
+        return [dict(r) for r in conn.execute("SELECT * FROM day_signal_log WHERE session_id=? ORDER BY seq", (session_id,)).fetchall()]
+
+    def update_signal(self, conn: sqlite3.Connection, log_id: int, **f: Any) -> None:
+        self._update(conn, "day_signal_log", "id", log_id, f)
+
+    def delete_signals(self, conn: sqlite3.Connection, session_id: str) -> None:
+        conn.execute("DELETE FROM day_signal_log WHERE session_id=?", (session_id,))

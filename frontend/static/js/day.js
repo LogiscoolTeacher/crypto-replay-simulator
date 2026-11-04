@@ -832,6 +832,46 @@ export class DayMode {
       this.$('day-signal-last').textContent = `${ev.to_local} · ${ev.reason}`;
     });
   }
+  // ---------------------------------------------------------------- autorun
+  // The automatic run of a jump strategy (backend autorun.py), driven from here so the pictures are
+  // taken exactly as in a manual replay. Each call lets the server run until it needs the day
+  // picture (taken here, then the next call goes on), or something happened: a jump, a buy, an
+  // exit, or a trade picture due (handleEvents takes it). No button: start it from the console with
+  // __app.day.autoRun() once the run exists (POST …/autorun); autoStop() ends the loop after the
+  // current call. `autoStatus` holds the latest status (trades, signal outcomes, phase).
+  async autoRun({ onProgress } = {}) {
+    if (!this.ready() || this.autoRunning) return null;
+    this.autoRunning = true;
+    try {
+      while (this.autoRunning) {
+        const st = await this.c.api.dayAutorunAdvance(this.session.id, {});
+        const events = st.events || [];
+        const run = st.autorun;
+        delete st.events;
+        delete st.autorun;
+        this.c.applyState(st);
+        await this.c.refreshView();
+        this.autoStatus = run;
+        if (run.need === 'day_picture') await this.captureDayPicture();
+        else {
+          if (events.some(ev => ev.kind === 'jump' || ev.kind === 'autorun_buy')) await this.refresh();   // zones, trades, days
+          for (const ev of events) if (ev.kind === 'autorun_buy') this.c.toast(`Autorun: trade ${ev.n} (${ev.pattern}) @ ${this.c.fmtPrice(ev.trade.entry_price)}.`);
+          await this.handleEvents(events.filter(ev => ev.kind !== 'autorun_buy'));
+        }
+        if (onProgress) onProgress(run, events);
+        if (run.phase === 'done') { this.c.toast(`Autorun done: ${run.done}.`); break; }
+      }
+    } catch (e) {
+      this.c.toast(`Autorun stopped: ${e.message}`, true);
+      this.autoError = e.message;
+    } finally {
+      this.autoRunning = false;
+      this.render();
+    }
+    return this.autoStatus || null;
+  }
+  autoStop() { this.autoRunning = false; }
+
   async loadStrategies() {
     try { this.strategies = await this.c.api.dayStrategies(); } catch { this.strategies = []; }
     const sel = this.$('day-strategy');

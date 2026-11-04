@@ -3,7 +3,7 @@
 State of the project for the next Claude Code instance. Read this first, then the code it points
 to. Update the **History** and **Open / ideas** sections when you finish a change.
 
-Last updated: 2026-10-29 (quarter steps, optional review, zone merging; merged with the UTC day).
+Last updated: 2026-11-04 (autorun: automatic RLine_Retest runs for data collection).
 
 ## What the app is
 
@@ -38,6 +38,7 @@ backend/app/strategies/rline.py     RLine_Retest jump strategy (day mode "Next s
 backend/app/replay/engine.py        swing engine + shared session/cursor/view logic
 backend/app/replay/day_engine.py    day-trading engine (~1850 lines)
 backend/app/replay/day_store.py     day tables + additive MIGRATIONS dict
+backend/app/replay/autorun.py       autorun: a day session trades a jump strategy's signals by itself
 frontend/index.html                 the single page
 frontend/static/js/app.js           app state, replay controls, swing trading, keys
 frontend/static/js/day.js           day-trading side panel, dialogs, Trades/Days tabs, pictures
@@ -157,6 +158,37 @@ exit. Nothing is undone. Crossing 00:00 backwards clears that day's "left" mark.
 Enter (end the day), Z draw zone, J, E, → step, ← step back, P play. 1-2-3-4 only in the review
 dialog. Sell ¼ / Add ¼ have no keys.
 
+## Autorun (`backend/app/replay/autorun.py`)
+
+The data-collection runs ("CTest__NN" sessions): a day session trades the RLine_Retest signals by
+itself, one 15m step at a time, so every decision reads only closed candles. The module docstring
+has the full rules. In short:
+- **Next signal**, then the next 10 × 15m candles: a close below the zone bottom gives `zone_broken`;
+  a hammer (lower wick ≥ 2 × body, upper ≤ 1 × body, low reaching the zone top + buffer) or a
+  bullish engulfing confirms.
+- **Entry** at the confirming candle's close. Stop = zone bottom − 0.25 × ATR 14 (1h), target 2R,
+  the session's normal risk (0.1 % = 100 USDT).
+- **Fee filter**: estimated round-trip fees (2 × the buy fee) must stay below 20 % of the risk.
+- Rules live in `AutorunRules` and are saved with the run (`day_sessions.autorun` JSON), so runs stay
+  comparable.
+
+**Signal log** `day_signal_log`: every signal of the period with its outcome (`traded`,
+`no_confirmation`, `zone_broken`, `fees_too_high`, `trade_open`, `waiting`, …), the daily trend
+(`ema_above`), the planned entry / stop / fees, and the what-ifs the report fills in:
+- *raw*: entry at the signal close
+- *confirmed*: entry at the confirmation close, also for filtered signals
+
+Both use the same stop and target, with gross and net R.
+
+Routes: `POST /api/day/sessions/{id}/autorun` (start, `rules`), `POST …/autorun/advance`,
+`GET …/autorun`, `…/autorun/report`, `…/autorun/signals(.csv)`.
+
+**Pictures**: the frontend takes them, so the browser drives the run: `__app.day.autoRun()` (stop with
+`autoStop()`, last status in `autoStatus`). `advance` returns with `need: "day_picture"` before a step
+or jump that leaves a day without its picture, and after a `picture` event. `pictures: false` runs
+headless. There's no button yet. Keep the browser pane visible during a run (requestAnimationFrame).
+A reset clears the run and its log.
+
 ## RLine_Retest (`backend/app/strategies/rline.py`)
 
 1h, strictly causal single pass (`detect_rline`).
@@ -210,6 +242,12 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-04 Autorun (`autorun.py`, `day_signal_log`, `day_sessions.autorun`, `/autorun` routes,
+  `DayMode.autoRun`): automatic RLine_Retest trading with hammer / engulfing confirmation, a zone-break
+  cancel, a zone stop − 0.25 ATR 1h, a 2R target and a fee filter (< 20 % of the risk). Every signal is
+  logged with its outcome, its trend and raw / confirmed what-ifs; the report splits everything by
+  trend. Dry run on a data copy (Oct–Nov 2022): fees filter many signals, because zones on 15m entries
+  are often less than 1 % from the entry.
 - 2026-10-29 Day trading: Sell ¼ / Add ¼ (quarter steps of the original size), the review no longer
   blocks (picture_due instead; unreviewed trades tinted red), close zones merge, short E / SL / TP / X
   labels with a right margin in the picture, white SL / yellow TP, folded trade-dialog sections, exit
@@ -270,6 +308,9 @@ needs no network at all, not even the server time, so preparing works offline.
 
 None of these are started. Roughly in order of usefulness:
 
+00. **Autorun follow-ups**: a button / progress card in the day panel instead of the console; a
+   rule to skip the day pictures (a long run takes hundreds); compare runs (CTest__01 vs __02) in
+   one report; the stop fill model (item 5) matters for the what-ifs too.
 0. **Quarter steps, follow-ups**: show the steps on the "Auto exits" comparison (the twin keeps the
    full size, so a scaled trade's difference mixes exits and sizing); maybe keys for Sell ¼ / Add ¼;
    a one-off merge of zones that already overlap in old sessions.

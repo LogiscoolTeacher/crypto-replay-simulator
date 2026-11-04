@@ -480,7 +480,9 @@ class DayEngine:
                 self.store.delete_trades(conn, session_id)
                 self.store.delete_checks(conn, session_id)
                 self.store.delete_zones(conn, session_id)
-                self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, back_floor_ms=None, updated_at=now)
+                self.store.delete_signals(conn, session_id)   # an autorun's signal log goes with its trades
+                self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, back_floor_ms=None,
+                                              autorun=None, updated_at=now)
             cursor = ds["start_cursor_ms"]
             if cursor is None or not (s["data_start_ms"] <= cursor <= s["data_end_ms"]):
                 cursor = self._first_day_cursor(s, s["data_start_ms"])
