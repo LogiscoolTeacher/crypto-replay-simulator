@@ -107,12 +107,17 @@ def test_walk_and_r():
     t = np.array([1, 2, 3, 4])
     hi = np.array([10.0, 11.0, 13.0, 10.0])
     lo = np.array([9.0, 9.5, 8.0, 9.0])
-    assert walk(t, hi, lo, 0, stop=8.5, target=12.0) == ("stop", 3)            # stop and target in one candle: the stop
-    assert walk(t, hi, lo, 0, stop=8.5, target=10.5) == ("target", 2)
-    assert walk(t, hi, lo, 3, stop=8.5, target=12.0) == ("open", None)
-    gross, net = r_results("target", entry=100.0, stop=99.0, target=102.0, fee_rate=0.001)
+    assert walk(t, hi, lo, 0, stop=8.5, target=12.0) == ("stop", 3, 8.5)       # stop and target in one candle: the stop
+    assert walk(t, hi, lo, 0, stop=8.5, target=10.5) == ("target", 2, 10.5)
+    assert walk(t, hi, lo, 3, stop=8.5, target=12.0) == ("open", None, None)
+    cl = np.array([9.8, 9.2, 12.5, 9.5])
+    assert walk(t, hi, lo, 0, stop=8.5, target=12.0, closes=cl, break_below=9.3) == ("break", 2, 9.2)   # a close below the zone
+    assert walk(t, hi, lo, 0, stop=8.5, target=10.5, closes=cl, break_below=9.3) == ("target", 2, 10.5)  # same candle: the target first
+    assert walk(t, hi, lo, 2, stop=8.5, target=14.0, closes=cl, break_below=13.0) == ("stop", 3, 8.5)    # same candle: the stop first
+    gross, net = r_results("target", entry=100.0, stop=99.0, exit_price=102.0, fee_rate=0.001)
     assert gross == pytest.approx(2.0) and net == pytest.approx(2.0 - 0.001 * 202.0)
-    assert r_results("open", 100.0, 99.0, 102.0, 0.001) == (None, None)
+    assert r_results("break", 100.0, 99.0, 99.5, 0.0) == (pytest.approx(-0.5), pytest.approx(-0.5))
+    assert r_results("open", 100.0, 99.0, None, 0.001) == (None, None)
     st = stats([2.0, -1.0, -1.0, 2.0])
     assert st["count"] == 4 and st["wins"] == 2 and st["win_rate"] == 50.0 and st["total_r"] == 2.0 and st["max_dd_r"] == 2.0
 
@@ -120,7 +125,8 @@ def test_walk_and_r():
 def test_rules_are_validated():
     assert AutorunRules.from_dict({}).params["away_atr"] == 0.75                # the strategy's defaults are filled in
     for bad in ({"nope": 1}, {"confirm_bars": 0}, {"ratio": 0}, {"hammer": False, "engulfing": False},
-                {"entry_until": "2023-13-01"}, {"stop_atr_interval": "1m"}, {"params": {"min_gap": 0}}):
+                {"entry_until": "2023-13-01"}, {"stop_atr_interval": "1m"}, {"params": {"min_gap": 0}},
+                {"entry": "later"}, {"trend_filter": "below"}, {"what_if_ratios": [0]}, {"what_if_ratios": "2"}):
         with pytest.raises(Invalid):
             AutorunRules.from_dict(bad)
 
@@ -294,7 +300,44 @@ def test_autorun_signal_zones_are_not_merged(env):
     day, ar, sid, fake = env
     near = sig(D3, P(D1) + 0.6, P(D1) - 1.9)            # next to the D1 trade's zone: the app would merge it
     fake[:] = [sig(D1, P(D1) + 0.5, P(D1) - 2.0), near]
-    ar.start(sid, {"engulfing": False, "pictures": False})
+    ar.start(sid, {"engulfing": False, "pictures": False, "delete_closed_zones": False})
     run_all(day, ar, sid)
     zones = day.zones(sid)
     assert any(z["upper"] == pytest.approx(P(D1) + 0.5) and z["lower"] == pytest.approx(P(D1) - 2.0) for z in zones)   # the trade's own zone
+
+
+def test_signal_entry_trend_filter_break_exit_and_zone_cleanup(tmp_path: Path, monkeypatch):
+    """CTest__02's rules: enter at the signal candle, only above the EMA 200, out at a close below the
+    zone, the closed trade's zone deleted, what-ifs per target."""
+    brk = D3 + 5 * Q                     # a close below the D3 zone, with the low above the hard stop
+    over = {brk: (P(D3 + 4 * Q), P(D3 + 4 * Q) + 0.1, P(D3) - 2.2, P(D3) - 2.1)}
+    day = make(tmp_path / "replay.db", over)
+    sid = day.prepare(day.create_session("BTCUSDT", START, END, start_balance=100_000)["id"])["id"]
+    fake = [sig(D1, P(D1) + 0.5, P(D1) - 2.0), sig(D3, P(D3) + 0.5, P(D3) - 2.0)]
+    monkeypatch.setattr(day, "_strategy_signals", lambda s, js, p: fake)
+    ar = Autorun(day)
+    trend = {D1: 0, D3: 1}               # D1: daily close below the EMA 200, D3: above
+    real = day._daily_ema
+    monkeypatch.setattr(day, "_daily_ema", lambda s: {**real(s), "ema_above": trend.get(s["cursor_ms"], real(s)["ema_above"])})
+    ar.start(sid, {"entry": "signal", "trend_filter": "above", "break_exit": True, "ratio": 2.5, "pictures": False,
+                   "what_if_ratios": [2.0, 3.0]})
+    run_all(day, ar, sid)
+    rows = ar.signals(sid)
+    assert [r["outcome"] for r in rows] == ["trend_filter", "traded"]
+    tr = day.trades(sid)["trades"][0]
+    atr = ar._atr(day._ready(sid), "1h", D3 + Q)
+    assert tr["entry_ms"] == D3 and tr["entry_price"] == pytest.approx(P(D3))          # the signal candle's close
+    assert tr["stop_used"] == pytest.approx(P(D3) - 2.0 - 0.25 * atr)
+    assert tr["take_profit"] == pytest.approx(tr["entry_price"] + 2.5 * (tr["entry_price"] - tr["stop_used"]))
+    assert tr["exit_ms"] == brk and tr["exit_type"] == "early exit" and tr["exit_reason"] == "setup_broken"
+    assert tr["exit_price"] == pytest.approx(P(D3) - 2.1) and tr["exit_price"] > tr["stop_used"]   # out above the hard stop
+    assert -1.0 < (tr["exit_price"] - tr["entry_price"]) / (tr["entry_price"] - tr["stop_used"]) < 0   # less than 1R before fees
+    assert day.zones(sid) == []                                                        # the closed trade's zone is gone
+    assert tr["zone_lower"] == pytest.approx(P(D3) - 2.0)                              # the trade keeps the edges
+    rep = ar.report(sid)
+    assert rep["exits"] == {"early exit: setup_broken": 1}
+    wi = ar.signals(sid)[1]["what_ifs"]
+    assert set(wi) == {"2", "3"} and all(v["result"] == "break" and v["exit_ms"] == brk for v in wi.values())
+    assert rep["what_if_targets"]["3"]["traded"]["all"]["count"] == 1
+    assert rep["funnel"]["all"]["trend_filter"] == 1
+    assert "wi_3R_net_r" in ar.signals_csv(sid).splitlines()[0]

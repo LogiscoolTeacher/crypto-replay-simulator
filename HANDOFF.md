@@ -194,7 +194,24 @@ logging the signals it passed as "waiting". The loop stops after 3 failed tries 
 
 **Zones**: autorun signal zones aren't merged (`merge_zone=False` on `next_signal`, `merge=False` on
 `add_zone`). Merging folded every new signal zone into the zone of an old trade (which stays), so that
-zone grew to ~7 % and no new zone showed. A reset clears the run and its log.
+zone grew to ~7 % and no new zone showed. `delete_closed_zones` (default on) deletes a trade's zone
+once it has closed: nothing reads it afterwards (the trade row and the signal log keep the edges).
+A reset clears the run and its log.
+
+**Variants** (`AutorunRules`, CTest__02):
+- `trend_filter: "above"`: only signals whose daily close is above the EMA 200. The others are logged
+  as `trend_filter`, without a jump; `next_signal(after_ms=…)` skips them.
+- `entry: "signal"`: enter at the signal candle's close, with no confirmation window.
+- `break_exit`: an open trade exits at a 15m close below its zone bottom (reason `setup_broken`). The
+  hard stop still comes first within a candle, then the target.
+- `what_if_ratios`: per-signal what-ifs per target with the same exit rules
+  (`day_signal_log.what_ifs` JSON, `wi_<k>R_*` CSV columns, `what_if_targets` in the report). The
+  report also counts how trades ended (`exits`).
+
+**Results so far**:
+- **CTest__01** (confirmation, 2R, all trends, 2021 → Oct 2023): 100 trades, 31 % wins, −18.4 R net
+  (−7.0 R before fees). Uptrend hammer trades: 14 trades, 57 % wins, +8.2 R. Uptrend engulfing:
+  42 trades, −10.4 R.
 
 ## RLine_Retest (`backend/app/strategies/rline.py`)
 
@@ -249,6 +266,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-04 Autorun variants for CTest__02: trend filter, entry at the signal candle, break exit,
+  closed trades' zones deleted, what-ifs per target; `next_signal(after_ms)`.
 - 2026-11-04 Autorun fix: a missing trade picture holds the run (`need: "trade_picture"`), the frontend
   stops after 3 failed tries; autorun signal zones are not merged.
 - 2026-11-04 Autorun (`autorun.py`, `day_signal_log`, `day_sessions.autorun`, `/autorun` routes,

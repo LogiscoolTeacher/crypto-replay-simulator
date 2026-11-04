@@ -33,7 +33,17 @@ picture and calls `advance` again, and stops with an error when the same picture
 Without pictures (tests, headless) nothing waits.
 
 **Zones**: the autorun's signal zones are never merged into nearby ones (`merge_zone=False`), so
-every trade keeps the zone its signal came from.
+every trade keeps the zone its signal came from. With `delete_closed_zones` (on by default) a
+trade's zone is deleted once the trade has closed: nothing reads it afterwards (the trade and the
+signal log keep the edges), so the chart shows only the current signal's zone and the open trade's.
+
+**Variants** (CTest__02 on): `trend_filter = "above"` trades only signals whose daily close (the last
+completed day) is above the EMA 200; the others are logged as `trend_filter`. `entry = "signal"`
+enters at the close of the signal candle itself (no confirmation window; a close below the zone
+there is `zone_broken`). `break_exit` closes an open trade at the close of a 15-minute candle below
+its zone bottom (reason "setup_broken"); the hard stop still applies within the candle and comes
+first, then the target. `what_if_ratios` adds a what-if per target for every signal with an entry
+(`day_signal_log.what_ifs`, same stop and exit rules).
 
 **Report** (`report`): the signal funnel, the trades, and two "what if" results per signal. *Raw*
 enters at the signal candle's close; *confirmed* enters at the confirmation close (for every
@@ -69,6 +79,7 @@ OUTCOMES = {
     "fees_too_high": "Fees too high for the risk",
     "trade_open": "Skipped: a trade was open",
     "waiting": "Skipped: another signal's window was running",
+    "trend_filter": "Skipped: the daily close is not above the EMA 200",
     "invalid": "No valid trade (stop or ATR missing)",
     "end_of_data": "The replay ended during the window",
 }
@@ -93,6 +104,11 @@ class AutorunRules:
     max_trades: int = 100
     entry_until: str | None = None   # ISO date: no entry for a signal whose candle closes after its 00:00 UTC
     pictures: bool = True
+    trend_filter: str | None = None  # "above": only signals whose daily close is above the EMA 200
+    entry: str = "confirm"           # "confirm": wait for a hammer / engulfing; "signal": at the signal candle's close
+    break_exit: bool = False         # exit at the close of a 15m candle below the zone bottom
+    delete_closed_zones: bool = True  # delete a trade's zone once it has closed
+    what_if_ratios: list = field(default_factory=lambda: [2.0, 2.5, 3.0])   # targets (R) of the per-signal what-ifs
 
     @classmethod
     def from_dict(cls, d: dict | None) -> AutorunRules:
@@ -119,8 +135,15 @@ class AutorunRules:
             raise Invalid("ratio must be above 0.")
         if r.stop_atr_interval not in ("15m", "1h", "4h"):
             raise Invalid("stop_atr_interval must be 15m, 1h or 4h.")
-        if not (r.hammer or r.engulfing):
+        if r.entry not in ("confirm", "signal"):
+            raise Invalid('entry must be "confirm" or "signal".')
+        if r.entry == "confirm" and not (r.hammer or r.engulfing):
             raise Invalid("Choose at least one confirmation pattern.")
+        if r.trend_filter not in (None, "above"):
+            raise Invalid('trend_filter must be "above" or empty.')
+        if not (isinstance(r.what_if_ratios, list) and len(r.what_if_ratios) <= 10 and all(num(x) and x > 0 for x in r.what_if_ratios)):
+            raise Invalid("what_if_ratios must be a list of up to 10 targets above 0.")
+        r.what_if_ratios = [float(x) for x in r.what_if_ratios]
         if r.entry_until is not None:
             try:
                 date.fromisoformat(r.entry_until)
@@ -162,26 +185,31 @@ def confirmation(prev: Candle | None, cur: Candle, zone_bottom: float, entry_lev
     return None
 
 
-def walk(times: np.ndarray, highs: np.ndarray, lows: np.ndarray, start: int, stop: float, target: float) -> tuple[str, int | None]:
-    """The first candle from index `start` on that reaches the stop or the target: ("stop" | "target",
-    its open time ms), or ("open", None) when neither is reached. Both in one candle count as the stop."""
-    lo = np.flatnonzero(lows[start:] <= stop)
-    hi = np.flatnonzero(highs[start:] >= target)
-    i_lo = int(lo[0]) if len(lo) else None
-    i_hi = int(hi[0]) if len(hi) else None
-    if i_lo is None and i_hi is None:
-        return "open", None
-    if i_hi is None or (i_lo is not None and i_lo <= i_hi):
-        return "stop", int(times[start + i_lo])
-    return "target", int(times[start + i_hi])
+def walk(times: np.ndarray, highs: np.ndarray, lows: np.ndarray, start: int, stop: float, target: float,
+         closes: np.ndarray | None = None, break_below: float | None = None) -> tuple[str, int | None, float | None]:
+    """The first candle from index `start` on that ends the trade: ("stop" | "target" | "break", its open
+    time ms, the exit price), or ("open", None, None). In one candle the stop comes first, then the
+    target (like the engine's step), then the break exit: a close below `break_below` (with `closes`)."""
+    def first(mask: np.ndarray) -> int | None:
+        i = np.flatnonzero(mask)
+        return int(i[0]) if len(i) else None
+    big = len(times)
+    i_lo = first(lows[start:] <= stop)
+    i_hi = first(highs[start:] >= target)
+    i_br = first(closes[start:] < break_below) if closes is not None and break_below is not None else None
+    cand = [(i if i is not None else big, rank, kind) for rank, (i, kind) in enumerate(((i_lo, "stop"), (i_hi, "target"), (i_br, "break")))]
+    i, _, kind = min(cand)
+    if i >= big:
+        return "open", None, None
+    price = stop if kind == "stop" else target if kind == "target" else float(closes[start + i])   # type: ignore[index]
+    return kind, int(times[start + i]), price
 
 
-def r_results(result: str, entry: float, stop: float, target: float, fee_rate: float) -> tuple[float | None, float | None]:
-    """(gross R, net R) of a what-if exit. Net subtracts the fees of buying at the entry and selling at
-    the exit, in R (the fees per coin over the risk per coin)."""
-    if result not in ("stop", "target"):
+def r_results(result: str, entry: float, stop: float, exit_price: float | None, fee_rate: float) -> tuple[float | None, float | None]:
+    """(gross R, net R) of a what-if exit at `exit_price`. Net subtracts the fees of buying at the entry
+    and selling at the exit, in R (the fees per coin over the risk per coin)."""
+    if result not in ("stop", "target", "break") or exit_price is None:
         return None, None
-    exit_price = stop if result == "stop" else target
     risk = entry - stop
     gross = (exit_price - entry) / risk
     return gross, gross - fee_rate * (entry + exit_price) / risk
@@ -297,6 +325,12 @@ class Autorun:
         base = self.day._base_ms
         if rules.entry_until is not None and nxt["cursor_ms"] + base > self._until_ms(rules):
             return self._finish(run, f"entry period over ({rules.entry_until})", st)
+        if rules.trend_filter == "above" and self.day._daily_ema(dict(s, cursor_ms=nxt["cursor_ms"]))["ema_above"] != 1:
+            with self.store.tx() as conn:   # logged without a jump: nothing to watch for it
+                self.store.add_signal(conn, session_id=sid, **self._signal_fields(s, nxt), outcome="trend_filter",
+                                      created_at=_now_iso(), updated_at=_now_iso())
+            run["seen_ms"] = nxt["cursor_ms"]
+            return st, None, False, 0
         if rules.pictures:
             # a closed trade's picture becomes due (its 24:00) before the signal: step there first
             with self.store.tx() as conn:
@@ -307,7 +341,9 @@ class Autorun:
             leaves = trading_day(nxt["cursor_ms"] + base) != trading_day(s["cursor_ms"] + base)
             if leaves and not st["day"]["check"]["has_image"]:
                 return st, "day_picture", True, 0   # the jump leaves the day: its picture first
-        st = self.day.next_signal(sid, rules.strategy, rules.params, merge_zone=False)
+        st = self.day.next_signal(sid, rules.strategy, rules.params, merge_zone=False, after_ms=run["seen_ms"])
+        if st["cursor_ms"] != nxt["cursor_ms"]:   # the engine and the run must agree on the signal
+            raise Conflict(f"Autorun: the jump landed on {_iso(st['cursor_ms'])}, expected {_iso(nxt['cursor_ms'])}.")
         evs = st.pop("events", [])
         events.extend(evs)
         ev = next((e for e in evs if e["kind"] == "jump"), None)
@@ -326,6 +362,14 @@ class Autorun:
         run["waited"] = 0
         run["seen_ms"] = sig["cursor_ms"]
         run["phase"] = "waiting"
+        if rules.entry == "signal":   # at the signal candle's own close, no confirmation window
+            cur = self._candle(s, s["cursor_ms"])
+            if cur is None:
+                self._close_signal(sid, run, "invalid")
+            elif cur[3] < run["signal"]["zone_bottom"]:
+                self._close_signal(sid, run, "zone_broken", confirm_ms=s["cursor_ms"])
+            else:
+                st, _ = self._enter(sid, run, rules, st, "signal", events)
         return st, None, True, 0
 
     def _waiting(self, sid: str, run: dict, rules: AutorunRules, st: dict, events: list) -> tuple:
@@ -354,14 +398,32 @@ class Autorun:
 
     def _trade(self, sid: str, run: dict, rules: AutorunRules, st: dict, events: list) -> tuple:
         if st["day"]["trade"] is None:   # closed (stop or target): look for the next signal
-            run["phase"] = "idle"
+            self._closed(sid, run, rules)
             return st, None, False, 0
         st, need, stop = self._step(sid, rules, st, events)
         if need:
             return st, need, True, 0
+        held = run.get("trade") or {}
+        if st["day"]["trade"] is not None and rules.break_exit and held.get("zone_bottom") is not None:
+            s = self.day._ready(sid)
+            cur = self._candle(s, s["cursor_ms"])
+            if cur is not None and cur[3] < held["zone_bottom"]:   # the setup is broken: out at this close
+                st = self.day.sell(sid, "setup_broken", "Autorun: a 15-minute close below the zone.")
+                events.extend(st.pop("events", []))
+                stop = True
         if st["day"]["trade"] is None:
-            run["phase"] = "idle"
+            self._closed(sid, run, rules)
         return st, None, stop, 1
+
+    def _closed(self, sid: str, run: dict, rules: AutorunRules) -> None:
+        """The run's trade has closed: back to the signals, its zone deleted (delete_closed_zones)."""
+        held = run.pop("trade", None) or {}
+        if rules.delete_closed_zones and held.get("zone_id") is not None:
+            with self.store.tx() as conn:
+                z = self.store.get_zone(conn, sid, held["zone_id"])
+                if z is not None and z.get("source") == "signal":
+                    self.store.delete_zone(conn, sid, z["id"])
+        run["phase"] = "idle"
 
     def _finishing(self, sid: str, run: dict, rules: AutorunRules, st: dict, events: list) -> tuple:
         with self.store.tx() as conn:
@@ -427,6 +489,7 @@ class Autorun:
         res = self.day.buy(sid, zone["id"], take_profit=None, stop=stop, ratio=rules.ratio, notes=note)
         st, trade = res["state"], res["trade"]
         run["trades"] += 1
+        run["trade"] = {"id": trade["id"], "zone_id": zone["id"], "zone_bottom": sig["zone_bottom"]}
         self._close_signal(sid, run, "traded", trade_id=trade["id"], **fields_)
         run["phase"] = "trade"
         events.append({"kind": "autorun_buy", "n": run["trades"], "pattern": pattern, "trade": trade})
@@ -526,7 +589,33 @@ class Autorun:
             "what_if_confirmed": by_trend([(row, row["conf_net_r"]) for row in rows if row["conf_net_r"] is not None]),
             "what_if_open": {"raw": sum(1 for row in rows if row["raw_result"] == "open"),
                              "confirmed": sum(1 for row in rows if row["conf_result"] == "open")},
+            # per target: every signal with an entry (traded or filtered) and the traded ones alone
+            "what_if_targets": {
+                f"{ratio:g}": {
+                    "entries": by_trend(self._ratio_values(rows, ratio)),
+                    "traded": by_trend(self._ratio_values([row for row in rows if row["outcome"] == "traded"], ratio)),
+                } for ratio in rules.what_if_ratios},
+            "exits": self._exit_counts([t for _, t in closed]),
         }
+        return out
+
+    @staticmethod
+    def _ratio_values(rows: list[dict], ratio: float) -> list[tuple[dict, float]]:
+        out = []
+        for row in rows:
+            wi = json.loads(row["what_ifs"]) if row.get("what_ifs") else {}
+            v = (wi.get(f"{ratio:g}") or {}).get("net_r")
+            if v is not None:
+                out.append((row, v))
+        return out
+
+    @staticmethod
+    def _exit_counts(trades: list[dict]) -> dict:
+        """How the closed trades ended: stop, take-profit, or an early exit by its reason."""
+        out: dict[str, int] = {}
+        for t in trades:
+            k = t["exit_type"] if t["exit_type"] != "early exit" else f"early exit: {t.get('exit_reason') or '?'}"
+            out[k] = out.get(k, 0) + 1
         return out
 
     def _fill_what_ifs(self, s: dict, rules: AutorunRules) -> None:
@@ -534,7 +623,8 @@ class Autorun:
         up to the session's end; a result still "open" is retried on the next report)."""
         with self.store.tx() as conn:
             rows = [r for r in self.store.list_signals(conn, s["id"])
-                    if r["signal_ms"] is not None and (r["raw_result"] in (None, "open") or (r["entry"] is not None and r["conf_result"] in (None, "open")))]
+                    if r["signal_ms"] is not None and (r["raw_result"] in (None, "open") or (r["entry"] is not None and r["conf_result"] in (None, "open")))
+                    or (r["entry"] is not None and r.get("what_ifs") is None)]
         if not rows:
             return
         df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, min(r["signal_ms"] for r in rows), s["data_end_ms"])
@@ -542,6 +632,7 @@ class Autorun:
         highs, lows, closes = (df[c].to_numpy(dtype=float) for c in ("high", "low", "close"))
         fee = float(s["fee_rate"])
         base = self.day._base_ms
+        brk = lambda r: r["zone_bottom"] if rules.break_exit else None  # noqa: E731
         for r in rows:
             f: dict[str, Any] = {}
             if r["raw_result"] in (None, "open"):
@@ -556,14 +647,23 @@ class Autorun:
                         f.update(raw_entry=entry, raw_stop=stop, raw_result="invalid")
                     else:
                         tp = entry + rules.ratio * (entry - stop)
-                        res, exit_ms = walk(times, highs, lows, i + 1, stop, tp)
-                        gross, net = r_results(res, entry, stop, tp, fee)
+                        res, exit_ms, px = walk(times, highs, lows, i + 1, stop, tp, closes, brk(r))
+                        gross, net = r_results(res, entry, stop, px, fee)
                         f.update(raw_entry=entry, raw_stop=stop, raw_result=res, raw_r=gross, raw_net_r=net, raw_exit_ms=exit_ms)
-            if r["entry"] is not None and r["stop"] is not None and r["take_profit"] is not None and r["conf_result"] in (None, "open"):
+            if r["entry"] is not None and r["stop"] is not None and r["take_profit"] is not None and (
+                    r["conf_result"] in (None, "open") or r.get("what_ifs") is None):
                 i = int(np.searchsorted(times, r["confirm_ms"]))
-                res, exit_ms = walk(times, highs, lows, i + 1, r["stop"], r["take_profit"])
-                gross, net = r_results(res, r["entry"], r["stop"], r["take_profit"], fee)
+                res, exit_ms, px = walk(times, highs, lows, i + 1, r["stop"], r["take_profit"], closes, brk(r))
+                gross, net = r_results(res, r["entry"], r["stop"], px, fee)
                 f.update(conf_result=res, conf_r=gross, conf_net_r=net, conf_exit_ms=exit_ms)
+                # the same entry and stop with every what-if target
+                risk = r["entry"] - r["stop"]
+                wi = {}
+                for ratio in rules.what_if_ratios:
+                    res, exit_ms, px = walk(times, highs, lows, i + 1, r["stop"], r["entry"] + ratio * risk, closes, brk(r))
+                    gross, net = r_results(res, r["entry"], r["stop"], px, fee)
+                    wi[f"{ratio:g}"] = {"result": res, "r": gross, "net_r": net, "exit_ms": exit_ms}
+                f.update(what_ifs=json.dumps(wi))
             if f:
                 with self.store.tx() as conn:
                     self.store.update_signal(conn, r["id"], updated_at=_now_iso(), **f)
@@ -577,12 +677,18 @@ class Autorun:
             r["trend"] = trend_key(r["ema_above"])
             for k in ("signal_ms", "bar_ms", "confirm_ms", "raw_exit_ms", "conf_exit_ms"):
                 r[k.replace("_ms", "_iso")] = _iso(r[k]) if r[k] is not None else None
+            r["what_ifs"] = json.loads(r["what_ifs"]) if r.get("what_ifs") else None
         return rows
 
     def signals_csv(self, session_id: str) -> str:
         rows = self.signals(session_id)
+        for r in rows:   # one column pair per what-if target
+            for k, v in (r.pop("what_ifs") or {}).items():
+                r[f"wi_{k}R_result"], r[f"wi_{k}R_net_r"] = v["result"], v["net_r"]
         buf = io.StringIO()
-        cols = [c for c in (rows[0].keys() if rows else ["seq"]) if c not in ("session_id", "id", "created_at", "updated_at")]
+        cols: list[str] = []
+        for r in rows or [{"seq": None}]:   # the union of the keys: not every row has every what-if column
+            cols += [c for c in r if c not in cols and c not in ("session_id", "id", "created_at", "updated_at")]
         w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for r in rows:

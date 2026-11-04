@@ -230,6 +230,8 @@ MIGRATIONS = {
     "day_checks": {"notes": "TEXT", "image_path": "TEXT", "image_ms": "INTEGER", "left_ms": "INTEGER", "left_how": "TEXT"},
     # the open time of the last candle a twin was checked against (the settlement only reads newer ones)
     "day_auto_trades": {"checked_ms": "INTEGER"},
+    # the autorun's what-ifs per target (JSON {"2.5": {result, r, net_r, exit_ms}, ...}), see autorun.py
+    "day_signal_log": {"what_ifs": "TEXT"},
 }
 
 

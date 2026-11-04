@@ -1467,7 +1467,8 @@ class DayEngine:
         """The strategies the "Next signal" button can jump with."""
         return [j.describe() for j in JUMP_STRATEGIES.values()]
 
-    def next_signal(self, session_id: str, strategy: str, params: dict | None = None, merge_zone: bool = True) -> dict:
+    def next_signal(self, session_id: str, strategy: str, params: dict | None = None, merge_zone: bool = True,
+                    after_ms: int | None = None) -> dict:
         """Jump forward to the next entry signal of a jump strategy (the button "Next signal"): the
         15m candle in which the signal happens becomes the cursor, at any time of day. The zone the
         signal came from is added to the session's zones (1h) so the New trade panel can use it.
@@ -1486,7 +1487,8 @@ class DayEngine:
             with self.store.tx() as conn:
                 if self.store.open_trade(conn, session_id) is not None:
                     raise Conflict("A trade is open: close it before jumping to the next signal.")
-            sig = self._next_signal_after(s, js, full, s["cursor_ms"])
+            # after_ms: the autorun skips signals it has already handled without a jump (trend filter)
+            sig = self._next_signal_after(s, js, full, max(s["cursor_ms"], after_ms or 0))
             if sig is None:
                 raise Conflict(f"No later {js.name} signal before the end of the replay.")
             base = self._base_ms
