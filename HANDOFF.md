@@ -212,6 +212,11 @@ A reset clears the run and its log.
 - **CTest__01** (confirmation, 2R, all trends, 2021 → Oct 2023): 100 trades, 31 % wins, −18.4 R net
   (−7.0 R before fees). Uptrend hammer trades: 14 trades, 57 % wins, +8.2 R. Uptrend engulfing:
   42 trades, −10.4 R.
+- **CTest__02** (uptrend only, entry at the signal candle, hard stop + break exit, 2.5R, 2021–2023):
+  87 trades, 23 % wins, −26.9 R net (−16.4 R before fees). Exits: 61 stops, 20 targets, 6 break exits.
+  What-if targets for the same trades: 2R −19.0 R, 3R −24.9 R. 111 signals were filtered by the
+  trend, 43 by fees. Entering at the signal candle is clearly worse than CTest__01's uptrend hammer
+  trades.
 
 ## RLine_Retest (`backend/app/strategies/rline.py`)
 
