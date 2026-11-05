@@ -32,6 +32,7 @@ from .replay.payload import build_payload
 from .replay.session_store import SessionStore
 from .replay import strat as strat_rules
 from .replay.strat import StrategySessions
+from .replay.report import Report
 from .replay.strat_run import StrategyRun
 from .strategies.builtin import STRATEGIES, get_strategy
 
@@ -45,7 +46,8 @@ engine = ReplayEngine(store, sessions)
 day = DayEngine(engine, DayStore(config.DB_PATH))  # day-trading mode on top of the shared sessions and data
 autorun = Autorun(day)  # a day session trading a jump strategy's signals by itself (data collection)
 strat = StrategySessions(day)  # strategy sessions: a day session with a mode, a strategy, limits and an end flag
-strat_run = StrategyRun(strat)  # Automatic mode: the session's strategy trades the replay by itself
+strat_run = StrategyRun(strat)
+report = Report(day)   # the Report tab: results across day sessions  # Automatic mode: the session's strategy trades the replay by itself
 
 
 @app.exception_handler(RequestValidationError)
@@ -701,6 +703,32 @@ def strategy_skip(session_id: str) -> dict:
 def strategy_signals(session_id: str) -> list[dict]:
     """The signal log: every signal the session's strategy gave so far and what became of it."""
     return strat_run.signals(session_id)
+
+
+# ------------------------------------------------------------------- report
+# The Report tab (replay/report.py): every ready day session, filtered; the numbers, one row per
+# session and the trade table. The CSV holds the same trades with every stored field.
+def _report_filters(sessions: str | None, end: str | None, mode: str | None, strategy: str | None, symbol: str | None,
+                    date_from: str | None, date_to: str | None, outcome: str | None, exit_kind: str | None) -> dict:
+    return {"sessions": [x.strip() for x in (sessions or "").split(",") if x.strip()], "end": end, "mode": mode,
+            "strategy": strategy, "symbol": symbol, "date_from": date_from, "date_to": date_to,
+            "outcome": outcome, "exit_kind": exit_kind}
+
+
+@app.get("/api/report")
+def report_view(sessions: str | None = Query(default=None, description="Session ids, comma separated (empty = all)"),
+                end: str | None = None, mode: str | None = None, strategy: str | None = None, symbol: str | None = None,
+                date_from: str | None = None, date_to: str | None = None, outcome: str | None = None,
+                exit_kind: str | None = None) -> dict:
+    return report.report(**_report_filters(sessions, end, mode, strategy, symbol, date_from, date_to, outcome, exit_kind))
+
+
+@app.get("/api/report.csv")
+def report_csv(sessions: str | None = None, end: str | None = None, mode: str | None = None, strategy: str | None = None,
+               symbol: str | None = None, date_from: str | None = None, date_to: str | None = None,
+               outcome: str | None = None, exit_kind: str | None = None) -> PlainTextResponse:
+    body = report.csv(**_report_filters(sessions, end, mode, strategy, symbol, date_from, date_to, outcome, exit_kind))
+    return PlainTextResponse(body, media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="report_trades.csv"'})
 
 
 @app.post("/api/strategy/sessions/{session_id}/clock")

@@ -182,3 +182,30 @@ def test_manual_skip_goes_on_to_the_next_entry_point_by_itself(page, server_url,
         assert not page.errors, page.errors
     finally:
         api(page, "DELETE", f"/api/sessions/{sid}")
+
+
+def test_report_tab_follows_the_open_session_and_exports_csv(page, server_url, monkeypatch):
+    sid = open_session(page, server_url, monkeypatch, "automatic", pictures=False)
+    try:
+        for _ in range(50):                              # the strategy trades the one signal; the end of the replay closes it
+            if api(page, "POST", f"/api/strategy/sessions/{sid}/run", {})["json"]["run"]["phase"] == "done":
+                break
+        page.reload()
+        page.wait_for_function(f"window.__app && window.__app.state.session && window.__app.state.session.id === '{sid}' && !!window.__app.state.session.day")
+        page.click("#tab-report")
+        page.wait_for_function("document.getElementById('rp-count').textContent.startsWith('1 trade in 1 session')")
+        assert page.inner_text("#rp-sessions-btn") == "Sessions: open session"
+        assert "ENDED_BY_TIMEOUT" in page.inner_text("#rp-session-list") and "Automatic" in page.inner_text("#rp-session-list")
+        assert page.locator("#rp-trade-list tr").count() == 1 and page.locator("#rp-tiles .tile").count() == 9
+        page.click("#rp-end .chip[data-v='non_timeout']")   # it ended by the time limit (the end of the replay)
+        page.wait_for_function("document.getElementById('rp-count').textContent.startsWith('0 trades in 0 sessions')")
+        assert page.is_visible("#rp-sessions-empty")
+        page.click("#rp-end .chip[data-v='all']")
+        page.wait_for_function("document.getElementById('rp-count').textContent.startsWith('1 trade')")
+        href = page.get_attribute("#btn-rp-csv", "href")
+        assert href == f"/api/report.csv?sessions={sid}"
+        csv_text = page.evaluate("async (u) => (await fetch(u)).text()", href)
+        assert csv_text.splitlines()[0].startswith("trade_id,session_id,session_name") and len(csv_text.strip().splitlines()) == 2
+        assert not page.errors, page.errors
+    finally:
+        api(page, "DELETE", f"/api/sessions/{sid}")

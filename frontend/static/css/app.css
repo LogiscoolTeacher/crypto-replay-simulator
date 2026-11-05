@@ -383,6 +383,14 @@ table.buckets td.rsi.high { color: var(--critical); font-weight: 700; }
 .chip { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px; font-size: 12px; cursor: pointer; }
 .chip:hover { color: var(--text); }
 .chip.on { background: #2563b8; border-color: #2563b8; color: #fff; }
+/* Report tab */
+.rp-tools { flex-wrap: wrap; row-gap: 6px; }
+.rp-tools label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+#panel-report select { max-width: 200px; padding: 3px 6px; font-size: 12px; }
+#panel-report input[type="date"] { width: auto; padding: 3px 6px; font-size: 12px; }
+.rp-tools .chips, #panel-report .chips { display: inline-flex; gap: 2px; }
+.rp-sessions-list { grid-template-columns: 1fr; max-height: 320px; overflow: auto; }
+#rp-session-table { margin-bottom: 6px; }
 table.buckets tr.ref td { color: var(--muted); font-style: italic; }
 table.buckets tr.ref td.pnl { font-style: normal; opacity: 0.8; }
 table.buckets tr.now td { background: var(--surface-2); border-top: 2px solid var(--border); font-weight: 600; }

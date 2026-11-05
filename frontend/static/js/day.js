@@ -132,8 +132,9 @@ export class DayMode {
     for (const id of ['dlg-exit', 'dlg-review']) if (this.$(id).open) this.$(id).close();
     if (this.panelOpen()) this.closeNewTrade();
     const dayTab = ['tab-day', 'tab-days', 'tab-cal', 'tab-cond'].some(id => this.$(id).getAttribute('aria-selected') === 'true');
+    const reportTab = this.$('tab-report').getAttribute('aria-selected') === 'true';   // the Report serves every mode: it stays
     this.conditions = null;
-    if (on && !dayTab) this.c.selectTab('tab-day');
+    if (on && !dayTab && !reportTab) this.c.selectTab('tab-day');
     else if (!on && dayTab) this.c.selectTab('tab-open');
     this.renderZones();
     this.renderTrades();

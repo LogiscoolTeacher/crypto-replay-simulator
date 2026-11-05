@@ -195,6 +195,7 @@
           <button class="tab day-only" role="tab" id="tab-days" aria-selected="false" aria-controls="panel-days" title="The daily journal: one row per trading day with the trend check, how the day ended, its picture and your notes">Days <span id="day-days-count" class="pill">0</span></button>
           <button class="tab day-only" role="tab" id="tab-cal" aria-selected="false" aria-controls="panel-cal" title="One month, a week per row (Monday to Sunday): P&amp;L and trades per day; click a past day for its journal, a later day to jump there">Calendar</button>
           <button class="tab day-only" role="tab" id="tab-cond" aria-selected="false" aria-controls="panel-cond" title="How the closed trades did with and without each entry condition">Conditions</button>
+          <button class="tab" role="tab" id="tab-report" aria-selected="false" aria-controls="panel-report" title="Results across day sessions: Automatic, Manual and By hand, with filters, a trade table and CSV export">Report</button>
           <button type="button" id="btn-bottom" class="btn icon bottom-toggle" aria-expanded="true" aria-controls="bottom" title="Make the trades window small">&#9662;</button>
         </div>
         <div class="tab-panel hidden" id="panel-day" role="tabpanel" aria-labelledby="tab-day">
@@ -286,6 +287,55 @@
             <tbody id="cond-list"></tbody>
           </table>
           <p id="cond-empty" class="muted small">No closed trades yet. Every trade saves its entry conditions at the buy; this table compares the results with and without each one.</p>
+        </div>
+        <div class="tab-panel hidden" id="panel-report" role="tabpanel" aria-labelledby="tab-report">
+          <div class="table-tools rp-tools">
+            <details class="cols-menu" id="rp-sessions">
+              <summary class="btn small" id="rp-sessions-btn" title="Choose the sessions of the report">Sessions</summary>
+              <div class="cols-list rp-sessions-list" id="rp-sessions-list"></div>
+            </details>
+            <span class="chips" id="rp-end" role="group" aria-label="Session end">
+              <button type="button" class="chip on" data-v="all" title="Every session, however it ended">all</button>
+              <button type="button" class="chip" data-v="timeout" title="Only sessions that ended by the time limit (ENDED_BY_TIMEOUT)">timeout only</button>
+              <button type="button" class="chip" data-v="non_timeout" title="Every other session: trade limit, stopped by you, not ended yet, old sessions">non-timeout</button>
+            </span>
+            <select id="rp-mode" aria-label="Mode"></select>
+            <select id="rp-strategy" aria-label="Strategy"></select>
+            <select id="rp-symbol" aria-label="Coin"></select>
+            <label class="small muted">from <input id="rp-date_from" type="date" aria-label="Entry day from"></label>
+            <label class="small muted">to <input id="rp-date_to" type="date" aria-label="Entry day to"></label>
+            <span class="spacer"></span>
+            <span id="rp-state" class="small muted" role="status"></span>
+            <a id="btn-rp-csv" class="btn small-btn" href="#" download title="The trades below with every stored field">Export CSV</a>
+          </div>
+          <div class="perf-tiles" id="rp-tiles"></div>
+          <table class="buckets" id="rp-session-table" aria-label="Sessions of the report">
+            <thead><tr>
+              <th>Session</th><th>Coin</th><th>Mode</th><th>Strategy</th><th title="How the session ended (hover for the detail)">End</th>
+              <th class="num" title="Closed trades">Trades</th><th class="num">Win rate</th><th class="num" title="Average R per trade">Exp. R</th>
+              <th class="num">Total R</th><th class="num" title="After fees">Total USDT</th><th class="num" title="Max drawdown in R">Max DD R</th><th class="num" title="Longest wins / losses in a row">Streaks</th>
+            </tr></thead>
+            <tbody id="rp-session-list"></tbody>
+          </table>
+          <p id="rp-sessions-empty" class="muted small hidden">No session matches the filters.</p>
+          <div class="table-tools">
+            <b class="small" id="rp-count"></b>
+            <span class="chips" id="rp-outcome" role="group" aria-label="Outcome">
+              <button type="button" class="chip on" data-v="" title="Every trade">all</button>
+              <button type="button" class="chip" data-v="WIN">win</button>
+              <button type="button" class="chip" data-v="LOSS">loss</button>
+              <button type="button" class="chip" data-v="BREAKEVEN" title="-0.05 R to +0.05 R after fees">breakeven</button>
+              <button type="button" class="chip" data-v="open" title="Trades still open (not in the numbers)">open</button>
+            </span>
+            <select id="rp-exit_kind" aria-label="How the trade ended"></select>
+            <span class="spacer"></span>
+            <span class="info hint" tabindex="0" role="note" title="Times are UTC. Click a column header to sort. The numbers above follow every filter, the outcome and exit ones too. Hover a cell for more (last stop / target, the reason of an exit, the time of a high or low, every stop / target move)." aria-label="Times are UTC. Click a column header to sort. The numbers above follow every filter.">i</span>
+          </div>
+          <table class="buckets lined" id="rp-trade-table" aria-label="Trades of the report">
+            <thead><tr id="rp-trade-head"></tr></thead>
+            <tbody id="rp-trade-list"></tbody>
+          </table>
+          <p id="rp-trade-empty" class="muted small hidden">No trades match the filters.</p>
         </div>
         <div class="tab-panel hidden" id="panel-days" role="tabpanel" aria-labelledby="tab-days">
           <div class="table-tools">

@@ -58,6 +58,9 @@ export const api = {
   strategyStop: (id) => request('POST', `/api/strategy/sessions/${id}/stop`),
   strategyRun: (id, body) => request('POST', `/api/strategy/sessions/${id}/run`, body || {}),
   strategySignals: (id) => request('GET', `/api/strategy/sessions/${id}/signals`),
+  // The Report tab: every day session, filtered (`query` is a URL query string, see report.js)
+  report: (query) => request('GET', `/api/report${query ? `?${query}` : ''}`),
+  reportCsvUrl: (query) => `/api/report.csv${query ? `?${query}` : ''}`,
   strategyTake: (id, body) => request('POST', `/api/strategy/sessions/${id}/take`, body),   // Manual: take the proposed trade
   strategySkip: (id) => request('POST', `/api/strategy/sessions/${id}/skip`),               // Manual: pass on it
   strategyClock: (id, seconds) => request('POST', `/api/strategy/sessions/${id}/clock`, { seconds }),   // Manual: real time on screen

@@ -417,9 +417,45 @@ the Automatic one, so both modes have the same entry points and the same filters
   the session is opened); Play is NOT paused by the strategy's exit notice; Take and Skip have no
   keys; a taken trade's note keeps the trader's text first.
 
+**Step 5: the Report tab** (`replay/report.py`, class `Report`; its module docstring has every
+definition; `frontend/static/js/report.js`, class `ReportTab`).
+- **Which sessions**: every READY day session. Mode in the report: a strategy session's `run_mode`;
+  an old day session with an autorun (`day_sessions.autorun`, the CTest__NN runs) = Automatic with
+  strategy key `autorun:confirm` / `autorun:signal` and a label from its saved rules ("Autorun
+  (entry at the confirmation, 2 R)"), kept apart from the plug-ins; any other old day session =
+  "By hand" (user's choice). Fields old trades never stored stay empty.
+- **API**: `GET /api/report` and `GET /api/report.csv`, both with the query filters `sessions`
+  (comma separated ids), `end` (all / timeout / non_timeout; non-timeout includes sessions without a
+  flag), `mode` (automatic / manual / hand), `strategy`, `symbol`, `date_from` / `date_to` (the
+  trade's entry day), `outcome` (WIN / LOSS / BREAKEVEN / open), `exit_kind`. Bad values: 422.
+- **Numbers** (`stats`): closed trades only, in exit order. Win rate = wins / closed trades;
+  average win / loss over the wins / losses (R and USDT); expectancy = average R; total in USDT, %
+  of the start balance (only when all selected sessions share it; old sessions had other balances
+  and risk amounts, so mixed totals in USDT and R differ in scale), R; duration average and median;
+  max drawdown = deepest fall of the running R below its peak (start 0); streaks, a BREAKEVEN ends
+  both. Several sessions: one sequence over all of them (user's choice), plus each session's own
+  numbers and end reason in the session table.
+- **Trade rows**: the spec's fields (initial SL / TP, exit kind SL / TP / manual close / strategy
+  exit / session timeout / session stopped, duration, outcome, result in price / % / R, high / low
+  with times, MFE / MAE R, the 24 hours after the exit, every SL / TP move, fee / slippage / fill
+  model / price source / timeout rule, screenshot path). Rows come from `DayEngine.trades`, so the
+  report fills what old trades miss (outcome, high / low, after-exit window) on the way.
+- **UI**: bottom tab "Report" in every mode (not swing-only / day-only); a session switch does not
+  leave it. Filters on top (a checkbox list of sessions with All / Open session, end chips, mode,
+  strategy, coin, from / to), nine number tiles, the session table, outcome chips and an exit
+  select for the trade table (the numbers follow them), sortable trade table, Export CSV (the
+  link carries the same query). It starts with the open day session and follows it until the
+  session list is changed by hand.
+- Tests: `tests/test_report.py` (one database with all four kinds of session: the Automatic
+  session and the old autorun give the same numbers; the definitions; filters; CSV; API),
+  `tests/test_ui_strat.py::test_report_tab_follows_the_open_session_and_exports_csv`. Checked in the
+  browser on a data copy (14 sessions, 89 trades).
+- CTest__01 / __02: still not on this PC. Copying their `replay.db` here (or pointing
+  `REPLAY_DATA_DIR` at it) is enough: the report recognises the autorun sessions by themselves.
+
 Left for the next steps on purpose:
-- Step 5: the signal log has no CSV and no what-ifs for strategy sessions yet (the autorun's report
-  code reads `AutorunRules`, not a plug-in).
+- The strategy sessions' signal log has no CSV and no what-ifs yet (the autorun's report code reads
+  `AutorunRules`, not a plug-in); the Report covers trades only.
 - The session list still says "Day" for a strategy session (the default name starts with
   Automatic / Manual).
 
@@ -489,6 +525,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-05 Strategy sessions, step 5: the Report tab. `replay/report.py` (every ready day session:
+  Automatic, Manual, old autoruns as Automatic, old hand-traded sessions as "By hand"; filters,
+  numbers, per-session rows, trade rows with the spec's fields), `/api/report` and `/api/report.csv`,
+  `report.js` (filters, tiles, session table, sortable trade table, CSV link).
 - 2026-11-05 Strategy sessions, step 4: Manual mode. The run proposes the trade at the strategy's
   entry point (`take` / `skip` routes), the trader holds it (stop / target moves logged, quarters,
   Sell) and the replay goes on to the next entry point by itself; the strategy's exit is a notice;
@@ -575,9 +615,8 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## Open / ideas
 
-**In progress: strategy sessions** (see the section above), steps 5 and 6. Step 5 (Report tab) was
-agreed to show CTest__01 / __02 as Automatic sessions, but they are not in this PC's database: ask
-the user where that database is before building the import of old runs.
+**In progress: strategy sessions** (see the section above), step 6 (docs) is left. CTest__01 / __02
+are not in this PC's database; the Report shows them as Automatic once their `replay.db` is here.
 
 None of the following are started. Roughly in order of usefulness:
 

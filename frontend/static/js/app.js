@@ -11,6 +11,7 @@ import { IndicatorPanel } from './indicators.js';
 import { buildParamInputs, readParamInputs } from './params.js';
 import { PerfCharts, renderMonths } from './perf.js';
 import { DayMode } from './day.js';
+import { ReportTab } from './report.js';
 
 const $ = (id) => document.getElementById(id);
 const VIEW_LIMIT = 600;
@@ -68,6 +69,7 @@ const state = {
 const chart = new ChartView($('chart'), $('legend'));
 let indicators;
 let day;  // the day-trading mode (day.js); every entry point checks the session's mode itself
+let report;  // the Report tab (report.js): results across day sessions
 function isDay() { return !!state.session && state.session.mode === 'day'; }
 function fetchSession(id, mode) { return mode === 'day' ? api.daySession(id) : api.session(id); }
 function sessionMode(id) { const m = state.sessions.find(x => x.id === id); return m ? m.mode : (state.session && state.session.id === id ? state.session.mode : 'swing'); }
@@ -1018,6 +1020,7 @@ async function loadSession(id, { fit = true } = {}) {
     state.session = null;
     state.interval = null;
     day.onSession(null);
+    report.onSession(null);
     renderFolds();
     renderTimeframes();
     renderSessions();
@@ -1031,6 +1034,7 @@ async function loadSession(id, { fit = true } = {}) {
   const modeChanged = state.bottomMode !== s.mode;
   state.bottomMode = s.mode;
   day.onSession(s);
+  report.onSession(s);
   renderFolds();
   if (modeChanged) setBottom(s.mode !== 'day');   // day trading starts with the trades window small
   try { localStorage.setItem('replay.lastSession', id); } catch { /* ignore */ }
@@ -1832,6 +1836,7 @@ function selectTab(id, { open } = {}) {
   if (id === 'tab-auto') day.renderAuto();
   if (id === 'tab-cal') day.renderCal();
   if (id === 'tab-cond') day.loadConditions();
+  if (id === 'tab-report') report.load();
   renderBottom();
   if (id === 'tab-perf') loadPerf();
 }
@@ -1848,7 +1853,7 @@ function renderBottom() {
   const open = state.bottomOpen;
   const center = document.querySelector('.center');
   center.classList.toggle('collapsed', !open);
-  center.classList.toggle('tall', open && ['tab-perf', 'tab-day', 'tab-auto'].includes(activeTab()));  // room for the diagrams and the trade tables
+  center.classList.toggle('tall', open && ['tab-perf', 'tab-day', 'tab-auto', 'tab-report'].includes(activeTab()));  // room for the diagrams and the trade tables
   const b = $('btn-bottom');
   b.textContent = open ? '\u25BE' : '\u25B4';
   b.setAttribute('aria-expanded', String(open));
@@ -2363,6 +2368,8 @@ async function init() {
     setInterval: setInterval_, intervalMs, renderCardSums,
   });
   day.init();
+  report = new ReportTab({ $, api, state });
+  report.init();
   initFolds();
   try { chart.setLegendMin(localStorage.getItem('replay.ui.legendMin') === '1'); } catch { /* no storage */ }
   chart.onLegendFold = (min) => { try { localStorage.setItem('replay.ui.legendMin', min ? '1' : '0'); } catch { /* no storage */ } };
