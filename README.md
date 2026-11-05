@@ -15,6 +15,9 @@ into individual buckets.
 | 5 | Trading UI: buy panel, bucket list, entry lines, lights, journal | done |
 | 6 | Polish and review | done |
 
+Added later: day-trading mode (see `HANDOFF.md`) and strategy sessions with an Automatic and a
+Manual mode and a Report tab (see [Strategy sessions](#strategy-sessions-automatic-and-manual)).
+
 ## Requirements
 
 Python 3.12 (tested with 3.12.7). Install dependencies once:
@@ -190,6 +193,112 @@ Open http://127.0.0.1:8000 in a browser. Interactive API docs: http://127.0.0.1:
    the trade ("vs high since sell"), so you see how far below the last height you are. When
    nothing is open, the last sold bucket stays visible as a greyed reference row.
 
+## Strategy sessions (Automatic and Manual)
+
+A strategy session is a day-trading session (15-minute candles, UTC day clock, 100 000 USDT,
+risk 100 USDT per trade, fee 0.1 % per side, long only) that a registered strategy drives.
+Pick **New session → Mode: Strategy session**.
+
+**Setup** (fixed once the session starts):
+- **Coin** and **start date**; Automatic also takes an **end date** (its time limit).
+- **Run mode**: Automatic or Manual.
+- **Strategy**: one of the registered plug-ins. The **timeframe** is read from the strategy.
+- **Maximum number of trades** (N). A skipped proposal does not count.
+- **Time limit in hours** (Manual only, real time, 0 = none).
+- **Screenshots** on or off. On = one picture per trade (the 15-minute chart from the entry day's
+  00:00 to 24:00 of the exit day), saved as `data/snapshots/<session id>/day_<trade id>.png`.
+  No day pictures are taken in a strategy session.
+
+The **Strategy session** card in the side panel shows the setup, the trades taken, the clock, the
+run and the signals so far, and has **Start / Pause** and **End session**.
+
+**Automatic**: press **Start**. The strategy finds its signals, waits for its entry, sets stop and
+target, and the trade runs until stop, target or the strategy's own exit. Pause and Continue at any
+time. Every hand-trading button is off (the server refuses them too); zones and notes still work.
+
+**Manual**: press **Start**. The replay jumps to the strategy's next entry point (the same entry
+points as Automatic, with the same filters) and stops with a **proposal** in the Day trading card:
+entry (the close of this candle), stop, target, size, risk. Pick your confidence (0 to 10) and press
+**Take**, or **Skip** (logged, not counted). After Take you move the replay yourself (Step / Play),
+may drag the stop and target lines (every move is saved with its time and the old and new value),
+sell or add a quarter, or close with Sell. When the strategy's own exit fires, a notice appears; it
+does not sell. Once the trade has closed, the replay goes on to the next entry point by itself.
+Not available in Manual: Step back, New trade, the day jumps, exits A / C and the review marks.
+The time limit counts from Start on, and only while the session's browser tab is open and visible.
+
+**The end**: the first limit reached ends the session, with a flag:
+- `ENDED_BY_TRADE_LIMIT`: N trades taken and the last one closed;
+- `ENDED_BY_TIMEOUT`: the time limit, or the end of the replay (the end date, or no signal left);
+- `ENDED_BY_USER`: End session.
+A trade still open at a timeout or at End session is closed at the close of the current candle
+(exit type `session timeout` / `session stopped`); the rule is stored with every trade.
+
+**Stored with every trade** (besides entry, exit, P&L): mode, strategy name and version, timeframe,
+initial and final stop / target, every stop / target move, exit type and reason, duration, outcome
+(after fees; -0.05 R to +0.05 R is BREAKEVEN), the result in price, percent and R, the result
+before fees, the high and low between entry and exit with their times, MAE / MFE in R, the high and
+low of the 24 hours after the exit with times and percent from the exit price, the picture, and the
+values a result depends on: fee rate, slippage (0), fill model ("exact level": stops and targets fill
+exactly at their level, entries and hand exits at the candle's close), price source (Binance spot
+candles). The strategy's settings are stored with the session; a session refuses to run once its
+strategy's version or settings changed.
+
+**Report tab** (bottom, in every mode): results across day sessions. Filters for the sessions,
+timeout only / non-timeout, mode, strategy, coin and the entry date; the numbers (win rate, average
+win and loss, expectancy, totals in R / USDT / %, duration, max drawdown in R, streaks) over all
+selected trades in exit order; one row per session with its end reason; a sortable trade table with
+outcome and exit filters; **Export CSV** of the filtered trades with every stored field. Old day
+sessions appear too: an old autorun run (CTest__NN) as Automatic with its saved rules, any other as
+"By hand". Fields old trades never stored stay empty.
+
+### Adding a strategy
+
+A strategy is one file in `backend/app/strategies/plugins/` that defines `STRATEGY`, an instance of
+a `TradingStrategy` subclass (`backend/app/strategies/plugin.py` describes every method). The
+registry finds the file by itself; the engine is never edited. A minimal one:
+
+```python
+from ..plugin import Levels, TradingStrategy
+
+
+class MorningBuy(TradingStrategy):
+    key, name, version, timeframe = "morning_buy", "Morning buy", "1", "15m"
+    description = "Buys the close of the 06:00 candle; stop 1 % below, target 2 % above."
+
+    def settings(self) -> dict:                  # every value that shapes a result
+        return {"stop_pct": 1.0, "target_pct": 2.0}
+
+    def find_signals(self, candles):             # closed candles of `timeframe`, one causal pass
+        return [{"bar_ms": int(t) * 1000} for t in candles["time"] if int(t) % 86400 == 6 * 3600]
+
+    def levels(self, signal, entry_price, market):
+        return Levels(stop=entry_price * 0.99, take_profit=entry_price * 1.02, kind="percent",
+                      text="Stop 1 % below, target 2 % above.")
+
+
+STRATEGY = MorningBuy()
+```
+
+The defaults enter at the signal's candle and have no filters and no exit of their own; override
+`entry`, `pre_filter`, `accept`, `exit_signal`, `zone` or `rules_text` for more. Change `version`
+whenever a rule changes, so old results stay comparable. Files whose name starts with `_` hold
+shared code and are not strategies.
+
+### API
+
+- `GET /api/strategy/setup` the modes, the strategies and the defaults of the setup
+- `POST /api/strategy/sessions` create one; every `/api/day/sessions/{id}/...` route works on it
+- `POST /api/strategy/sessions/{id}/run` start or run on (`max_steps`); returns the state with
+  `events` and `run` (`need`: a trade picture to take)
+- `POST .../take` (`confidence` 0-10, `notes`) and `POST .../skip`: answer a Manual proposal
+- `POST .../clock` (`seconds`): the Manual real-time clock; `POST .../stop`: End session
+- `GET .../signals` the signal log: every signal of the strategy and what became of it
+- `GET /api/report`, `GET /api/report.csv` the Report; filters as query parameters (`sessions`,
+  `end`, `mode`, `strategy`, `symbol`, `date_from`, `date_to`, `outcome`, `exit_kind`)
+
+Limits for now: the signal log of a strategy session has no CSV yet, and the session list says
+"Day" for a strategy session (its default name starts with Automatic / Manual).
+
 ## Download candles from the command line
 
 Run from the `backend` folder:
@@ -239,12 +348,20 @@ backend/app/strategies/          strategy framework and the four built-in strate
 backend/app/replay/engine        replay sessions, cursor, account, buckets, trades
 backend/app/replay/session_store SQLite persistence for sessions, buckets, trades
 backend/app/replay/payload       JSON payload builder shared by compute and view
+backend/app/replay/day_engine    day-trading mode: zones, trades, stops / targets, pictures
+backend/app/replay/strat         strategy sessions: setup, limits, end flags, manual guards
+backend/app/replay/strat_run     the run of a strategy session (Automatic and Manual)
+backend/app/replay/report        the Report tab: results across day sessions, CSV
+backend/app/strategies/plugin    the trading-strategy plug-in interface and registry
+backend/app/strategies/plugins/  one file per trading strategy (Automatic / Manual)
 backend/app/main.py              FastAPI application
 backend/tests/                   pytest suite
 frontend/index.html              web UI (plain JavaScript, no build step)
 frontend/static/js/chart.js      Lightweight Charts wrapper: candles, panes, legend
 frontend/static/js/app.js        sessions, replay controls, strategy lights, trading, account panel
 frontend/static/js/indicators.js indicator popover; params.js builds parameter inputs
+frontend/static/js/day.js        day-trading mode and strategy sessions (proposal panel, Start / Pause)
+frontend/static/js/report.js     the Report tab
 frontend/static/vendor/          TradingView Lightweight Charts 5.2.1 (Apache 2.0)
 data/replay.db                   SQLite database (created on first run)
 ```

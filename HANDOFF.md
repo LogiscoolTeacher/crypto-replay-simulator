@@ -3,7 +3,7 @@
 State of the project for the next Claude Code instance. Read this first, then the code it points
 to. Update the **History** and **Open / ideas** sections when you finish a change.
 
-Last updated: 2026-11-05 (strategy sessions, step 3 of 6: Automatic mode with a Start button).
+Last updated: 2026-11-05 (strategy sessions, all six steps done on branch `strategy-sessions`).
 
 ## What the app is
 
@@ -15,7 +15,7 @@ frontend (TradingView lightweight-charts), SQLite storage.
 python run.py            # http://127.0.0.1:8000  (API docs at /docs)
 ```
 
-Two session modes:
+Session modes:
 
 - **Swing** (the original app; README.md and WHAT_IT_DOES.txt describe it): any base interval,
   buckets with their own entries, targets and stops, strategy lights, journal with pictures,
@@ -23,6 +23,9 @@ Two session modes:
 - **Day trading** (`mode = "day"`): a manual test of an uptrend day-trading strategy on 15-minute
   candles. **It is not in README.md or WHAT_IT_DOES.txt yet**; this file and the docstring at the
   top of `backend/app/replay/day_engine.py` are its documentation.
+- **Strategy sessions** (a day session with `run_mode` automatic / manual): a registered strategy
+  plug-in trades it (Automatic) or proposes the trades (Manual); plus the Report tab. The user
+  guide is the README section "Strategy sessions (Automatic and Manual)"; the details are below.
 
 ## Layout
 
@@ -223,7 +226,7 @@ A reset clears the run and its log.
   trend, 43 by fees. Entering at the signal candle is clearly worse than CTest__01's uptrend hammer
   trades.
 
-## Strategy sessions: Automatic and Manual (in progress, branch `strategy-sessions`)
+## Strategy sessions: Automatic and Manual (done on branch `strategy-sessions`, not merged yet)
 
 The user's spec (2026-11-05): a session with a chosen coin, strategy, trade limit, time limit and
 screenshots on / off, run in one of two modes. It is built as an extension of day-trading mode
@@ -453,7 +456,14 @@ definition; `frontend/static/js/report.js`, class `ReportTab`).
 - CTest__01 / __02: still not on this PC. Copying their `replay.db` here (or pointing
   `REPLAY_DATA_DIR` at it) is enough: the report recognises the autorun sessions by themselves.
 
-Left for the next steps on purpose:
+**Step 6: documentation.** README.md has the user guide ("Strategy sessions (Automatic and
+Manual)": setup, both modes, the end flags, what is stored per trade, the Report, adding a
+strategy with an example plug-in, the API) and the new files in its Layout.
+`tests/test_readme_strategy.py` takes the README's example plug-in, registers it and lets an
+Automatic session trade with it: keep that example working when the plug-in interface changes.
+WHAT_IT_DOES.txt only got a pointer at its top (it covers swing mode as of 2026-10-15).
+
+Left for later on purpose:
 - The strategy sessions' signal log has no CSV and no what-ifs yet (the autorun's report code reads
   `AutorunRules`, not a plug-in); the Report covers trades only.
 - The session list still says "Day" for a strategy session (the default name starts with
@@ -525,6 +535,9 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-05 Strategy sessions, step 6: user guide in README.md (both modes, end flags, stored
+  fields, Report, adding a strategy, API), a test that runs the README's example strategy, a pointer
+  in WHAT_IT_DOES.txt.
 - 2026-11-05 Strategy sessions, step 5: the Report tab. `replay/report.py` (every ready day session:
   Automatic, Manual, old autoruns as Automatic, old hand-traded sessions as "By hand"; filters,
   numbers, per-session rows, trade rows with the spec's fields), `/api/report` and `/api/report.csv`,
@@ -615,8 +628,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## Open / ideas
 
-**In progress: strategy sessions** (see the section above), step 6 (docs) is left. CTest__01 / __02
-are not in this PC's database; the Report shows them as Automatic once their `replay.db` is here.
+**Strategy sessions are done** (all six steps) on branch `strategy-sessions`; nothing pushed and
+`main` untouched: merge / push only when the user asks. CTest__01 / __02 are not in this PC's
+database; the Report shows them as Automatic once their `replay.db` is here. Small choices made
+without an explicit answer (listed under steps 3 and 4) still wait for the user's OK.
 
 None of the following are started. Roughly in order of usefulness:
 

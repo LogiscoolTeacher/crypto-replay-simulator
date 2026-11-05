@@ -10,6 +10,10 @@ that number is the one in the code.
 
 Short setup instructions are in SETUP.md. A shorter feature overview is in README.md.
 
+Not covered here (added later): day-trading mode (see HANDOFF.md and the docstring of
+backend/app/replay/day_engine.py) and strategy sessions with their Automatic and Manual modes and
+the Report tab (see the README.md section "Strategy sessions (Automatic and Manual)").
+
 Contents
 --------
 PART 1 - FOR THE TRADER
