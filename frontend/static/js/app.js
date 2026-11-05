@@ -305,10 +305,11 @@ function renderState() {
   $('cursor-price').textContent = ok && s.price !== null ? fmtPrice(s.price) : '–';
   $('step-size').textContent = state.interval || '–';
   $('btn-reset').disabled = !ok;
-  const locked = isDay() && day.locked();   // an Automatic strategy session moves the replay by itself
+  // A strategy session moves the replay by itself: Automatic always, Manual except while its trade is open
+  const locked = isDay() && day.stepLocked();
   $('btn-step').disabled = !ok || s.finished || locked;
   $('btn-step-back').classList.toggle('hidden', !isDay());   // day trading only
-  $('btn-step-back').disabled = !ok || !isDay() || state.busy || locked || !(s.day && s.day.can_step_back);
+  $('btn-step-back').disabled = !ok || !isDay() || state.busy || day.locked() || day.manual() || !(s.day && s.day.can_step_back);   // no Step back in a strategy session
   $('btn-play').disabled = !ok || s.finished || locked;
   $('btn-play').innerHTML = state.playing ? '&#x23F8;' : '&#x25B6;';
   $('btn-play').setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
@@ -1100,7 +1101,7 @@ async function refreshView({ fit = false } = {}) {
 async function step(n = 1) {
   const s = state.session;
   if (!ready() || state.busy || s.finished) return;
-  if (isDay() && day.locked()) return;   // an Automatic strategy session: only its own run steps
+  if (isDay() && day.stepLocked()) { pause(); return; }   // a strategy session: Automatic never steps by hand, Manual only while its trade is open
   state.busy = true;
   // Day mode: the step that leaves a trading day is preceded by the day's journal picture.
   if (isDay()) { try { await day.beforeStep(); } catch (e) { toast(e.message, true); } }
@@ -1140,7 +1141,7 @@ async function step(n = 1) {
 // refuses; the button is disabled there).
 async function stepBack() {
   const s = state.session;
-  if (!ready() || !isDay() || state.busy || day.locked() || !(s.day && s.day.can_step_back)) return;
+  if (!ready() || !isDay() || state.busy || day.locked() || day.manual() || !(s.day && s.day.can_step_back)) return;
   pause();
   state.busy = true;
   const t = token();
@@ -1162,7 +1163,7 @@ async function stepBack() {
 }
 
 function play() {
-  if (!ready() || state.session.finished || (isDay() && day.locked())) return;
+  if (!ready() || state.session.finished || (isDay() && day.stepLocked())) return;
   state.playing = true;
   clearInterval(state.timer);
   state.timer = setInterval(() => { if (!state.busy) step(1); }, Math.round(1000 / state.speed));

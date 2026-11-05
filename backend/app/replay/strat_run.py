@@ -1,6 +1,7 @@
-"""Automatic mode: a strategy session's plug-in trades the replay by itself (the Start button).
+"""The run of a strategy session: its plug-in trades the replay (Automatic) or proposes the trades (Manual).
 
-The run plays the replay with the same engine calls the buttons make, and every decision only reads
+Automatic is described first; Manual is the same run with the trader in two places (see **Manual**
+below). The run plays the replay with the same engine calls the buttons make, and every decision only reads
 candles that have closed by then. It knows nothing about any particular strategy: everything that
 is a trading rule is asked from the session's plug-in (`strategies/plugin.py`), in this order:
 
@@ -18,6 +19,17 @@ is a trading rule is asked from the session's plug-in (`strategies/plugin.py`), 
 
 Signals the run passes while a window or a trade is running are logged too (`waiting` /
 `trade_open`), so the signal log (`day_signal_log`) holds every signal of the period.
+
+**Manual.** The same search finds the same entry points (the strategy's filters apply in both
+modes), but where Automatic buys, the run stops with a **proposal**: the entry (this candle's
+close), the strategy's stop and target, the size. The trader answers:
+- `take` (with a confidence 0-10): the buy, exactly as proposed. From then on the TRADER moves the
+  replay (Step / Play) and may move stop and target (logged by the day engine), sell quarters or
+  close the trade by hand; the run does not step. The strategy's `exit_signal` is only shown as a
+  notice (`exit_notice` in the session block), never acted on.
+- `skip`: logged as "skipped"; it does not count toward the trade limit.
+After a skip, and once a taken trade has closed, `advance` looks for the next entry point: the
+browser calls it by itself, so the replay "moves to the next entry point automatically".
 
 **End.** The session's limits end it (`StrategySessions.settle`, see strat.py): the trade limit, the
 replay's end date, or Stop. When no signal is left the run jumps to the replay's last candle, which
@@ -53,9 +65,10 @@ from ..strategies.patterns import Candle
 from ..strategies.plugin import CANCEL, ENTER, WAIT, Decision, Levels, PlannedTrade, Reason, TradingStrategy, Verdict, get_trading_strategy
 from .day_engine import BASE_INTERVAL, EXIT_REASON_LABELS, NOTE_MAX_CHARS, DayEngine, local_str
 from .engine import WARMUP_BARS, Conflict, _iso, _now_iso
-from .strat import AUTOMATIC, StrategySessions
+from .engine import Invalid
+from .strat import AUTOMATIC, MANUAL, StrategySessions
 
-IDLE, WAITING, TRADE, FINISHING, DONE = "idle", "waiting", "trade", "finishing", "done"
+IDLE, WAITING, PROPOSAL, TRADE, FINISHING, DONE = "idle", "waiting", "proposal", "trade", "finishing", "done"
 MAX_STEPS_PER_CALL = 400   # one advance call never runs longer than this many 15m steps (the UI stays fresh)
 NEED_TRADE_PICTURE = "trade_picture"
 
@@ -86,10 +99,11 @@ class EngineMarket:
 
 
 class StrategyRun:
-    """The Automatic run of one strategy session (one run per session, kept in day_sessions.run_state)."""
+    """The run of one strategy session, Automatic or Manual (one run per session, kept in day_sessions.run_state)."""
 
     def __init__(self, strat: StrategySessions) -> None:
         self.strat = strat
+        strat.runner = self   # the session block asks `exit_notice` for a Manual session
         self.day = strat.day
         self.store = strat.store
         self.candles = strat.day.candles
@@ -99,19 +113,19 @@ class StrategyRun:
     def advance(self, session_id: str, max_steps: int = MAX_STEPS_PER_CALL) -> dict:
         """Start the run, or run on: until a trade picture is needed, something happened the screen
         should show (a jump, a buy, an exit), the run is done, or `max_steps` candles were stepped.
-        Returns the session state with `events` and `run` (the session block's run status plus
-        `need`: "trade_picture" or None). Pausing is simply not calling this."""
+        A Manual run also returns at a proposal (it waits for `take` or `skip`) and while its trade
+        is open (the trader steps). Returns the session state with `events` and `run` (the session
+        block's run status plus `need`: "trade_picture" or None). Pausing is simply not calling this."""
         events: list[dict] = []
         with self.day._lock:
             ds = self.strat._row(session_id)
-            if ds["run_mode"] != AUTOMATIC:
-                raise Conflict("Only an Automatic session runs by itself.")
+            manual = ds["run_mode"] == MANUAL
             s = self.day._ready(session_id)
             strategy = self._strategy(ds)
             run = json.loads(ds["run_state"]) if ds.get("run_state") else None
             if run is None:
-                run = {"phase": IDLE, "signal": None, "n": 0, "trade": None, "seen_ms": s["cursor_ms"],
-                       "started_at": _now_iso(), "start_ms": s["cursor_ms"]}
+                run = {"mode": ds["run_mode"], "phase": IDLE, "signal": None, "n": 0, "trade": None, "proposal": None,
+                       "seen_ms": s["cursor_ms"], "started_at": _now_iso(), "start_ms": s["cursor_ms"]}
                 self._save(session_id, run)
             pictures = bool(ds.get("pictures"))
             st = self.day.state(session_id)
@@ -124,6 +138,14 @@ class StrategyRun:
                     self._save(session_id, run)
                     continue
                 phase = run["phase"]
+                if phase == PROPOSAL:   # Manual: the trader's answer comes first
+                    break
+                if phase == TRADE and manual:
+                    if st["day"]["trade"] is not None:   # the trader moves the replay while the trade is open
+                        break
+                    st = self._closed(session_id, run)   # it has closed: on to the next entry point
+                    self._save(session_id, run)
+                    continue
                 if phase == IDLE:
                     st, stop, stepped = self._idle(session_id, run, strategy, st, events, pictures)
                 elif phase == WAITING:
@@ -141,6 +163,74 @@ class StrategyRun:
         need = NEED_TRADE_PICTURE if run["phase"] != DONE and st["day"].get("picture_due") else None
         st["run"] = {**st["day"]["session"]["run"], "need": need}
         return st
+
+    def take(self, session_id: str, confidence: int, notes: str | None = None) -> dict:
+        """Manual: take the proposed trade exactly as proposed, at the close of the proposal's candle.
+        `confidence` (0-10) is the trader's score, required like in day trading; `notes` is free text."""
+        if isinstance(confidence, bool) or not isinstance(confidence, int) or not 0 <= confidence <= 10:
+            raise Invalid("Pick your confidence from 0 to 10 before taking the trade.")
+        with self.day._lock:
+            ds, run = self._proposal(session_id)
+            s = self.day._ready(session_id)
+            strategy = self._strategy(ds)
+            prop = run["proposal"]
+            entry = self._entry_of(s, strategy, run, run["signal"])
+            zone = self.day._signal_zone(session_id, {"zone_top": prop["zone_top"], "zone_bottom": prop["zone_bottom"]}, merge=False)
+            auto = f"Manual ({strategy.label}): {prop['text'] or prop['code'] or 'entry'} {prop['levels_text']}".strip()
+            note = (f"{notes.strip()} | {auto}" if notes and notes.strip() else auto)[:NOTE_MAX_CHARS]
+            res = self.day.buy(session_id, zone["id"], take_profit=prop["take_profit"], stop=prop["stop"], notes=note, confidence=confidence)
+            trade = res["trade"]
+            run["trade"] = {"id": trade["id"], "zone_id": zone["id"], "index": entry["index"], "bar_ms": entry["bar_ms"],
+                            "cursor_ms": entry["cursor_ms"]}
+            self._close_signal(session_id, run, "traded", "", trade_id=trade["id"])
+            run["proposal"] = None
+            run["phase"] = TRADE
+            self._save(session_id, run)
+        return {"trade": trade, "state": self.day.state(session_id)}
+
+    def skip(self, session_id: str) -> dict:
+        """Manual: pass on the proposed trade. Logged as "skipped"; it does not count toward the
+        trade limit. The next `advance` looks for the next entry point."""
+        with self.day._lock:
+            _, run = self._proposal(session_id)
+            self._close_signal(session_id, run, "skipped", "Skipped by the trader.")
+            run["proposal"] = None
+            run["phase"] = IDLE
+            self._save(session_id, run)
+        return self.day.state(session_id)
+
+    def _proposal(self, session_id: str) -> tuple[dict, dict]:
+        """The session row and the run of a Manual session whose proposal waits for an answer."""
+        ds = self.strat._row(session_id)
+        if ds["run_mode"] != MANUAL:
+            raise Conflict("Only a Manual session has proposals to take or skip.")
+        run = json.loads(ds["run_state"]) if ds.get("run_state") else None
+        if run is None or run["phase"] != PROPOSAL or not run.get("proposal"):
+            raise Conflict("No proposal is waiting for an answer.")
+        if ds.get("end_flag"):
+            raise Conflict(f"The session has ended ({ds.get('end_detail') or ds['end_flag']}).")
+        return ds, run
+
+    def exit_notice(self, st: dict, ds: dict, run: dict) -> dict | None:
+        """Manual: the strategy's own exit signal on the candle that just closed, as a notice only
+        (Automatic would close the trade there; the trader decides). None when there is none."""
+        if run.get("phase") != TRADE or not run.get("trade"):
+            return None
+        with self.store.tx() as conn:
+            trade = self.store.open_trade(conn, st["id"])
+        if trade is None or trade["id"] != run["trade"]["id"] or st["cursor_ms"] <= trade["entry_ms"]:
+            return None
+        try:
+            strategy = self._strategy(ds)
+            held = self._entry_of(st, strategy, run, run["trade"])
+            cur = self._candle(st, st["cursor_ms"])
+            reason = strategy.exit_signal(held["sig"], cur) if cur is not None else None
+        except Conflict:   # a changed plug-in must not break reading the session
+            return None
+        if not isinstance(reason, Reason):
+            return None
+        return {"code": reason.code, "text": reason.text or reason.code, "cursor_ms": st["cursor_ms"],
+                "local": local_str(st["cursor_ms"] + self.day._base_ms)}
 
     def signals(self, session_id: str) -> list[dict]:
         """The signal log of the session, oldest first, as the API hands it out."""
@@ -249,10 +339,13 @@ class StrategyRun:
         a trade the end closed is let go, the signals passed since the last look are logged (the
         log holds every signal up to the end), and only the pictures are left to do."""
         if run["signal"]:
-            if st["finished"]:
+            if run["phase"] == PROPOSAL:
+                self._close_signal(sid, run, "session_ended", "The session ended before the proposal was answered.")
+            elif st["finished"]:
                 self._close_signal(sid, run, "end_of_data", "The replay ended during the entry window.")
             else:
                 self._close_signal(sid, run, "session_ended", "The session ended during the entry window.")
+        run["proposal"] = None
         if run.get("trade"):
             st = self._closed(sid, run)
         self._upcoming(self.day._ready(sid), strategy, run)
@@ -324,6 +417,24 @@ class StrategyRun:
             self._close_signal(sid, run, verdict.code or "rejected", verdict.text, **f)
             return st, False
         base = self.day._base_ms
+        if run.get("mode") == MANUAL:
+            # Manual: the same trade is only proposed. The log row stays open until Take or Skip.
+            with self.store.tx() as conn:
+                self.store.update_signal(conn, run["signal"]["log_id"], updated_at=_now_iso(), **f)
+            run["proposal"] = {
+                "cursor_ms": s["cursor_ms"], "entry_local": local_str(s["cursor_ms"] + base),
+                "signal_local": local_str(entry["cursor_ms"] + base),
+                "entry": p["entry_price"], "stop": p["stop_used"], "take_profit": p["take_profit"], "rr": p["rr"],
+                "stop_pct": (p["stop_used"] / p["entry_price"] - 1.0) * 100.0, "tp_pct": (p["take_profit"] / p["entry_price"] - 1.0) * 100.0,
+                "coins": p["coins"], "position_value": p["position_value"], "risk_usdt": p["risk_usdt"], "buy_fee": p["buy_fee"],
+                "capped": bool(p["capped"]), "est_fees": f.get("est_fees"), "fee_share": f.get("fee_share"),
+                "zone_id": zone["id"], "zone_top": top, "zone_bottom": bottom,
+                "code": d.code, "text": d.text, "levels_kind": lv.kind, "levels_text": lv.text, "warnings": list(p["warnings"]),
+            }
+            run["proposal"] = json.loads(self._details(run["proposal"]))   # plain numbers only: it is stored as JSON
+            run["phase"] = PROPOSAL
+            events.append({"kind": "proposal", "proposal": run["proposal"]})
+            return st, True
         note = (f"Automatic ({strategy.label}): {d.text or d.code or 'entry'} Entry at {local_str(s['cursor_ms'] + base)}, "
                 f"signal at {local_str(entry['cursor_ms'] + base)}. {lv.text}").strip()[:NOTE_MAX_CHARS]
         res = self.day.buy(sid, zone["id"], take_profit=lv.take_profit, stop=lv.stop, notes=note)

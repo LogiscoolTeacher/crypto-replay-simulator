@@ -1,8 +1,10 @@
-"""Browser test of an Automatic strategy session with Playwright (skipped when Playwright is not installed).
+"""Browser tests of the strategy sessions with Playwright (skipped when Playwright is not installed).
 
-Runs the real FastAPI app in a thread with the 15-minute fake exchange and one scripted signal, then
-presses Start in headless Chromium: the strategy trades, the picture of the trade is taken, the
-session ends, and the buttons that trade by hand stay off the whole time."""
+They run the real FastAPI app in a thread with the 15-minute fake exchange and one scripted signal.
+Automatic: Start is pressed in headless Chromium, the strategy trades, the picture of the trade is
+taken, the session ends, and the buttons that trade by hand stay off the whole time.
+Manual: Start goes to the entry point and shows the proposal; Take buys it, the trader steps to the
+exit and the run finishes by itself; Skip passes on it."""
 from __future__ import annotations
 
 import socket
@@ -72,26 +74,32 @@ def api(page, method: str, path: str, body: dict | None = None) -> dict:
     )
 
 
-def test_start_runs_the_session_and_the_manual_buttons_stay_off(page, server_url, monkeypatch):
+def open_session(page, server_url, monkeypatch, run_mode: str, pictures: bool) -> str:
+    """A strategy session with one scripted signal (trade limit 1), opened in the page."""
     fake = [{"bar": 0, "bar_ms": D3, "zone_top": quarter_price(D3) + 0.5, "zone_bottom": quarter_price(D3) - 2.0,
              "entry_level": quarter_price(D3) + 0.5, "near": False, "rules": ["A"], "touches": 2, "touch_ms": [],
              "breakout_ms": D3 - 5 * H, "psych": None}]
     monkeypatch.setattr(RLineRetest, "find_signals", lambda self, candles: fake)
     page.goto(server_url + "/")
     page.wait_for_function("window.__app && window.__app.state.intervals.length > 0")
-    r = api(page, "POST", "/api/strategy/sessions", {"symbol": SYMBOL, "start": iso(START), "end": iso(END), "run_mode": "automatic",
-                                                     "strategy": "rline_retest_confirmed", "max_trades": 1, "pictures": True})
+    r = api(page, "POST", "/api/strategy/sessions", {"symbol": SYMBOL, "start": iso(START), "end": iso(END), "run_mode": run_mode,
+                                                     "strategy": "rline_retest_confirmed", "max_trades": 1, "pictures": pictures})
     assert r["status"] == 201, r
     sid = r["json"]["id"]
+    for _ in range(100):
+        if api(page, "GET", f"/api/day/sessions/{sid}")["json"]["status"] == "ready":
+            break
+        time.sleep(0.1)
+    page.evaluate(f"localStorage.setItem('replay.lastSession', '{sid}')")
+    page.goto(server_url + "/")                     # the page opens the session it was told was the last one
+    page.wait_for_function(f"window.__app && window.__app.state.session && window.__app.state.session.id === '{sid}' && !!window.__app.state.session.day")
+    page.wait_for_selector("#strat-card:not(.hidden)")
+    return sid
+
+
+def test_start_runs_the_session_and_the_manual_buttons_stay_off(page, server_url, monkeypatch):
+    sid = open_session(page, server_url, monkeypatch, "automatic", pictures=True)
     try:
-        for _ in range(100):
-            if api(page, "GET", f"/api/day/sessions/{sid}")["json"]["status"] == "ready":
-                break
-            time.sleep(0.1)
-        page.evaluate(f"localStorage.setItem('replay.lastSession', '{sid}')")
-        page.goto(server_url + "/")                     # the page opens the session it was told was the last one
-        page.wait_for_function(f"window.__app && window.__app.state.session && window.__app.state.session.id === '{sid}' && !!window.__app.state.session.day")
-        page.wait_for_selector("#strat-card:not(.hidden)")
         assert page.inner_text("#btn-strat-run") == "Start" and page.inner_text("#strat-status") == "not started"
         for button in ("#btn-step", "#btn-play", "#btn-day-new", "#btn-day-skip", "#btn-day-signal"):
             assert page.is_disabled(button), button
@@ -108,6 +116,69 @@ def test_start_runs_the_session_and_the_manual_buttons_stay_off(page, server_url
         assert not any(d["has_image"] for d in api(page, "GET", f"/api/day/sessions/{sid}/days")["json"]["days"])   # trade pictures only
         for button in ("#btn-step", "#btn-play", "#btn-day-new", "#btn-strat-run", "#btn-strat-stop"):
             assert page.is_disabled(button), button
+        assert not page.errors, page.errors
+    finally:
+        api(page, "DELETE", f"/api/sessions/{sid}")
+
+
+STEP_UNTIL_CLOSED = """async () => {
+    for (let i = 0; i < 600 && window.__app.state.session.day.trade; i++) await window.__app.step(1);
+}"""
+
+
+def test_manual_take_the_proposal_hold_the_trade_and_the_run_finishes_by_itself(page, server_url, monkeypatch):
+    sid = open_session(page, server_url, monkeypatch, "manual", pictures=True)
+    try:
+        assert page.inner_text("#btn-strat-run") == "Start" and page.is_hidden("#strat-proposal")
+        for button in ("#btn-step", "#btn-play", "#btn-step-back", "#btn-day-new", "#btn-day-skip", "#btn-day-signal"):
+            assert page.is_disabled(button), button
+        assert "press Start" in page.inner_text("#day-gate")
+
+        page.click("#btn-strat-run")                    # the replay goes to the entry point and stops with the proposal
+        page.wait_for_selector("#strat-proposal:not(.hidden)", timeout=60_000)
+        page.wait_for_function("document.getElementById('btn-strat-run').textContent === 'Take or skip'")
+        st = api(page, "GET", f"/api/day/sessions/{sid}")["json"]
+        p = st["day"]["session"]["run"]["proposal"]
+        assert st["cursor_ms"] == p["cursor_ms"] > D3 and st["day"]["trade"] is None
+        assert page.inner_text("#strat-status") == "proposal" and "Proposed trade" in page.inner_text("#sp-title")
+        for button in ("#btn-sp-take", "#btn-step", "#btn-play", "#btn-strat-run", "#btn-day-new"):
+            assert page.is_disabled(button), button     # Take waits for the confidence; the replay waits for the answer
+        page.click("#sp-conf button[data-conf='7']")
+        page.fill("#sp-notes", "From the browser test.")
+        page.click("#btn-sp-take")
+        page.wait_for_selector("#day-trade:not(.hidden)")
+        assert page.is_hidden("#strat-proposal") and page.inner_text("#btn-strat-run") == "In a trade"
+        assert not page.is_disabled("#btn-step") and not page.is_disabled("#btn-play") and not page.is_disabled("#btn-day-sell")
+        assert page.is_disabled("#btn-step-back") and page.is_disabled("#btn-day-new") and page.is_hidden("#dt-ac")
+
+        # the trader steps until the trade has closed; then the run goes on by itself: limit reached, picture, done
+        page.evaluate(STEP_UNTIL_CLOSED)
+        page.wait_for_function("document.getElementById('btn-strat-run').textContent === 'Finished'", timeout=60_000)
+        b = api(page, "GET", f"/api/day/sessions/{sid}")["json"]["day"]["session"]
+        assert b["run"]["done"] and b["ended"] and b["trades_taken"] == 1 and b["end_flag"] in page.inner_text("#strat-end")
+        (tr,) = api(page, "GET", f"/api/day/sessions/{sid}/trades")["json"]["trades"]
+        assert (tr["status"], tr["run_mode"], tr["confidence"], tr["entry_price"]) == ("closed", "manual", 7, p["entry"])
+        assert tr["has_image"] is True and tr["notes"].startswith("From the browser test. | Manual (")
+        assert not any(d["has_image"] for d in api(page, "GET", f"/api/day/sessions/{sid}/days")["json"]["days"])   # trade pictures only
+        assert page.is_hidden("#day-exit-choice") and page.is_disabled("#btn-step")
+        assert not page.errors, page.errors
+    finally:
+        api(page, "DELETE", f"/api/sessions/{sid}")
+
+
+def test_manual_skip_goes_on_to_the_next_entry_point_by_itself(page, server_url, monkeypatch):
+    sid = open_session(page, server_url, monkeypatch, "manual", pictures=False)
+    try:
+        page.click("#btn-strat-run")
+        page.wait_for_selector("#strat-proposal:not(.hidden)", timeout=60_000)
+        page.wait_for_function("!document.getElementById('btn-sp-skip').disabled")
+        page.click("#btn-sp-skip")                      # no other signal: the run goes to the replay's last candle and ends
+        page.wait_for_function("document.getElementById('btn-strat-run').textContent === 'Finished'", timeout=60_000)
+        st = api(page, "GET", f"/api/day/sessions/{sid}")["json"]
+        b = st["day"]["session"]
+        assert st["finished"] and (b["end_flag"], b["trades_taken"]) == ("ENDED_BY_TIMEOUT", 0) and page.is_hidden("#strat-proposal")
+        (row,) = api(page, "GET", f"/api/strategy/sessions/{sid}/signals")["json"]
+        assert row["outcome"] == "skipped"
         assert not page.errors, page.errors
     finally:
         api(page, "DELETE", f"/api/sessions/{sid}")

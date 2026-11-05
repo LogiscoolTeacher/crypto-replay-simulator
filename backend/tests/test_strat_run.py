@@ -347,21 +347,25 @@ def test_a_changed_plugin_does_not_run_an_old_session(db: Path, monkeypatch, ext
 
 
 # ------------------------------------------------------------------ guards
-def test_only_an_automatic_strategy_session_runs(db: Path, monkeypatch):
+def test_only_a_strategy_session_runs(db: Path, monkeypatch):
+    """(What a Manual session takes by hand: tests/test_strat_manual.py.)"""
     day, strat, runner, sid = setup(db, monkeypatch, signals())
-    manual = strat.create("BTCUSDT", START, END, run_mode="manual", strategy=CONFIRMED, max_trades=3)["id"]
     plain = day.create_session("BTCUSDT", START, END)["id"]
-    day.prepare(manual), day.prepare(plain)
-    with pytest.raises(Conflict, match="Only an Automatic session"):
-        runner.advance(manual)
+    day.prepare(plain)
     with pytest.raises(Conflict, match="not a strategy session"):
         runner.advance(plain)
     with pytest.raises(Conflict, match="strategy session"):
         Autorun(day).start(sid, {})                       # the old autorun stays out of strategy sessions
-    with pytest.raises(Conflict, match="Automatic session"):
-        strat.manual_guard(sid)
-    strat.manual_guard(manual), strat.manual_guard(plain), strat.manual_guard("no-such-session")
-    assert day.state(manual)["day"]["session"]["run"] is None
+    for action in ("buy", "step", "sell", "adjust", "leg", "jump", "back"):
+        with pytest.raises(Conflict, match="Automatic session"):
+            strat.manual_guard(sid, action)
+        strat.manual_guard(plain, action), strat.manual_guard("no-such-session", action)
+    with pytest.raises(Conflict, match="Only a Manual session"):
+        runner.take(sid, 5)
+    with pytest.raises(Conflict, match="Only a Manual session"):
+        runner.skip(sid)
+    run = day.state(sid)["day"]["session"]["run"]
+    assert run["proposal"] is None and run["exit_notice"] is None
 
 
 def test_jump_to_goes_forward_only(db: Path, monkeypatch):
@@ -397,7 +401,6 @@ def test_api_run_signals_and_the_manual_buttons_are_refused(client: TestClient, 
     monkeypatch.setattr(RLineRetest, "find_signals", lambda self, candles: [])
     body = {"symbol": SYMBOL, "start": iso(START), "end": iso(END), "run_mode": "automatic", "strategy": CONFIRMED, "max_trades": 4, "pictures": False}
     sid = client.post("/api/strategy/sessions", json=body).json()["id"]
-    manual = client.post("/api/strategy/sessions", json={**body, "run_mode": "manual"}).json()["id"]
     try:
         day_api, strat_api = f"/api/day/sessions/{sid}", f"/api/strategy/sessions/{sid}"
         for path, payload in (("buy", {"zone_id": 1, "take_profit": 1.0, "confidence": 5}), ("sell", {"reason": "news"}), ("step", {"n": 1}),
@@ -410,16 +413,14 @@ def test_api_run_signals_and_the_manual_buttons_are_refused(client: TestClient, 
         assert client.post(f"/api/sessions/{sid}/step", json={"interval": "15m", "n": 1}).status_code == 409
         assert client.post(f"{day_api}/autorun", json={"rules": {}}).status_code == 409
         assert client.get(f"{day_api}").json()["cursor_ms"] == START           # nothing moved
-        assert client.post(f"/api/strategy/sessions/{manual}/run", json={}).status_code == 409
-        assert client.post(f"/api/day/sessions/{manual}/step", json={"n": 1}).status_code == 200   # Manual keeps its buttons
+        assert client.post(f"{strat_api}/take", json={"confidence": 5}).status_code == 409
+        assert client.post(f"{strat_api}/skip").status_code == 409
 
         assert client.post(f"{strat_api}/run", json={"max_steps": 0}).status_code == 422
         st = client.post(f"{strat_api}/run", json={}).json()   # no signal at all: straight to the last candle
         assert st["finished"] and st["run"]["phase"] == "done" and st["run"]["need"] is None
         assert st["day"]["session"]["end_flag"] == ENDED_BY_TIMEOUT and st["events"][0]["kind"] == "jump"
         assert client.get(f"{strat_api}/signals").json() == []
-        assert client.get(f"/api/strategy/sessions/{manual}/signals").json() == []
         assert client.post(f"{day_api}/reset").status_code == 200              # a reset is still allowed
     finally:
         client.delete(f"/api/sessions/{sid}")
-        client.delete(f"/api/sessions/{manual}")

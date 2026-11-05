@@ -13,6 +13,8 @@ const PLAN_DEBOUNCE_MS = 150;
 const PLAN_MARGIN_BARS = 30;
 const PIC_MARGIN_BARS = 8;    // empty bars right of the last candle in a trade's picture: the line labels sit there
 const AUTO_PICTURE_TRIES = 3;   // autorun: the same picture asked for this often in a row stops the run
+const CLOCK_TICK_MS = 5000;     // Manual session: how often the time on screen is reported to the server
+const CLOCK_MAX_GAP_S = 15;     // ... a longer gap between two ticks (the computer slept) counts as this much
 const RUN_STEPS_PER_CALL = 96;  // Automatic session: 15m candles per server call (one day), so Pause answers within a second or two
 // The entry conditions saved with every trade (same keys and order as CONDITIONS in day_engine.py).
 const COND_LABELS = [
@@ -67,6 +69,10 @@ export class DayMode {
     this.running = false;      // Automatic session: the run loop should go on (Pause sets it to false)
     this.runLoop = null;       // ... the loop's promise while it is still working (also while pausing)
     this.runError = null;      // ... why the loop stopped by itself, if it did
+    this.proposalKey = null;   // Manual session: the proposal the panel shows (a new one clears the score and the note)
+    this.spConfidence = null;  // ... the score 0..10 picked for it (required for Take)
+    this.notice = null;        // ... the strategy's last exit notice for the open trade {key, trade, text}
+    this.clockFrom = null;     // ... since when (ms) time on screen is waiting to be reported; null = not counting
   }
 
   // ------------------------------------------------------------- helpers
@@ -79,6 +85,14 @@ export class DayMode {
   // An Automatic strategy session: its strategy alone trades and moves the replay, so the buttons
   // and keys that do this by hand are off (the server refuses them too).
   locked() { const b = this.day ? this.day.session : null; return !!b && b.run_mode === 'automatic'; }
+  // A Manual strategy session: the strategy proposes the trades (Take / Skip) and the replay goes to
+  // the next entry point by itself; the trader steps only while a trade is open, and there is no
+  // buy of their own, no jump, no Step back and no exits A / C (the server refuses them too).
+  manual() { const b = this.day ? this.day.session : null; return !!b && b.run_mode === 'manual'; }
+  // The steps of the replay by hand (Step, Play): never in Automatic, in Manual only while a trade is open.
+  stepLocked() { return this.locked() || (this.manual() && !this.day.trade); }
+  // The trade a Manual session's strategy proposes right now, waiting for Take or Skip.
+  proposal() { const b = this.day ? this.day.session : null; return this.ready() && b && b.run && !b.ended ? (b.run.proposal || null) : null; }
   dialogOpen() { return ['dlg-exit', 'dlg-review'].some(id => this.$(id).open); }
   n(v, digits = 2) { return v === null || v === undefined || Number.isNaN(v) ? '–' : v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
   signed(v, digits = 2) { return v === null || v === undefined ? '–' : `${v >= 0 ? '+' : ''}${this.n(v, digits)}`; }
@@ -106,6 +120,9 @@ export class DayMode {
     this.notesDate = null;
     clearTimeout(this.notesTimer);
     this.selectedZone = null;
+    this.proposalKey = null;   // a Manual session's proposal panel, notice and clock start afresh
+    this.notice = null;
+    this.clockFrom = null;
     this.$('day-signal-last').textContent = '';
     this.plan = null;
     this.cancelDraw();
@@ -301,12 +318,13 @@ export class DayMode {
       $('day-ema').title = '';
     }
     const locked = this.locked();
+    const manual = this.manual();
     const gate = $('day-gate');
-    gate.textContent = !ok ? '' : locked && d.entries_allowed ? 'Automatic session: the strategy trades. Use Start in the Strategy session card.' : (d.entries_allowed
+    gate.textContent = !ok ? '' : manual ? this.manualGate() : locked && d.entries_allowed ? 'Automatic session: the strategy trades. Use Start in the Strategy session card.' : (d.entries_allowed
       ? (d.check.ema_above === null ? 'Entries allowed. EMA 200 not available: a trade saves the trend as unknown.'
         : d.check.ema_above ? 'Entries allowed. Daily close above the EMA 200.' : 'Entries allowed. Daily close below the EMA 200 (saved with the trade).')
       : d.block_reason);
-    gate.className = `small ${ok && d.entries_allowed && !locked ? 'up' : 'muted'}`;
+    gate.className = `small ${ok && d.entries_allowed && !locked && !manual ? 'up' : 'muted'}`;
 
     if (this.panelOpen()) {
       if (!ok || s.finished) this.closeNewTrade();
@@ -317,13 +335,16 @@ export class DayMode {
     if (ok && d.date !== this.notesDate) { clearTimeout(this.notesTimer); this.notesDate = d.date; ta.value = d.check.notes || ''; $('day-notes-state').textContent = ''; }
     else if (!ok && this.notesDate !== null) { this.notesDate = null; ta.value = ''; }
     const busy = this.busy || this.state.busy || locked;   // locked: an Automatic session takes nothing by hand
-    $('btn-day-new').disabled = !ok || busy || !d.entries_allowed;
+    const noHands = busy || manual;                        // Manual: no buy of its own and no jump (Sell stays)
+    $('btn-day-new').disabled = !ok || noHands || !d.entries_allowed;
     $('btn-day-sell').disabled = !ok || busy || !d.can_sell;
-    $('btn-day-skip').disabled = !ok || busy || !d.can_skip;
-    $('btn-day-ema').disabled = !ok || busy || !d.can_skip;   // any state without an open trade or an exit choice
-    $('btn-day-signal').disabled = !ok || busy || !d.can_skip || !$('day-strategy').value;
+    $('btn-day-skip').disabled = !ok || noHands || !d.can_skip;
+    $('btn-day-ema').disabled = !ok || noHands || !d.can_skip;   // any state without an open trade or an exit choice
+    $('btn-day-signal').disabled = !ok || noHands || !d.can_skip || !$('day-strategy').value;
     $('btn-day-zone').disabled = !ok || this.busy || this.state.busy;
-    this.renderExitChoice(ok && d.exit_choice && !locked ? d.last_exit : null);
+    this.renderExitChoice(ok && d.exit_choice && !locked && !manual ? d.last_exit : null);
+    this.renderProposal();
+    this.renderNotice();
 
     // the open trade
     const t = ok ? d.trade : null;
@@ -343,6 +364,7 @@ export class DayMode {
       set('dt-change', `${this.signed(usdt)} USDT · ${this.pctText(t.price_change_pct)}`, `mono gauge ${this.cls(t.price_change_pct)}`);
       set('dt-auto', this.autoText(d.auto));
       set('dt-ac', this.acText(t.exits_ac));
+      for (const el of [$('dt-ac'), $('dt-ac').previousElementSibling]) el.classList.toggle('hidden', manual);   // Manual closes the whole trade
       set('dt-stop', `${fp(t.stop_used)} · ${this.pctText(t.stop_pct)}`);
       $('dt-stop').title = `${this.pctText(t.stop_pct)} from the entry${away(t.to_stop_pct, 'below the price now')}${stopMoved ? ` · at the buy ${fp(t.stop_initial)} (${this.pctText((t.stop_initial / t.entry_price - 1) * 100)}) · ${this.changesText(t)}` : ''}`;
       set('dt-tp', `${fp(t.take_profit)} · ${this.pctText(t.tp_pct)}`);
@@ -360,8 +382,159 @@ export class DayMode {
       $('dt-risk').title = rrNow !== t.rr ? `Reward-to-risk now; at the buy ${this.n(t.rr)}` : 'Reward-to-risk of the trade';
       set('dt-pnl', `${this.signed(t.unrealized_pnl)} (${this.pctText(t.unrealized_pnl_pct)}) · ${this.signed(t.r_now, 2)} R`, `mono gauge ${this.cls(t.unrealized_pnl)}`);
     }
-    this.c.chart.setDayLines(t);
+    this.c.chart.setDayLines(t || this.proposalLines());
     this.c.renderCardSums();   // the summary of the minimized card
+  }
+
+  // --------------------------------------------------------- manual session
+  // What the trader can do right now in a Manual session, in one line under the trend reading.
+  manualGate() {
+    const b = this.day.session;
+    const run = b.run;
+    if (b.ended) return 'Manual session: ended.';
+    if (!run || !run.started) return 'Manual session: press Start in the Strategy session card. The replay goes to the strategy\'s next entry point.';
+    if (this.proposal()) return 'Manual session: take or skip the proposed trade.';
+    if (this.day.trade) return 'Manual session: your trade is open. Step or play; drag the stop and target lines to move them; Sell closes it.';
+    return this.runLoop ? 'Manual session: looking for the next entry point…' : 'Manual session: press Continue to go to the next entry point.';
+  }
+  // The proposal as chart lines (entry, stop, target). Not an open trade, so the lines cannot be dragged.
+  proposalLines() {
+    const p = this.proposal();
+    return p ? { status: 'proposed', entry_price: p.entry, stop_used: p.stop, take_profit: p.take_profit, stop_pct: p.stop_pct, tp_pct: p.tp_pct } : null;
+  }
+  // The proposal panel: the trade exactly as a Take buys it, the confidence chips, Take and Skip.
+  renderProposal() {
+    const $ = this.$;
+    const p = this.proposal();
+    $('strat-proposal').classList.toggle('hidden', !p);
+    if (!p) { this.proposalKey = null; return; }
+    const key = `${this.session.id}@${p.cursor_ms}`;
+    if (key !== this.proposalKey) {   // a new proposal: the score and the note start empty
+      this.proposalKey = key;
+      this.spConfidence = null;
+      $('sp-notes').value = '';
+      $('sp-error').textContent = '';
+    }
+    const fp = this.c.fmtPrice;
+    const set = (id, text) => { $(id).textContent = text; };
+    set('sp-title', `Proposed trade · ${p.entry_local.slice(11)}`);
+    set('sp-why', [p.text || p.code, p.levels_text].filter(Boolean).join(' '));
+    set('sp-entry', fp(p.entry));
+    set('sp-stop', `${fp(p.stop)} · ${this.pctText(p.stop_pct)}`);
+    set('sp-tp', `${fp(p.take_profit)} · ${this.pctText(p.tp_pct)}`);
+    set('sp-size', `${this.c.qtyFmt(p.coins)} ${this.c.baseAsset()} = ${this.n(p.position_value)} USDT${p.capped ? ' · capped' : ''}`);
+    set('sp-risk', `${this.n(p.risk_usdt)} USDT · R/R ${this.n(p.rr)}`);
+    $('sp-risk').title = p.est_fees === null || p.est_fees === undefined ? '' : `Fees of the round trip about ${this.n(p.est_fees)} USDT${p.fee_share === null || p.fee_share === undefined ? '' : ` (${(p.fee_share * 100).toFixed(0)}% of the risk)`}`;
+    set('sp-warn', (p.warnings || []).join(' '));
+    const box = $('sp-conf');
+    if (!box.childElementCount) {
+      for (let i = 0; i <= 10; i++) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'btn chip nt-conf-chip'; b.textContent = String(i); b.dataset.conf = String(i);
+        b.addEventListener('click', () => { this.spConfidence = i; $('sp-error').textContent = ''; this.renderProposal(); });
+        box.appendChild(b);
+      }
+    }
+    for (const b of box.children) {
+      const on = parseInt(b.dataset.conf, 10) === this.spConfidence;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    const busy = this.busy || this.state.busy || !!this.runLoop;
+    $('btn-sp-take').disabled = busy || this.spConfidence === null;
+    $('btn-sp-take').title = this.spConfidence === null ? 'Pick your confidence (0 to 10) first.' : 'Buy as proposed, at the close of this candle. Afterwards you step, and may drag the stop and target lines.';
+    $('btn-sp-skip').disabled = busy;
+  }
+  // Take (buy as proposed) or Skip (logged, does not count). After a skip the replay goes on to the
+  // next entry point by itself; after a take the trader holds the trade.
+  async answerProposal(take) {
+    const $ = this.$;
+    if (!this.proposal() || this.busy || this.runLoop) return;
+    if (take && this.spConfidence === null) { $('sp-error').textContent = 'Pick your confidence (0 to 10) first.'; return; }
+    const sid = this.session.id;
+    const same = () => !!this.session && this.session.id === sid;
+    this.busy = true;
+    this.render();
+    let skipped = false;
+    try {
+      if (take) {
+        const res = await this.c.api.strategyTake(sid, { confidence: this.spConfidence, notes: $('sp-notes').value.trim() || null });
+        if (!same()) return;
+        this.c.applyState(res.state);
+        this.c.toast(`Trade #${res.trade.seq} taken @ ${this.c.fmtPrice(res.trade.entry_price)}. Step or play; drag the stop and target lines to move them.`);
+        await this.refresh();
+      } else {
+        const st = await this.c.api.strategySkip(sid);
+        if (!same()) return;
+        this.c.applyState(st);
+        this.c.toast('Skipped (logged; it does not count as a trade).');
+        skipped = true;
+      }
+    } catch (e) { if (same()) $('sp-error').textContent = e.message; }
+    finally { this.busy = false; this.render(); }
+    if (skipped) this.autoNext();
+  }
+  // Manual: whenever the run can go on by itself (a skip, the trade has closed, the session ended
+  // and the run still has to close up), it does: "the program moves to the next entry point".
+  // A proposal or an open trade makes `can_run` false, so this never runs past the trader.
+  autoNext() {
+    setTimeout(() => {   // after the caller's own busy flags are down
+      const b = this.day ? this.day.session : null;
+      if (this.manual() && b.run && b.run.started && b.run.can_run && !this.runLoop && !this.busy && !this.state.busy) this.runStrategy();
+    }, 0);
+  }
+  // The strategy's own exit signal while a Manual trade is open: a notice only (Automatic would
+  // sell there). It is announced once and stays under the buttons until the trade has closed.
+  renderNotice() {
+    const d = this.day;
+    const t = this.ready() ? d.trade : null;
+    const run = t && d.session ? d.session.run : null;
+    const note = run ? run.exit_notice : null;
+    if (note && (!this.notice || this.notice.key !== `${t.id}@${note.cursor_ms}`)) {
+      this.notice = { key: `${t.id}@${note.cursor_ms}`, trade: t.id, text: `Strategy notice at ${note.local.slice(11)}: ${note.text} The strategy would close here; your trade stays open.` };
+      this.c.toast(this.notice.text, true);
+    }
+    if (this.notice && (!t || t.id !== this.notice.trade)) this.notice = null;
+    const el = this.$('strat-notice');
+    el.textContent = this.notice ? this.notice.text : '';
+    el.classList.toggle('hidden', !this.notice);
+  }
+  // The time limit of a Manual session counts real time, and only while the session is on screen:
+  // its run was started, it has not ended, and this browser tab is visible. Every few seconds the
+  // time since the last report goes to the server, which ends the session at the limit.
+  async tickClock(flush = false) {
+    const b = this.day ? this.day.session : null;
+    const now = Date.now();
+    const idle = !this.runLoop && !this.busy && !this.state.busy;
+    if (this.manual() && this.ready() && b.ended && b.run && b.run.started && b.run.can_run && idle) { this.autoNext(); }   // ended: the run closes up
+    const counting = this.manual() && this.ready() && !b.ended && b.time_limit_hours > 0 && !!b.run && b.run.started;
+    const visible = document.visibilityState === 'visible';
+    if (!counting || (!visible && !flush)) { this.clockFrom = null; return; }
+    const from = this.clockFrom;
+    this.clockFrom = visible ? now : null;
+    if (from === null) return;
+    const seconds = Math.min((now - from) / 1000, CLOCK_MAX_GAP_S);
+    if (seconds < 0.5) { this.clockFrom = visible ? from : null; return; }
+    const sid = this.session.id;
+    try {
+      const st = await this.c.api.strategyClock(sid, seconds);
+      const cur = this.session && this.session.id === sid && this.day ? this.day.session : null;
+      if (!cur || !st.day || !st.day.session) return;
+      const nb = st.day.session;
+      if (nb.ended && !cur.ended && !this.runLoop && !this.busy && !this.state.busy) {   // the time limit was reached just now
+        this.c.pause();
+        this.c.applyState(st);
+        await this.c.refreshView();
+        await this.refresh();
+        this.c.toast(`Session ended (${nb.end_flag}: ${nb.end_detail}).`);
+        this.autoNext();
+        return;
+      }
+      // otherwise only the clock moves: another call's newer state must not be overwritten
+      cur.clock_seconds = nb.clock_seconds;
+      cur.clock_left_seconds = nb.clock_left_seconds;
+      this.renderSession();
+    } catch { /* the next tick reports again */ }
   }
 
   // ------------------------------------------------- move the stop / target
@@ -754,7 +927,7 @@ export class DayMode {
       rb.checked = open.length === 2 ? rb.value === 'both' : rb.value === open[0];
     }
     $('exit-legs').querySelector('input[value="both"]').disabled = open.length < 2;
-    $('exit-legs').classList.toggle('hidden', partial);   // A / C are whole-size exits: not for a quarter
+    $('exit-legs').classList.toggle('hidden', partial || this.manual());   // A / C are whole-size exits: not for a quarter, not in a Manual session
     const t = d.trade;
     $('exit-title').textContent = partial
       ? `Sell ¼ of trade #${t.seq} @ ${this.c.fmtPrice(this.session.price)} · ${this.pctText(t.price_change_pct)} vs the entry`
@@ -928,8 +1101,9 @@ export class DayMode {
       ? (b.time_limit_hours > 0 ? `${this.clockText(b.clock_seconds)} / ${this.clockText(b.time_limit_hours * 3600)}` : 'none')
       : `end date ${this.localDate(this.session.end_ms || this.session.data_end_ms) || '–'}`);
     set('strat-pics', b.pictures ? 'on (trade pictures)' : 'off');
-    // Automatic: where the run stands, what became of the signals, and the Start / Pause button
+    // where the run stands, what became of the signals, and the Start / Pause button
     const run = b.run;
+    const held = manual && run && run.started && !run.done && !run.can_run;   // Manual: a proposal waits or the trade is open
     for (const id of ['strat-run-label', 'strat-run', 'strat-signals-label', 'strat-signals']) $(id).classList.toggle('hidden', !run);
     const btn = $('btn-strat-run');
     btn.classList.toggle('hidden', !run);
@@ -937,18 +1111,19 @@ export class DayMode {
     if (run) {
       const where = run.phase === 'waiting' && run.window_candle !== null ? `${run.phase_label} (candle ${run.window_candle} after the signal)` : run.phase_label;
       set('strat-run', run.done ? run.phase_label : !run.started ? (working ? 'Starting…' : 'Not started: press Start')
-        : working && this.running ? where : `Paused · ${where}`);
+        : (working && this.running) || held ? where : `Paused · ${where}`);
       $('strat-run').title = this.runError ? `The run stopped: ${this.runError}` : '';
       const parts = run.outcomes.map(o => `${o.count} ${o.label.toLowerCase()}`);
       set('strat-signals', run.signals ? `${run.signals} so far` : 'none yet');
       $('strat-signals').title = parts.join('\n');
-      btn.textContent = working ? (this.running ? 'Pause' : 'Pausing…') : run.done ? 'Finished' : run.started ? 'Continue' : 'Start';
+      btn.textContent = working ? (this.running ? 'Pause' : 'Pausing…') : run.done ? 'Finished' : held ? (run.proposal ? 'Take or skip' : 'In a trade')
+        : run.started ? 'Continue' : 'Start';
       btn.disabled = !this.ready() || (working ? !this.running : (!run.can_run || this.busy));
     }
     const status = $('strat-status');
-    const paused = run && !b.ended && !(working && this.running);
+    const paused = run && !b.ended && !(working && this.running) && !held;
     status.className = `badge ${b.ended ? 'warn' : paused ? '' : 'good'}`;
-    status.textContent = b.ended ? 'ended' : paused ? (run.started ? 'paused' : 'not started') : 'running';
+    status.textContent = b.ended ? 'ended' : paused ? (run.started ? 'paused' : 'not started') : held ? (run.proposal ? 'proposal' : 'in a trade') : 'running';
     status.title = b.ended ? b.end_flag : '';
     const end = $('strat-end');
     end.textContent = b.ended ? `${b.end_flag}: ${b.end_detail}${b.ended_local ? `, at ${b.ended_local} UTC of the replay` : ''}.` : '';
@@ -956,8 +1131,10 @@ export class DayMode {
     $('btn-strat-stop').disabled = !this.ready() || this.busy || !b.can_stop || (working && !this.running);
     this.c.renderCardSums();
   }
-  // ------------------------------------------------------------ automatic run
-  // The Start button of an Automatic session (backend strat_run.py). The loop lets the server run
+  // ---------------------------------------------------------- the strategy's run
+  // The Start button of a strategy session (backend strat_run.py). In a Manual session the loop ends
+  // at a proposal (Take / Skip answer it) and while the trade is open; `autoNext` starts it again
+  // once the run can go on. The loop lets the server run
   // until it needs a trade picture (`run.need`; taken here, then the next call goes on) or something
   // happened that the screen should show (a jump, a buy, an exit). Pause ends the loop after the
   // call in flight; Start again continues where the run stood. The server never steps past a missing
@@ -1006,9 +1183,10 @@ export class DayMode {
         if (tries >= AUTO_PICTURE_TRIES) throw new Error(`the trade picture could not be saved (${AUTO_PICTURE_TRIES} tries)`);
         if (run.need === 'trade_picture') await this.duePicture();
         else {
-          if (events.some(ev => ev.kind === 'jump' || ev.kind === 'strategy_buy')) await this.refresh();   // zones, trades, days
+          if (events.some(ev => ev.kind === 'jump' || ev.kind === 'strategy_buy' || ev.kind === 'proposal')) await this.refresh();   // zones, trades, days
           for (const ev of events) if (ev.kind === 'strategy_buy') this.c.toast(`Trade ${ev.n} opened @ ${this.c.fmtPrice(ev.trade.entry_price)}: ${ev.text || ev.code}`);
-          await this.handleEvents(events.filter(ev => ev.kind !== 'strategy_buy'));
+          for (const ev of events) if (ev.kind === 'proposal') this.c.toast(`Entry point: ${ev.proposal.text || ev.proposal.code} Take or skip the proposed trade.`);
+          await this.handleEvents(events.filter(ev => ev.kind !== 'strategy_buy' && ev.kind !== 'proposal'));
         }
         if (run.done) {
           const b = this.day && this.day.session;
@@ -1016,6 +1194,7 @@ export class DayMode {
           await this.refresh();
           return;
         }
+        if (!run.can_run && !run.need) return;   // Manual: a proposal waits for its answer, or the trader holds the trade
       }
     } catch (e) {
       if (same()) { this.c.toast(`The run stopped: ${e.message}`, true); this.runError = e.message; }
@@ -1137,6 +1316,7 @@ export class DayMode {
       await this.refresh();
     }
     await this.duePicture();
+    if (this.manual()) { if (!this.runLoop) this.autoNext(); return; }   // Manual: no "end the day?" question, on to the next entry point
     if (events.some(ev => ev.kind === 'exit') && this.ready() && this.day.exit_choice) this.c.toast('Trade closed. End the day (Enter) or keep trading (K) in the side panel.');
   }
   // The picture of the trade whose 24:00 was just reached, taken once (at its 24:00 or later).
@@ -1334,6 +1514,7 @@ export class DayMode {
   async captureDayPicture() {
     const d = this.day;
     if (!this.ready() || !d || !d.date || d.check.has_image || this.capturing) return;
+    if (d.session) return;   // a strategy session keeps trade pictures only
     this.capturing = true;
     const prev = this.state.interval;
     try {
@@ -1557,7 +1738,7 @@ export class DayMode {
     const fp = this.c.fmtPrice;
     for (const t of rows) {
       const tr = document.createElement('tr');
-      const reviewOpen = t.status === 'closed' && !(t.review && t.review.reviewed);
+      const reviewOpen = t.status === 'closed' && !(t.review && t.review.reviewed) && t.run_mode !== 'manual';   // no review marks in a Manual session
       tr.className = `bucket${reviewOpen ? ' review-open' : ''}`;   // a light red: the review is still open
       if (reviewOpen) tr.title = 'Review open: click the row, then Answer review';
       const td = (text, cls, title) => { const c = document.createElement('td'); c.textContent = text; if (cls) c.className = cls; if (title) c.title = title; tr.appendChild(c); return c; };
@@ -1787,7 +1968,7 @@ export class DayMode {
       ['Notes', [['Notes', t.notes || '–']]],
     ];
     const rb = $('btn-snap-review');
-    rb.classList.toggle('hidden', t.status !== 'closed');
+    rb.classList.toggle('hidden', t.status !== 'closed' || t.run_mode === 'manual');
     rb.textContent = t.review && t.review.reviewed ? 'Edit review' : 'Answer review';
     rb.onclick = () => this.openReview(t);
     this.renderReadings(groups, true);   // the trade's many sections start folded
@@ -1804,6 +1985,12 @@ export class DayMode {
       if (k === 'escape' && (this.drawing || this.draft !== null)) { this.cancelDraw(); return true; }
       if (k === 'z') { e.preventDefault(); this.drawing ? this.cancelDraw() : this.startDraw(); return true; }
       return ['n', 'b', 'x', 'k', 'j', 'e'].includes(k);   // swallowed: they would trade or jump
+    }
+    if (this.manual()) {   // a Manual session: Sell and the zone key stay; a buy of its own and the jumps are off
+      if (k === 'escape' && (this.drawing || this.draft !== null)) { this.cancelDraw(); return true; }
+      if (k === 'x') { e.preventDefault(); this.openExit(); return true; }
+      if (k === 'z') { e.preventDefault(); this.drawing ? this.cancelDraw() : this.startDraw(); return true; }
+      return ['n', 'b', 'k', 'j', 'e'].includes(k);
     }
     if (this.exitChoiceOpen()) {   // just closed: Enter ends the day, K keeps trading
       if (e.key === 'Enter' && !(e.target && e.target.closest && e.target.closest('button'))) { e.preventDefault(); this.endDay(); return true; }
@@ -1842,6 +2029,11 @@ export class DayMode {
     $('btn-day-skip').addEventListener('click', () => this.skipDay());
     $('btn-strat-stop').addEventListener('click', () => this.stopSession());
     $('btn-strat-run').addEventListener('click', () => this.toggleRun());
+    $('btn-sp-take').addEventListener('click', () => this.answerProposal(true));
+    $('btn-sp-skip').addEventListener('click', () => this.answerProposal(false));
+    // Manual session: the real-time clock (only while this tab is on screen)
+    setInterval(() => this.tickClock(), CLOCK_TICK_MS);
+    document.addEventListener('visibilitychange', () => this.tickClock(document.visibilityState !== 'visible'));
     $('btn-day-ema').addEventListener('click', () => this.nextEmaDay());
     $('btn-day-signal').addEventListener('click', () => this.nextSignal());
     $('day-strategy').addEventListener('change', () => { this.renderStrategyNote(); this.render(); });

@@ -285,9 +285,9 @@ autorun's `confirmation`, the settings with `AutorunRules()`).
 
 **Step 2: setup, storage, end flags** (`replay/strat.py`, class `StrategySessions`; its module
 docstring has the rules). A strategy session IS a day session (`sessions.mode` stays "day", every
-`/api/day/sessions/{id}/...` route works on it) whose `day_sessions` row has a `run_mode`. A Manual
-session is still traded like plain day trading (New trade) until step 4; `tests/test_strat.py` trades
-that way through the engine in both modes.
+`/api/day/sessions/{id}/...` route works on it) whose `day_sessions` row has a `run_mode`.
+`tests/test_strat.py` trades both modes through the engine directly (the guards of steps 3 and 4
+sit in the routes, not in the engine).
 - **Setup** (`create`, `POST /api/strategy/sessions`; `GET /api/strategy/setup` lists modes and
   strategies): `run_mode` automatic / manual, the strategy (name, version, timeframe and
   `settings()` are copied into the session), `max_trades`, `time_limit_hours` (Manual only; an
@@ -373,11 +373,51 @@ the whole flow). The run knows no strategy: it asks the session's plug-in `find_
 - Speed: a step costs a full `DayEngine.state()` (like the autorun), roughly 20 ms; fine for runs
   of months, worth a look before runs of many years.
 
+**Step 4: Manual mode** (the same `StrategyRun`; "Manual" in its module docstring). The search is
+the Automatic one, so both modes have the same entry points and the same filters in the log
+(`tests/test_strat_manual.py` plays a Manual session that takes everything next to an Automatic one).
+- **Proposal**: where Automatic buys (after `levels`, the engine's size and `accept`), a Manual run
+  stores `run["proposal"]` (entry = this candle's close, stop, target, size, risk, fees, the zone,
+  the strategy's words), keeps the log row open with the planned levels, goes to phase `proposal`
+  and returns. It is `state.day.session.run.proposal`, so a reload shows it again.
+- **Answer**: `POST /api/strategy/sessions/{id}/take` (`confidence` 0-10 required, `notes` optional:
+  the buy exactly as proposed, note "your note | Manual (strategy vN): ...") or `.../skip` (log
+  outcome `skipped`; does not count toward the trade limit). `StrategyRun.take` / `skip`.
+- **During the trade the trader moves the replay** (Step / Play); the run returns at once while the
+  trade is open. Kept tools: drag stop / target (`move_trade` logs every change in
+  `day_trades.changes`: replay time `at_ms` / `at_local`, the price then, field, `from`, `to`),
+  Sell ¼ / Add ¼, Sell (the whole trade, with a reason). The strategy's `exit_signal` is only a
+  notice: `run.exit_notice` on the candle it fires, a toast and a line under the buttons.
+- **Auto-next**: once the trade has closed (or after a skip) `can_run` is true again and the browser
+  calls `/run` by itself (`day.js autoNext`): no "end the day?" question, the zone of the closed
+  trade is deleted, the trade picture is taken at its 24:00 on the way, the next proposal comes.
+- **What Manual refuses** (`manual_guard(session_id, action)`, 409): a buy of its own, every jump,
+  end-day / keep-trading / continue, Step back, selling exit A or C alone, and a step while no
+  trade is open. Allowed: step with a trade open, sell (both exits), scale, move. Automatic still
+  refuses everything.
+- **Ends**: a time limit or End session while a proposal waits closes it in the log
+  ("session_ended", "The session ended before the proposal was answered."); with a trade open the
+  step-2 rule closes it at market. The run then closes up like in Automatic (log, last picture, done).
+- **Real-time clock** (`day.js tickClock`): every 5 s the time since the last report goes to
+  `POST .../clock`, only while the session is open, its run was STARTED, it has not ended and the
+  browser tab is visible (`document.visibilityState`); a gap of more than 15 s between two ticks (a
+  sleeping computer) counts as 15 s. Leaving the tab reports what is owed and stops counting. The
+  answer only patches the clock fields into the state, unless the limit was reached just now.
+- **UI**: the proposal panel in the Day trading card (`strat-proposal`: levels, size, risk,
+  confidence chips, notes, Take / Skip) and its lines on the chart (not draggable until taken);
+  the Start button reads Start / Pause / Continue / Take or skip / In a trade / Finished. In a
+  Manual session New trade, the jumps and Step back are off, Step and Play only work while a trade
+  is open (`day.stepLocked()`), the exit-choice box, the Exits A / C row, the A / C choice in the
+  Sell dialog and the review marks are hidden. No day pictures in any strategy session
+  (`captureDayPicture` returns early).
+- Tests: `tests/test_strat_manual.py` (engine and API), `tests/test_ui_strat.py` (Playwright: Take
+  to Finished with a picture; Skip). Checked in the browser on a data copy (BTCUSDT Oct-Nov 2022),
+  including a time limit that ends the session by itself.
+- Chosen without an explicit answer, reported to the user: the clock starts with Start (not when
+  the session is opened); Play is NOT paused by the strategy's exit notice; Take and Skip have no
+  keys; a taken trade's note keeps the trader's text first.
+
 Left for the next steps on purpose:
-- Step 4: the Manual engine and the Manual clock's heartbeat from the browser (only the backend
-  route exists). The picture rules above already hold for Manual sessions; the browser still takes
-  DAY pictures in a Manual session (`beforeStep` / `jump`), which the agreed rule (trade pictures
-  only) forbids: switch that off there.
 - Step 5: the signal log has no CSV and no what-ifs for strategy sessions yet (the autorun's report
   code reads `AutorunRules`, not a plug-in).
 - The session list still says "Day" for a strategy session (the default name starts with
@@ -449,6 +489,11 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-05 Strategy sessions, step 4: Manual mode. The run proposes the trade at the strategy's
+  entry point (`take` / `skip` routes), the trader holds it (stop / target moves logged, quarters,
+  Sell) and the replay goes on to the next entry point by itself; the strategy's exit is a notice;
+  `manual_guard` per action; the real-time clock from the browser (visible tab only); Step back, New
+  trade, jumps, exits A / C and review marks off in Manual; no day pictures in strategy sessions.
 - 2026-11-05 Strategy sessions, step 3: Automatic mode. `replay/strat_run.py` runs the session's
   plug-in (same trades as the autorun's CTest rules, tested side by side), `DayEngine.jump_to`, the
   picture rules of strategy sessions, `manual_guard` on the hand-trading routes, the run / signals
@@ -530,7 +575,7 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## Open / ideas
 
-**In progress: strategy sessions** (see the section above), steps 4 to 6. Step 5 (Report tab) was
+**In progress: strategy sessions** (see the section above), steps 5 and 6. Step 5 (Report tab) was
 agreed to show CTest__01 / __02 as Automatic sessions, but they are not in this PC's database: ask
 the user where that database is before building the import of old runs.
 

@@ -427,12 +427,12 @@
           <dt title="Trades taken of the maximum number; a skipped signal does not count">Trades</dt><dd id="strat-trades" class="mono small">&ndash;</dd>
           <dt id="strat-time-label">Time limit</dt><dd id="strat-time" class="mono small">&ndash;</dd>
           <dt>Screenshots</dt><dd id="strat-pics" class="small">&ndash;</dd>
-          <dt id="strat-run-label" title="Automatic: where the strategy's own run stands">Run</dt><dd id="strat-run" class="small">&ndash;</dd>
+          <dt id="strat-run-label" title="Where the strategy's run stands">Run</dt><dd id="strat-run" class="small">&ndash;</dd>
           <dt id="strat-signals-label" title="Every signal of the strategy so far and what became of it">Signals</dt><dd id="strat-signals" class="small">&ndash;</dd>
         </dl>
         <p id="strat-end" class="small muted" role="status"></p>
         <div class="row-flex">
-          <button type="button" id="btn-strat-run" class="btn small primary hidden" title="Automatic: the strategy trades the replay by itself. Press again to pause.">Start</button>
+          <button type="button" id="btn-strat-run" class="btn small primary hidden" title="Automatic: the strategy trades the replay by itself. Manual: the replay goes to the strategy's next entry point and proposes the trade. Press again to pause.">Start</button>
           <span class="spacer"></span>
           <button type="button" id="btn-strat-stop" class="btn small" title="End the session now. An open trade is closed at the close of the current candle.">End session</button>
         </div>
@@ -450,6 +450,29 @@
           <span class="spacer"></span>
           <button type="button" id="btn-day-skip" class="btn small" title="Jump to the next day at 00:00 (K)">Skip day &rarr; 00:00</button>
         </div>
+        <div class="review-inline hidden" id="strat-proposal" role="group" aria-labelledby="sp-title">
+          <b id="sp-title" class="small">Proposed trade</b>
+          <p id="sp-why" class="small muted"></p>
+          <dl class="kv">
+            <dt title="The close of this 15-minute candle: where a take fills">Entry</dt><dd id="sp-entry" class="mono">&ndash;</dd>
+            <dt title="The strategy's stop and its distance from the entry">Stop</dt><dd id="sp-stop" class="mono">&ndash;</dd>
+            <dt title="The strategy's target and its distance from the entry">Target</dt><dd id="sp-tp" class="mono">&ndash;</dd>
+            <dt>Size</dt><dd id="sp-size" class="mono small">&ndash;</dd>
+            <dt title="Risk of the trade in USDT and its reward-to-risk">Risk &middot; R/R</dt><dd id="sp-risk" class="mono">&ndash;</dd>
+          </dl>
+          <p id="sp-warn" class="small warn" role="status"></p>
+          <div class="nt-row nt-conf" role="group" aria-label="Confidence 0 to 10" title="How confident are you in this trade? 0 = not at all, 10 = certain. Saved with the trade, cannot be changed later.">
+            <span class="lbl">Confidence</span>
+            <div class="nt-conf-chips" id="sp-conf"></div>
+          </div>
+          <label class="nt-row"><span class="lbl">Notes</span> <input id="sp-notes" type="text" maxlength="200" autocomplete="off" placeholder="optional"></label>
+          <p id="sp-error" class="error small" role="alert"></p>
+          <div class="row-flex">
+            <button type="button" id="btn-sp-take" class="btn buy" title="Buy as proposed, at the close of this candle. Afterwards you step, and may drag the stop and target lines." disabled>Take</button>
+            <button type="button" id="btn-sp-skip" class="btn" title="Pass on this trade. It is logged and does not count toward the maximum number of trades.">Skip</button>
+          </div>
+        </div>
+        <p id="strat-notice" class="small warn hidden" role="status"></p>
         <div class="review-inline hidden" id="day-exit-choice" role="group" aria-labelledby="dx-title">
           <b id="dx-title" class="small">Trade closed</b>
           <p id="dx-sub" class="small muted"></p>

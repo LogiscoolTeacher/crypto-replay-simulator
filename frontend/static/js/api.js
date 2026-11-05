@@ -58,6 +58,9 @@ export const api = {
   strategyStop: (id) => request('POST', `/api/strategy/sessions/${id}/stop`),
   strategyRun: (id, body) => request('POST', `/api/strategy/sessions/${id}/run`, body || {}),
   strategySignals: (id) => request('GET', `/api/strategy/sessions/${id}/signals`),
+  strategyTake: (id, body) => request('POST', `/api/strategy/sessions/${id}/take`, body),   // Manual: take the proposed trade
+  strategySkip: (id) => request('POST', `/api/strategy/sessions/${id}/skip`),               // Manual: pass on it
+  strategyClock: (id, seconds) => request('POST', `/api/strategy/sessions/${id}/clock`, { seconds }),   // Manual: real time on screen
   // Day-trading mode (sessions with mode "day")
   createDaySession: (body) => request('POST', '/api/day/sessions', body),
   daySession: (id) => request('GET', `/api/day/sessions/${id}`),

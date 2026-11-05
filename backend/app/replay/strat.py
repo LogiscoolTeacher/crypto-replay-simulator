@@ -17,9 +17,12 @@ this module adds lives in a few columns of `day_sessions`:
   date is the time limit, so hours are not accepted there.
 - `pictures`: trade pictures on or off.
 
-An **Automatic** session is traded by its strategy alone (`strat_run.py`, the Start button): the
-buttons that trade or move the replay by hand are refused for it (`manual_guard`). Its run's
-status is the `run` part of the session block.
+Both modes run in `strat_run.py` (the Start button); the run's status is the `run` part of the
+session block. An **Automatic** session is traded by its strategy alone: everything that trades or
+moves the replay by hand is refused for it (`manual_guard`). In a **Manual** session the trader
+answers the proposals (take / skip), steps while a trade is open, moves stop and target, sells
+quarters and closes by hand; a buy without a proposal, the jumps, Step back and the exits A / C
+are refused.
 
 **End** (`settle`, called by `DayEngine.state` after every action; `stop`). The first limit reached
 ends the session, and the flag says which:
@@ -63,14 +66,18 @@ RUN_OUTCOMES = {
     "traded": "Traded",
     "trade_open": "Skipped: a trade was open",
     "waiting": "Skipped: another signal's entry window was running",
+    "skipped": "Skipped by the trader",
     "invalid": "No valid trade",
     "end_of_data": "The replay ended during the entry window",
     "session_ended": "The session ended during the entry window",
 }
 RUN_PHASES = {
     "new": "Not started", "idle": "Looking for the next signal", "waiting": "Waiting for the entry",
-    "trade": "In a trade", "finishing": "Taking the last pictures", "done": "Finished",
+    "proposal": "Proposal: take or skip", "trade": "In a trade", "finishing": "Taking the last pictures", "done": "Finished",
 }
+# What a trader may do by hand, per action group of `manual_guard`: Automatic nothing; Manual trades
+# the proposals, so no buy of its own, no jump, no step back and no exits A / C.
+MANUAL_ALLOWS = ("step", "sell", "adjust")
 
 
 class StrategySessions:
@@ -79,6 +86,7 @@ class StrategySessions:
     def __init__(self, day: DayEngine) -> None:
         self.day = day
         self.store = day.store
+        self.runner = None   # strat_run.StrategyRun sets itself here (the Manual exit notice)
         day.strat = self   # DayEngine.state asks `settle` and `block` for every such session
 
     # ------------------------------------------------------------- catalogue
@@ -155,13 +163,14 @@ class StrategySessions:
             # where the replay stood when the session ended (the close of that candle, on the day clock)
             "ended_local": local_str(ds["ended_ms"] + self.day._base_ms) if ds.get("ended_ms") is not None else None,
             "can_stop": not ds.get("end_flag"),
-            # Automatic: the strategy's own run (None for Manual)
-            "run": self._run_block(st, ds) if ds["run_mode"] == AUTOMATIC else None,
+            # the strategy's run: where it stands, the signals so far, a Manual proposal or exit notice
+            "run": self._run_block(st, ds, any(t["status"] == "open" for t in trades)),
         }
 
-    def _run_block(self, st: dict, ds: dict) -> dict:
-        """The Automatic run as the card shows it: where it stands and what became of the signals so far."""
+    def _run_block(self, st: dict, ds: dict, trade_open: bool) -> dict:
+        """The run as the card shows it: where it stands and what became of the signals so far."""
         run = json.loads(ds["run_state"]) if ds.get("run_state") else None
+        manual = ds["run_mode"] == MANUAL
         with self.store.tx() as conn:
             rows = self.store.list_signals(conn, st["id"])
         counts: dict[str, dict] = {}
@@ -173,10 +182,16 @@ class StrategySessions:
         phase = run["phase"] if run else "new"
         return {
             "started": run is not None, "phase": phase, "phase_label": RUN_PHASES.get(phase, phase), "done": phase == "done",
-            # Start / Continue is offered until the run is done; a session ended before its first Start has nothing to run
-            "can_run": st["status"] == "ready" and phase != "done" and (run is not None or not ds.get("end_flag")),
+            # Start / Continue is offered until the run is done; a session ended before its first Start has
+            # nothing to run. A Manual run does not go on while a proposal waits or its trade is open.
+            "can_run": st["status"] == "ready" and phase != "done" and (run is not None or not ds.get("end_flag"))
+            and not (manual and (phase == "proposal" or (phase == "trade" and trade_open)) and not ds.get("end_flag")),
             "signals": len(rows), "outcomes": sorted(counts.values(), key=lambda c: -c["count"]),
             "window_candle": run["n"] if run and phase == "waiting" else None,
+            # Manual: the trade the strategy proposes (entry, stop, target, size), waiting for Take or Skip
+            "proposal": run.get("proposal") if run and phase == "proposal" else None,
+            # Manual: the strategy's own exit signal on this candle, shown as a notice only
+            "exit_notice": self.runner.exit_notice(st, ds, run) if manual and run and self.runner is not None and st["status"] == "ready" else None,
         }
 
     @staticmethod
@@ -184,12 +199,27 @@ class StrategySessions:
         """An outcome in plain words: the engine's own label, else the strategy's sentence, else its code."""
         return RUN_OUTCOMES.get(outcome) or (text.rstrip(".") if text else outcome.replace("_", " "))
 
-    def manual_guard(self, session_id: str) -> None:
-        """Refuse a trade or a move of the replay made by hand in an Automatic session: its strategy
-        alone decides (the routes of the buttons call this; the run itself calls the engine directly)."""
+    def manual_guard(self, session_id: str, action: str) -> None:
+        """Refuse what a strategy session does not take by hand (the routes of the buttons call this;
+        the run itself calls the engine directly). `action`: "buy", "step", "sell", "adjust" (move
+        stop / target, quarters), "leg" (exit A or C alone), "jump", "back".
+        Automatic: everything. Manual: see MANUAL_ALLOWS; a step only while a trade is open, because
+        without one the replay moves to the next entry point by itself."""
         ds = self.store_row(session_id)
-        if ds is not None and ds.get("run_mode") == AUTOMATIC:
+        if ds is None or not ds.get("run_mode"):
+            return
+        if ds["run_mode"] == AUTOMATIC:
             raise Conflict("This is an Automatic session: its strategy trades it. Use Start and Pause in the Strategy session card.")
+        if action not in MANUAL_ALLOWS:
+            raise Conflict({
+                "buy": "This is a Manual session: take or skip the trade the strategy proposes.",
+                "leg": "A Manual session closes the whole trade: exits A and C are not used.",
+                "back": "A Manual session has no Step back.",
+            }.get(action, "This is a Manual session: the replay moves to the next entry point by itself."))
+        if action == "step":
+            with self.store.tx() as conn:
+                if self.store.open_trade(conn, session_id) is None:
+                    raise Conflict("This is a Manual session: step only while a trade is open; the replay moves to the next entry point by itself.")
 
     def store_row(self, session_id: str) -> dict | None:
         with self.store.tx() as conn:
