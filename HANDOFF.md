@@ -3,7 +3,7 @@
 State of the project for the next Claude Code instance. Read this first, then the code it points
 to. Update the **History** and **Open / ideas** sections when you finish a change.
 
-Last updated: 2026-11-05 (strategy sessions, step 2 of 6: session setup, storage and end flags).
+Last updated: 2026-11-05 (strategy sessions, step 3 of 6: Automatic mode with a Start button).
 
 ## What the app is
 
@@ -43,6 +43,7 @@ backend/app/replay/day_engine.py    day-trading engine (~1850 lines)
 backend/app/replay/day_store.py     day tables + additive MIGRATIONS dict
 backend/app/replay/autorun.py       autorun: a day session trades a jump strategy's signals by itself
 backend/app/replay/strat.py         strategy sessions: setup, limits and end flags of a day session with a run mode
+backend/app/replay/strat_run.py     Automatic mode: the session's strategy plug-in trades the replay by itself
 frontend/index.html                 the single page
 frontend/static/js/app.js           app state, replay controls, swing trading, keys
 frontend/static/js/day.js           day-trading side panel, dialogs, Trades/Days tabs, pictures
@@ -255,10 +256,11 @@ Agreed with the user (by question, before any code):
   (detail "end of the replay"); no fourth flag.
 
 Build steps, each with the user's go-ahead: **1 strategy plug-ins (done)**, **2 session setup +
-storage + end flags (done)**, 3 Automatic with a Start button, 4 Manual, 5 Report tab + CSV, 6 docs.
+storage + end flags (done)**, **3 Automatic with a Start button (done)**, 4 Manual, 5 Report tab +
+CSV, 6 docs.
 
-**Step 1: the plug-ins** (`strategies/plugin.py`, `strategies/plugins/`). Nothing calls them yet;
-the autorun still runs on `AutorunRules`. A strategy is one file in `plugins/` defining
+**Step 1: the plug-ins** (`strategies/plugin.py`, `strategies/plugins/`). The Automatic run (step
+3) is their caller; the old autorun still runs on `AutorunRules`. A strategy is one file in `plugins/` defining
 `STRATEGY`, an instance of a `TradingStrategy` subclass with `key`, `name`, `version`,
 `description`, `timeframe`. The registry (`discover`, `trading_strategies`,
 `get_trading_strategy`, `describe_trading_strategies`) imports every file of the package whose
@@ -283,9 +285,9 @@ autorun's `confirmation`, the settings with `AutorunRules()`).
 
 **Step 2: setup, storage, end flags** (`replay/strat.py`, class `StrategySessions`; its module
 docstring has the rules). A strategy session IS a day session (`sessions.mode` stays "day", every
-`/api/day/sessions/{id}/...` route works on it) whose `day_sessions` row has a `run_mode`. Nothing
-trades by itself yet: until steps 3 and 4 such a session is traded like plain day trading (New
-trade), which is what the tests do.
+`/api/day/sessions/{id}/...` route works on it) whose `day_sessions` row has a `run_mode`. A Manual
+session is still traded like plain day trading (New trade) until step 4; `tests/test_strat.py` trades
+that way through the engine in both modes.
 - **Setup** (`create`, `POST /api/strategy/sessions`; `GET /api/strategy/setup` lists modes and
   strategies): `run_mode` automatic / manual, the strategy (name, version, timeframe and
   `settings()` are copied into the session), `max_trades`, `time_limit_hours` (Manual only; an
@@ -322,11 +324,62 @@ trade), which is what the tests do.
   renderSession` / `stopSession`.
 - Tests: `tests/test_strat.py` (engine and API). Checked in the browser on a data copy.
 
+**Step 3: Automatic mode** (`replay/strat_run.py`, class `StrategyRun`; its module docstring has
+the whole flow). The run knows no strategy: it asks the session's plug-in `find_signals` / `locate`
+-> `pre_filter` -> jump -> `entry` per candle -> `levels` -> the engine sizes -> `accept` -> buy ->
+`exit_signal` per candle, and plays the replay with the engine calls the buttons make.
+- **API**: `POST /api/strategy/sessions/{id}/run` (`max_steps`) starts the run or runs on and
+  returns the state with `events` and `run` (`need`: "trade_picture" or None); pausing is not
+  calling it. `GET .../signals` is the signal log. The run's status is `state.day.session.run`
+  (phase, signal count, outcomes with plain labels, `can_run`), so the card needs no extra call.
+- **Same trades as the autorun**: `tests/test_strat_run.py` runs the two RLine_Retest plug-ins next
+  to the autorun with the CTest rules on the same scripted candles and compares every signal row
+  and every trade. Keep these two tests green when touching either side.
+- **End**: the limits of step 2 end the session. No signal left -> the run jumps to the replay's
+  last candle = the end date -> `ENDED_BY_TIMEOUT`. After the end the run logs the signals passed
+  since its last look, finishes the pictures and is "done".
+- **Pictures** (trade pictures only): `DayEngine._picture_due` has two rules for strategy sessions:
+  screenshots off = never due; at the replay's last candle every missing one is due at once (its
+  24:00 never comes). After a trade-limit end or a Stop the run steps on to 24:00 of the last exit's
+  day for the last picture, so the cursor may stand after `ended_ms`. A missing picture holds the run.
+- **No manual input**: `StrategySessions.manual_guard` (called by the routes of buy, sell, scale,
+  move, step, step back, the jumps, end-day / keep-trading / continue and the swing step) answers 409
+  for an Automatic session; reset, zones and notes stay allowed. The old autorun refuses strategy
+  sessions. The run itself calls the engine directly.
+- **Reproducible**: the run refuses (409) when the plug-in's version or `settings()` differ from
+  what the session stored, or the plug-in is gone.
+- **Engine additions**: `DayEngine.jump_to(session_id, target_ms, reason)` (a forward jump to any
+  15m candle; `next_signal` shares `_jump_to`), `day_sessions.run_state` (JSON: phase, the signal /
+  trade as an index into the strategy's signal list, `seen_ms`), `day_signal_log.strategy_key`,
+  `outcome_text` (the strategy's sentence) and `details` (JSON of what its filters reported).
+  `confirm_ms` is the candle a decision fell on (enter or cancel).
+- **Outcomes**: the engine's own are in `strat.RUN_OUTCOMES` (traded, trade_open, waiting, invalid,
+  end_of_data, session_ended); every other code is the strategy's (zone_broken, no_confirmation,
+  fees_too_high, trend_filter, ...).
+- **A strategy without a zone** works (tested with a throw-away plug-in): the trade's band is stop
+  to entry, the log's band columns hold the signal candle's close.
+- **Break exit** of the signal-candle strategy: `day.sell(reason="setup_broken")`, so the exit type
+  is "early exit" with that reason, like CTest__02; the note starts with "Automatic (...)".
+- **UI** (`day.js`: `runStrategy` / `runSteps` / `toggleRun` / `haltRun`, `locked()`): Start / Pause
+  / Continue / Finished button and the rows Run and Signals in the Strategy session card; the badge
+  says not started / running / paused / ended. One server call runs at most 96 candles
+  (`RUN_STEPS_PER_CALL`) so Pause answers quickly. End session pauses the run first and lets it
+  finish the pictures afterwards; a reset halts it first (`app.js reset`). The loop checks the
+  session id, not the page's generation token: taking a picture switches the chart interval, which
+  changes the token. In an Automatic session Step, Play, Step back, New trade, Sell, the jumps, the
+  trade keys and dragging stop / target are off.
+- Tests: `tests/test_strat_run.py` (engine and API), `tests/test_ui_strat.py` (Playwright: Start to
+  Finished with a picture). Checked in the browser on a data copy (BTCUSDT Oct-Nov 2022).
+- Speed: a step costs a full `DayEngine.state()` (like the autorun), roughly 20 ms; fine for runs
+  of months, worth a look before runs of many years.
+
 Left for the next steps on purpose:
-- Step 3 / 4: the Start button and the engines; the Manual clock's heartbeat from the browser
-  (only the backend route exists); the picture of the LAST trade when a session ends (trade pictures
-  are due at 24:00 of the exit day, which an ended session never reaches by itself); "pictures off"
-  is stored but nothing reads it yet; no day pictures in a strategy session.
+- Step 4: the Manual engine and the Manual clock's heartbeat from the browser (only the backend
+  route exists). The picture rules above already hold for Manual sessions; the browser still takes
+  DAY pictures in a Manual session (`beforeStep` / `jump`), which the agreed rule (trade pictures
+  only) forbids: switch that off there.
+- Step 5: the signal log has no CSV and no what-ifs for strategy sessions yet (the autorun's report
+  code reads `AutorunRules`, not a plug-in).
 - The session list still says "Day" for a strategy session (the default name starts with
   Automatic / Manual).
 
@@ -396,6 +449,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-05 Strategy sessions, step 3: Automatic mode. `replay/strat_run.py` runs the session's
+  plug-in (same trades as the autorun's CTest rules, tested side by side), `DayEngine.jump_to`, the
+  picture rules of strategy sessions, `manual_guard` on the hand-trading routes, the run / signals
+  routes, the Start / Pause button and run status in the Strategy session card.
 - 2026-11-05 Strategy sessions, step 2: `replay/strat.py` (setup, trade limit, Manual clock, the three
   end flags, Stop; an open trade is closed at market at a timeout or a stop), `/api/strategy/...`
   routes, the per-trade fields (mode, strategy, fee / slippage / fill model / price source, outcome,
@@ -473,7 +530,7 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## Open / ideas
 
-**In progress: strategy sessions** (see the section above), steps 3 to 6. Step 5 (Report tab) was
+**In progress: strategy sessions** (see the section above), steps 4 to 6. Step 5 (Report tab) was
 agreed to show CTest__01 / __02 as Automatic sessions, but they are not in this PC's database: ask
 the user where that database is before building the import of old runs.
 

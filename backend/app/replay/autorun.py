@@ -232,6 +232,8 @@ class Autorun:
         with self.day._lock:
             s = self.day._ready(session_id)
             ds = self.day._day_row(session_id)
+            if ds.get("run_mode"):
+                raise Conflict("This is a strategy session: it runs with its own Start button, not with the autorun.")
             if ds.get("autorun"):
                 raise Conflict("This session already has an autorun (reset the session, or start a new one).")
             with self.store.tx() as conn:

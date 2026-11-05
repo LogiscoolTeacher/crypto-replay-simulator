@@ -427,9 +427,12 @@
           <dt title="Trades taken of the maximum number; a skipped signal does not count">Trades</dt><dd id="strat-trades" class="mono small">&ndash;</dd>
           <dt id="strat-time-label">Time limit</dt><dd id="strat-time" class="mono small">&ndash;</dd>
           <dt>Screenshots</dt><dd id="strat-pics" class="small">&ndash;</dd>
+          <dt id="strat-run-label" title="Automatic: where the strategy's own run stands">Run</dt><dd id="strat-run" class="small">&ndash;</dd>
+          <dt id="strat-signals-label" title="Every signal of the strategy so far and what became of it">Signals</dt><dd id="strat-signals" class="small">&ndash;</dd>
         </dl>
         <p id="strat-end" class="small muted" role="status"></p>
         <div class="row-flex">
+          <button type="button" id="btn-strat-run" class="btn small primary hidden" title="Automatic: the strategy trades the replay by itself. Press again to pause.">Start</button>
           <span class="spacer"></span>
           <button type="button" id="btn-strat-stop" class="btn small" title="End the session now. An open trade is closed at the close of the current candle.">End session</button>
         </div>

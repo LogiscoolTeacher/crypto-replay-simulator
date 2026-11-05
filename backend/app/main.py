@@ -32,6 +32,7 @@ from .replay.payload import build_payload
 from .replay.session_store import SessionStore
 from .replay import strat as strat_rules
 from .replay.strat import StrategySessions
+from .replay.strat_run import StrategyRun
 from .strategies.builtin import STRATEGIES, get_strategy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -44,6 +45,7 @@ engine = ReplayEngine(store, sessions)
 day = DayEngine(engine, DayStore(config.DB_PATH))  # day-trading mode on top of the shared sessions and data
 autorun = Autorun(day)  # a day session trading a jump strategy's signals by itself (data collection)
 strat = StrategySessions(day)  # strategy sessions: a day session with a mode, a strategy, limits and an end flag
+strat_run = StrategyRun(strat)  # Automatic mode: the session's strategy trades the replay by itself
 
 
 @app.exception_handler(RequestValidationError)
@@ -266,6 +268,10 @@ class StrategySessionCreate(BaseModel):
     time_limit_hours: float = Field(default=0.0, ge=0, le=strat_rules.MAX_HOURS, allow_inf_nan=False, description="Manual: hours of real time with the session open; 0 = no limit. Automatic: must be 0.")
     pictures: StrictBool = Field(default=True, description="Take a picture of every trade")
     name: str | None = Field(default=None, max_length=80)
+
+
+class RunAdvance(BaseModel):
+    max_steps: int = Field(default=400, ge=1, le=100_000, description="15-minute steps at most in this call")
 
 
 class ClockRequest(BaseModel):
@@ -542,6 +548,7 @@ def delete_session(session_id: str) -> None:
 def step(session_id: str, req: StepRequest) -> dict:
     if req.view is not None:
         _validate_view(req.view)  # a bad view must not advance the cursor
+    strat.manual_guard(session_id)
     st = engine.step(session_id, req.interval, req.n)
     if req.view is not None:
         st["view"] = _view(session_id, req.view)
@@ -664,6 +671,20 @@ def strategy_stop(session_id: str) -> dict:
     return strat.stop(session_id)
 
 
+@app.post("/api/strategy/sessions/{session_id}/run")
+def strategy_run(session_id: str, req: RunAdvance) -> dict:
+    """Automatic mode's Start: start the run or run on, until a trade picture is needed (`run.need`),
+    something happened (a jump, a buy, an exit) or the run is done. The state carries `events` and
+    `run`. Pausing is not calling it."""
+    return strat_run.advance(session_id, req.max_steps)
+
+
+@app.get("/api/strategy/sessions/{session_id}/signals")
+def strategy_signals(session_id: str) -> list[dict]:
+    """The signal log: every signal the session's strategy gave so far and what became of it."""
+    return strat_run.signals(session_id)
+
+
 @app.post("/api/strategy/sessions/{session_id}/clock")
 def strategy_clock(session_id: str, req: ClockRequest) -> dict:
     """Manual mode: add real time spent with the session open; the time limit ends the session."""
@@ -732,24 +753,28 @@ def day_plan(session_id: str, req: DayPlanRequest) -> dict:
 
 @app.post("/api/day/sessions/{session_id}/buy")
 def day_buy(session_id: str, req: DayBuyRequest) -> dict:
+    strat.manual_guard(session_id)   # an Automatic session is traded by its strategy alone
     return day.buy(session_id, req.zone_id, req.take_profit, req.stop, req.notes, req.ratio, req.confidence)
 
 
 @app.post("/api/day/sessions/{session_id}/sell")
 def day_sell(session_id: str, req: DaySellRequest) -> dict:
     """Early exit at the close of the current candle."""
+    strat.manual_guard(session_id)
     return day.sell(session_id, req.reason, req.note, req.exits)
 
 
 @app.post("/api/day/sessions/{session_id}/scale")
 def day_scale(session_id: str, req: DayScaleRequest) -> dict:
     """Sell a quarter of the open trade's original size (partial profit, with a reason) or add one back."""
+    strat.manual_guard(session_id)
     return day.scale_trade(session_id, req.side, req.reason, req.note)
 
 
 @app.patch("/api/day/sessions/{session_id}/trade")
 def day_move_trade(session_id: str, req: DayMoveRequest) -> dict:
     """Move the stop and / or the take-profit of the open trade; every move is saved with the trade."""
+    strat.manual_guard(session_id)
     return day.move_trade(session_id, req.stop, req.take_profit)
 
 
@@ -757,6 +782,7 @@ def day_move_trade(session_id: str, req: DayMoveRequest) -> dict:
 def day_step(session_id: str, req: DayStepRequest) -> dict:
     if req.view is not None:
         _validate_view(req.view)  # a bad view must not advance the cursor
+    strat.manual_guard(session_id)
     st = day.step(session_id, req.n)
     if req.view is not None:
         st["view"] = _view(session_id, req.view)
@@ -772,6 +798,7 @@ def day_step_back(session_id: str, req: DayStepBackRequest) -> dict:
     """One 15-minute candle back, never before the latest trade action or jump."""
     if req.view is not None:
         _validate_view(req.view)
+    strat.manual_guard(session_id)
     st = day.step_back(session_id)
     if req.view is not None:
         st["view"] = _view(session_id, req.view)
@@ -781,30 +808,35 @@ def day_step_back(session_id: str, req: DayStepBackRequest) -> dict:
 @app.post("/api/day/sessions/{session_id}/end-day")
 def day_end_day(session_id: str) -> dict:
     """After an exit: jump to 24:00 of the exit's trading day = 00:00 of the next (the day is left, the trade's picture is taken there)."""
+    strat.manual_guard(session_id)
     return day.end_day(session_id)
 
 
 @app.post("/api/day/sessions/{session_id}/keep-trading")
 def day_keep_trading(session_id: str) -> dict:
     """After an exit: go on from the exit candle; the trade's picture waits for 24:00."""
+    strat.manual_guard(session_id)
     return day.keep_trading(session_id)
 
 
 @app.post("/api/day/sessions/{session_id}/skip")
 def day_skip(session_id: str) -> dict:
     """Jump to the next day's 00:00 (no open trade)."""
+    strat.manual_guard(session_id)
     return day.skip_day(session_id)
 
 
 @app.post("/api/day/sessions/{session_id}/goto")
 def day_goto(session_id: str, req: DayGotoRequest) -> dict:
     """Jump forward to 00:00 of a later trading day (no open trade, never backwards)."""
+    strat.manual_guard(session_id)
     return day.goto_day(session_id, req.date)
 
 
 @app.post("/api/day/sessions/{session_id}/next-ema-day")
 def day_next_ema_day(session_id: str) -> dict:
     """Jump forward to 00:00 of the next trading day whose daily close is above the EMA 200 (no open trade)."""
+    strat.manual_guard(session_id)
     return day.next_ema_day(session_id)
 
 
@@ -817,12 +849,14 @@ def day_strategies() -> list[dict]:
 @app.post("/api/day/sessions/{session_id}/next-signal")
 def day_next_signal(session_id: str, req: DayNextSignalRequest) -> dict:
     """Jump forward to the strategy's next entry signal (no open trade); its zone is added to the session's zones."""
+    strat.manual_guard(session_id)
     return day.next_signal(session_id, req.strategy, req.params)
 
 
 @app.post("/api/day/sessions/{session_id}/continue")
 def day_continue(session_id: str) -> dict:
     """After an exit: jump to the next 00:00 (the same jump as end-day since the day starts at 00:00)."""
+    strat.manual_guard(session_id)
     return day.resume(session_id)
 
 

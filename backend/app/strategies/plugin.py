@@ -183,7 +183,8 @@ class TradingStrategy:
         return f"{self.name} signal"
 
     def zone(self, signal: dict) -> tuple[float, float] | None:
-        """(top, bottom) of the price band to draw for this signal, or None."""
+        """(top, bottom) of the price band to draw for this signal, or None. The day engine stores a
+        band with every trade: without one a trade gets the band from its stop to its entry price."""
         return None
 
     # ---------------------------------------------------------------- entry

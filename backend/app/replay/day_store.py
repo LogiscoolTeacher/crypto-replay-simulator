@@ -251,6 +251,9 @@ MIGRATIONS = {
         # a plain sentence about it, when (real time) and where (the cursor) it ended
         "end_flag": "TEXT", "end_detail": "TEXT", "ended_at": "TEXT", "ended_ms": "INTEGER",
         "clock_seconds": "REAL",                                            # Manual: real time spent with the session open
+        # Automatic: the run of the session's strategy (JSON: phase, current signal, counters; NULL = not
+        # started), see strat_run.py
+        "run_state": "TEXT",
     },
     # the daily journal: notes, the end-of-day picture and how / when the day was left
     # who made a zone: "signal" = the "Next signal" button (removed again while no trade uses it), NULL = drawn by hand
@@ -259,7 +262,9 @@ MIGRATIONS = {
     # the open time of the last candle a twin was checked against (the settlement only reads newer ones)
     "day_auto_trades": {"checked_ms": "INTEGER"},
     # the autorun's what-ifs per target (JSON {"2.5": {result, r, net_r, exit_ms}, ...}), see autorun.py
-    "day_signal_log": {"what_ifs": "TEXT"},
+    # strategy sessions (strat_run.py): the plug-in that made the signal, why it was turned down in
+    # plain words, and what the strategy's filters reported (JSON)
+    "day_signal_log": {"what_ifs": "TEXT", "strategy_key": "TEXT", "outcome_text": "TEXT", "details": "TEXT"},
 }
 
 

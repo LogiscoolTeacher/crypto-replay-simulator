@@ -7,8 +7,8 @@ this module adds lives in a few columns of `day_sessions`:
 **Setup** (`create`): the mode, the strategy and the two limits.
 - `run_mode`: "automatic" (the strategy places entry, stop and target; the trade runs until one is
   hit) or "manual" (the replay jumps to the strategy's next entry point and proposes the trade; the
-  trader takes or skips it and may move stop and target). The two engines come with the next
-  build steps; this module is what both stand on.
+  trader takes or skips it and may move stop and target). Automatic runs in `strat_run.py`; the
+  Manual engine comes with the next build step. This module is what both stand on.
 - the strategy, picked from the registered plug-ins (`strategies/plugin.py`). Its name, version,
   timeframe and settings are copied into the session and into every trade, so a result stays
   readable when the plug-in file changes later. The timeframe is the strategy's, never typed.
@@ -16,6 +16,10 @@ this module adds lives in a few columns of `day_sessions`:
   the session is open in the browser (`add_clock`; 0 = no limit). Automatic: the replay's end
   date is the time limit, so hours are not accepted there.
 - `pictures`: trade pictures on or off.
+
+An **Automatic** session is traded by its strategy alone (`strat_run.py`, the Start button): the
+buttons that trade or move the replay by hand are refused for it (`manual_guard`). Its run's
+status is the `run` part of the session block.
 
 **End** (`settle`, called by `DayEngine.state` after every action; `stop`). The first limit reached
 ends the session, and the flag says which:
@@ -53,6 +57,20 @@ MAX_TRADES_LIMIT = 100_000
 MAX_HOURS = 1_000.0
 MAX_CLOCK_STEP = 120.0             # seconds one add_clock call may add (the browser reports every few seconds)
 DEFAULTS = {"run_mode": AUTOMATIC, "max_trades": 100, "time_limit_hours": 0.0, "pictures": True}
+# What became of a signal (day_signal_log.outcome): the engine's own outcomes. Every other one is a
+# strategy's code (e.g. "zone_broken", "fees_too_high"), shown with the sentence the strategy gave.
+RUN_OUTCOMES = {
+    "traded": "Traded",
+    "trade_open": "Skipped: a trade was open",
+    "waiting": "Skipped: another signal's entry window was running",
+    "invalid": "No valid trade",
+    "end_of_data": "The replay ended during the entry window",
+    "session_ended": "The session ended during the entry window",
+}
+RUN_PHASES = {
+    "new": "Not started", "idle": "Looking for the next signal", "waiting": "Waiting for the entry",
+    "trade": "In a trade", "finishing": "Taking the last pictures", "done": "Finished",
+}
 
 
 class StrategySessions:
@@ -137,7 +155,45 @@ class StrategySessions:
             # where the replay stood when the session ended (the close of that candle, on the day clock)
             "ended_local": local_str(ds["ended_ms"] + self.day._base_ms) if ds.get("ended_ms") is not None else None,
             "can_stop": not ds.get("end_flag"),
+            # Automatic: the strategy's own run (None for Manual)
+            "run": self._run_block(st, ds) if ds["run_mode"] == AUTOMATIC else None,
         }
+
+    def _run_block(self, st: dict, ds: dict) -> dict:
+        """The Automatic run as the card shows it: where it stands and what became of the signals so far."""
+        run = json.loads(ds["run_state"]) if ds.get("run_state") else None
+        with self.store.tx() as conn:
+            rows = self.store.list_signals(conn, st["id"])
+        counts: dict[str, dict] = {}
+        for r in rows:
+            if r["outcome"]:
+                c = counts.setdefault(r["outcome"], {"key": r["outcome"], "count": 0,
+                                                     "label": self.outcome_label(r["outcome"], r.get("outcome_text"))})
+                c["count"] += 1
+        phase = run["phase"] if run else "new"
+        return {
+            "started": run is not None, "phase": phase, "phase_label": RUN_PHASES.get(phase, phase), "done": phase == "done",
+            # Start / Continue is offered until the run is done; a session ended before its first Start has nothing to run
+            "can_run": st["status"] == "ready" and phase != "done" and (run is not None or not ds.get("end_flag")),
+            "signals": len(rows), "outcomes": sorted(counts.values(), key=lambda c: -c["count"]),
+            "window_candle": run["n"] if run and phase == "waiting" else None,
+        }
+
+    @staticmethod
+    def outcome_label(outcome: str, text: str | None = None) -> str:
+        """An outcome in plain words: the engine's own label, else the strategy's sentence, else its code."""
+        return RUN_OUTCOMES.get(outcome) or (text.rstrip(".") if text else outcome.replace("_", " "))
+
+    def manual_guard(self, session_id: str) -> None:
+        """Refuse a trade or a move of the replay made by hand in an Automatic session: its strategy
+        alone decides (the routes of the buttons call this; the run itself calls the engine directly)."""
+        ds = self.store_row(session_id)
+        if ds is not None and ds.get("run_mode") == AUTOMATIC:
+            raise Conflict("This is an Automatic session: its strategy trades it. Use Start and Pause in the Strategy session card.")
+
+    def store_row(self, session_id: str) -> dict | None:
+        with self.store.tx() as conn:
+            return self.store.get_day_session(conn, session_id)
 
     def settle(self, st: dict, ds: dict) -> bool:
         """End the session when a limit is reached (see the module docstring). Returns True when it

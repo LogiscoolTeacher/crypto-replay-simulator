@@ -506,7 +506,7 @@ class DayEngine:
                 # a strategy session keeps its setup; how it ended and its clock start over
                 self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, back_floor_ms=None,
                                               autorun=None, end_flag=None, end_detail=None, ended_at=None, ended_ms=None,
-                                              clock_seconds=None, updated_at=now)
+                                              clock_seconds=None, run_state=None, updated_at=now)
             cursor = ds["start_cursor_ms"]
             if cursor is None or not (s["data_start_ms"] <= cursor <= s["data_end_ms"]):
                 cursor = self._first_day_cursor(s, s["data_start_ms"])
@@ -1161,9 +1161,17 @@ class DayEngine:
 
     def _picture_due(self, s: dict, conn: sqlite3.Connection) -> dict | None:
         """The closed trade whose picture is due: the oldest one without a picture whose 24:00 the
-        cursor has reached (only exits marked `review_due`, i.e. since the picture rule exists)."""
+        cursor has reached (only exits marked `review_due`, i.e. since the picture rule exists).
+        A strategy session (strat.py) has two rules of its own: with screenshots off no picture is
+        ever due, and at the replay's last candle every missing one is due at once, because the
+        24:00 it waits for will never come."""
+        ds = self.store.get_day_session(conn, s["id"])
+        strategy_session = bool(ds and ds.get("run_mode"))
+        if strategy_session and not ds.get("pictures"):
+            return None
+        at_end = strategy_session and s["cursor_ms"] >= s["data_end_ms"]
         close = s["cursor_ms"] + self._base_ms
-        return next((t for t in self.store.due_pictures(conn, s["id"]) if close >= self._review_end(t)), None)
+        return next((t for t in self.store.due_pictures(conn, s["id"]) if at_end or close >= self._review_end(t)), None)
 
     def _excursion(self, s: dict, trade: dict, exit_ms: int) -> dict:
         """MAE / MFE: the lowest low and the highest high of the 15-minute candles after the entry
@@ -1594,24 +1602,48 @@ class DayEngine:
             sig = self._next_signal_after(s, js, full, max(s["cursor_ms"], after_ms or 0))
             if sig is None:
                 raise Conflict(f"No later {js.name} signal before the end of the replay.")
-            base = self._base_ms
-            target = sig["cursor_ms"]
-            cur = trading_day(s["cursor_ms"] + base)
-            if trading_day(target + base) > cur:
-                self._mark_left(s, cur, LEFT_EXIT if ds["phase"] == "exited" else LEFT_SKIP)
-            if ds["phase"] == "exited":
-                with self.store.tx() as conn:
-                    self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, updated_at=_now_iso())
-            self._set_cursor(s, target)
-            self._set_floor(s, target)
+            ev = self._jump_to(s, ds, sig["cursor_ms"], f"{js.name}: {js.describe_signal(sig)}.")
             zone = self._signal_zone(session_id, sig, merge=merge_zone)
-            close = target + base
-            ev = {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(close),
-                  "reason": f"{js.name}: {js.describe_signal(sig)}.",
-                  "strategy": js.key, "signal": {k: v for k, v in sig.items() if k != "bar"}, "zone_id": zone["id"]}
+            ev.update({"strategy": js.key, "signal": {k: v for k, v in sig.items() if k != "bar"}, "zone_id": zone["id"]})
         st = self.state(session_id)
         st["events"] = [ev]
         return st
+
+    def jump_to(self, session_id: str, target_ms: int, reason: str) -> dict:
+        """Jump forward to the 15m candle opening at `target_ms`, at any time of day: how a strategy
+        session's run (strat_run.py) reaches its strategy's next entry point, and the replay's last
+        candle when no signal is left. The gates of the other jumps apply: no open trade, only
+        forward, not past the end. `reason` is the sentence of the jump notice."""
+        with self._lock:
+            s = self._ready(session_id)
+            ds = self._day_row(session_id)
+            if s["cursor_ms"] >= s["data_end_ms"]:
+                raise Conflict("The replay has reached its end.")
+            with self.store.tx() as conn:
+                if self.store.open_trade(conn, session_id) is not None:
+                    raise Conflict("A trade is open: close it before jumping.")
+            if isinstance(target_ms, bool) or not isinstance(target_ms, int) or not s["cursor_ms"] < target_ms <= s["data_end_ms"]:
+                raise Invalid("Only forward: the jump must land after the current candle and not after the end of the replay.")
+            ev = self._jump_to(s, ds, target_ms, reason)
+        st = self.state(session_id)
+        st["events"] = [ev]
+        return st
+
+    def _jump_to(self, s: dict, ds: dict, target: int, reason: str) -> dict:
+        """Move the cursor forward to `target` (the caller checked the gates): the day being left is
+        marked on its journal row, a just-closed trade's "end the day?" choice is over, and Step
+        back cannot return behind the jump. Returns the jump event."""
+        base = self._base_ms
+        cur = trading_day(s["cursor_ms"] + base)
+        if trading_day(target + base) > cur:
+            self._mark_left(s, cur, LEFT_EXIT if ds["phase"] == "exited" else LEFT_SKIP)
+        if ds["phase"] == "exited":
+            with self.store.tx() as conn:
+                self.store.update_day_session(conn, s["id"], phase="trading", last_exit_id=None, updated_at=_now_iso())
+            ds["phase"] = "trading"
+        self._set_cursor(s, target)
+        self._set_floor(s, target)
+        return {"kind": "jump", "to_ms": target, "to_iso": _iso(target), "to_local": local_str(target + base), "reason": reason}
 
     def _next_signal_after(self, s: dict, js: JumpStrategy, params: dict, after_ms: int) -> dict | None:
         """The first signal whose 15m candle opens after `after_ms` (and not after the data end),

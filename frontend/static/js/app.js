@@ -305,10 +305,11 @@ function renderState() {
   $('cursor-price').textContent = ok && s.price !== null ? fmtPrice(s.price) : '–';
   $('step-size').textContent = state.interval || '–';
   $('btn-reset').disabled = !ok;
-  $('btn-step').disabled = !ok || s.finished;
+  const locked = isDay() && day.locked();   // an Automatic strategy session moves the replay by itself
+  $('btn-step').disabled = !ok || s.finished || locked;
   $('btn-step-back').classList.toggle('hidden', !isDay());   // day trading only
-  $('btn-step-back').disabled = !ok || !isDay() || state.busy || !(s.day && s.day.can_step_back);
-  $('btn-play').disabled = !ok || s.finished;
+  $('btn-step-back').disabled = !ok || !isDay() || state.busy || locked || !(s.day && s.day.can_step_back);
+  $('btn-play').disabled = !ok || s.finished || locked;
   $('btn-play').innerHTML = state.playing ? '&#x23F8;' : '&#x25B6;';
   $('btn-play').setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
   $('btn-indicators').disabled = !ok;
@@ -1099,6 +1100,7 @@ async function refreshView({ fit = false } = {}) {
 async function step(n = 1) {
   const s = state.session;
   if (!ready() || state.busy || s.finished) return;
+  if (isDay() && day.locked()) return;   // an Automatic strategy session: only its own run steps
   state.busy = true;
   // Day mode: the step that leaves a trading day is preceded by the day's journal picture.
   if (isDay()) { try { await day.beforeStep(); } catch (e) { toast(e.message, true); } }
@@ -1138,7 +1140,7 @@ async function step(n = 1) {
 // refuses; the button is disabled there).
 async function stepBack() {
   const s = state.session;
-  if (!ready() || !isDay() || state.busy || !(s.day && s.day.can_step_back)) return;
+  if (!ready() || !isDay() || state.busy || day.locked() || !(s.day && s.day.can_step_back)) return;
   pause();
   state.busy = true;
   const t = token();
@@ -1160,7 +1162,7 @@ async function stepBack() {
 }
 
 function play() {
-  if (!ready() || state.session.finished) return;
+  if (!ready() || state.session.finished || (isDay() && day.locked())) return;
   state.playing = true;
   clearInterval(state.timer);
   state.timer = setInterval(() => { if (!state.busy) step(1); }, Math.round(1000 / state.speed));
@@ -1179,6 +1181,7 @@ async function reset() {
   if (!ready()) return;
   if (!confirm('Back to the start? All trades in this session will be deleted.')) return;
   pause();
+  if (isDay()) await day.haltRun();   // an Automatic run: its call in flight must not land after the reset
   bump();
   const t = token();
   try {
@@ -1860,7 +1863,7 @@ const FOLDED_BY_DEFAULT = { day: ['extremes-card', 'account-card'], swing: [] };
 const foldKey = (el) => `replay.ui.fold.${isDay() ? 'day' : 'swing'}.${el.id}`;
 const txt = (id) => ($(id).textContent || '').trim();
 const CARD_SUMS = {
-  'strat-card': () => [txt('strat-mode'), txt('strat-trades'), txt('strat-status')],
+  'strat-card': () => [txt('strat-mode'), txt('strat-trades'), txt('strat-status')],   // mode, trades n / N, running / paused / ended
   'day-card': () => [txt('day-date'), txt('day-time'), txt('day-phase'), $('day-trade').classList.contains('hidden') ? '' : txt('dt-pnl')],
   'day-signal-card': () => [$('day-strategy').selectedOptions[0] ? $('day-strategy').selectedOptions[0].textContent : ''],
   'strategy-card': () => [$('strategy-key').selectedOptions[0] ? $('strategy-key').selectedOptions[0].textContent : ''],

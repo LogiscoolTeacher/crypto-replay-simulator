@@ -56,6 +56,8 @@ export const api = {
   strategySetup: () => request('GET', '/api/strategy/setup'),
   createStrategySession: (body) => request('POST', '/api/strategy/sessions', body),
   strategyStop: (id) => request('POST', `/api/strategy/sessions/${id}/stop`),
+  strategyRun: (id, body) => request('POST', `/api/strategy/sessions/${id}/run`, body || {}),
+  strategySignals: (id) => request('GET', `/api/strategy/sessions/${id}/signals`),
   // Day-trading mode (sessions with mode "day")
   createDaySession: (body) => request('POST', '/api/day/sessions', body),
   daySession: (id) => request('GET', `/api/day/sessions/${id}`),
