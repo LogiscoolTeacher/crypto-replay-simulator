@@ -220,6 +220,10 @@ kbd { display: inline-block; min-width: 18px; padding: 1px 6px; border: 1px soli
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
 .form-grid .wide { grid-column: 1 / -1; }
+/* New session dialog, strategy session: the read-only timeframe and the chosen strategy's rules */
+.form-grid input[readonly] { color: var(--ink-2); cursor: default; }
+#f-note-strat p { margin: 6px 0; }
+#f-note-strat ul { margin: 4px 0 6px; padding-left: 18px; }
 .snap-dialog { width: min(1400px, 96vw); max-height: 92vh; overflow: auto; }
 .snap-dialog h2 { margin: 0; }
 .snap-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 1fr); gap: 16px; margin-top: 10px; }

@@ -418,6 +418,22 @@
     </section>
 
     <aside class="side" id="side">
+      <section class="card day-only hidden" id="strat-card" data-fold>
+        <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Strategy session</button></h2><span class="card-sum mono small"></span></div>
+        <div class="row-flex"><b id="strat-mode">&ndash;</b><span class="spacer"></span><span id="strat-status" class="badge"></span></div>
+        <dl class="kv">
+          <dt>Strategy</dt><dd id="strat-strategy" class="small">&ndash;</dd>
+          <dt title="Read from the strategy">Timeframe</dt><dd id="strat-tf" class="mono small">&ndash;</dd>
+          <dt title="Trades taken of the maximum number; a skipped signal does not count">Trades</dt><dd id="strat-trades" class="mono small">&ndash;</dd>
+          <dt id="strat-time-label">Time limit</dt><dd id="strat-time" class="mono small">&ndash;</dd>
+          <dt>Screenshots</dt><dd id="strat-pics" class="small">&ndash;</dd>
+        </dl>
+        <p id="strat-end" class="small muted" role="status"></p>
+        <div class="row-flex">
+          <span class="spacer"></span>
+          <button type="button" id="btn-strat-stop" class="btn small" title="End the session now. An open trade is closed at the close of the current candle.">End session</button>
+        </div>
+      </section>
       <section class="card day-only" id="day-card" data-fold>
         <div class="card-head"><h2><button type="button" class="fold" aria-expanded="true">Day trading</button></h2><span class="card-sum mono small"></span></div>
         <div class="row-flex day-head"><div class="day-when"><b id="day-date" class="mono">&ndash;</b><span id="day-time" class="mono muted small"></span></div><span class="spacer"></span><span id="day-phase" class="badge"></span></div>
@@ -668,7 +684,17 @@
         <label class="wide">Mode <select name="mode" id="f-mode">
           <option value="swing">Swing trading (buckets)</option>
           <option value="day">Day trading (15-minute candles, UTC day clock, 0.1 % risk per trade)</option>
+          <option value="strategy">Strategy session (Automatic or Manual, with a registered strategy)</option>
         </select></label>
+        <label class="strat-only hidden">Run mode <select id="f-run-mode"></select></label>
+        <label class="strat-only hidden">Strategy <select id="f-strategy"></select></label>
+        <label class="strat-only hidden">Timeframe <span class="muted">(read from the strategy)</span> <input id="f-strategy-tf" type="text" readonly tabindex="-1"></label>
+        <label class="strat-only hidden">Screenshots <select id="f-pictures">
+          <option value="on">On: a picture of every trade</option>
+          <option value="off">Off</option>
+        </select></label>
+        <label class="strat-only hidden">Maximum number of trades <input id="f-max-trades" type="number" min="1" max="100000" step="1" value="100"></label>
+        <label class="strat-only hidden" id="f-hours-wrap">Time limit in hours <span class="muted">(real time, 0 = none)</span> <input id="f-hours" type="number" min="0" max="1000" step="0.25" value="0"></label>
         <label>Coin <select name="symbol" id="f-symbol" required></select></label>
         <label id="f-base-wrap">Base timeframe <select name="base_interval" id="f-base"></select></label>
         <label>Start date <input name="start" id="f-start" type="date" required></label>
@@ -680,12 +706,13 @@
           <option value="custom">Custom end date</option>
         </select></label>
         <label>End date <span class="muted" id="f-end-note">(until now)</span> <input name="end" id="f-end" type="date"></label>
-        <label>Start balance (USDT) <input name="start_balance" id="f-balance" type="number" min="1" step="any" value="10000" required></label>
+        <label id="f-balance-wrap">Start balance (USDT) <input name="start_balance" id="f-balance" type="number" min="1" step="any" value="10000" required></label>
         <label id="f-fee-wrap">Fee per side (%) <input name="fee_pct" id="f-fee" type="number" min="0" max="9.99" step="0.01" value="0.1" required></label>
         <label class="wide">Name <span class="muted">(optional)</span> <input name="name" id="f-name" type="text" maxlength="80" placeholder="e.g. BTC summer 2025"></label>
       </div>
       <p class="muted small" id="f-note-swing">The base timeframe is the finest you can view in this session. Finer timeframes mean more data to download.</p>
       <p class="muted small hidden" id="f-note-day">Day trading: 15-minute base candles (1h, 4h and 1D views), fee 0.1 % per side, risk 0.1 % of the start balance per trade (100 USDT at the default 100 000), trading day 00:00 to 24:00 UTC, starting on the start date.</p>
+      <div class="muted small hidden" id="f-note-strat"></div>
       <p id="form-error" class="error hidden"></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="btn-cancel-session">Cancel</button>

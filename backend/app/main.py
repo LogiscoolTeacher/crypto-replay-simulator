@@ -30,6 +30,8 @@ from .replay.engine import Conflict, Invalid, NotFound, ReplayEngine
 from .replay import reasons as checklists
 from .replay.payload import build_payload
 from .replay.session_store import SessionStore
+from .replay import strat as strat_rules
+from .replay.strat import StrategySessions
 from .strategies.builtin import STRATEGIES, get_strategy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -41,6 +43,7 @@ sessions = SessionStore(config.DB_PATH)
 engine = ReplayEngine(store, sessions)
 day = DayEngine(engine, DayStore(config.DB_PATH))  # day-trading mode on top of the shared sessions and data
 autorun = Autorun(day)  # a day session trading a jump strategy's signals by itself (data collection)
+strat = StrategySessions(day)  # strategy sessions: a day session with a mode, a strategy, limits and an end flag
 
 
 @app.exception_handler(RequestValidationError)
@@ -251,6 +254,22 @@ class DaySessionCreate(BaseModel):
     end: str | None = Field(default=None, description="Replay end (ISO, UTC); default = latest closed candle")
     start_balance: float = Field(default=day_rules.DAY_START_BALANCE, gt=0, le=1e12, allow_inf_nan=False, description="Starting capital; the risk per trade is 0.1 % of it")
     name: str | None = Field(default=None, max_length=80)
+
+
+class StrategySessionCreate(BaseModel):
+    symbol: str = Field(examples=["BTCUSDT"])
+    start: str = Field(description="Replay start date (ISO, UTC)", examples=["2025-01-01"])
+    end: str | None = Field(default=None, description="Replay end (ISO, UTC); default = latest closed candle. The time limit of an Automatic session.")
+    run_mode: Literal["automatic", "manual"] = Field(description="Automatic: the strategy trades. Manual: it proposes, the trader takes or skips.")
+    strategy: str = Field(max_length=64, description="Key of a registered trading strategy (GET /api/strategy/setup); its timeframe is the session's")
+    max_trades: int = Field(default=strat_rules.DEFAULTS["max_trades"], ge=1, le=strat_rules.MAX_TRADES_LIMIT, description="The session ends after this many trades")
+    time_limit_hours: float = Field(default=0.0, ge=0, le=strat_rules.MAX_HOURS, allow_inf_nan=False, description="Manual: hours of real time with the session open; 0 = no limit. Automatic: must be 0.")
+    pictures: StrictBool = Field(default=True, description="Take a picture of every trade")
+    name: str | None = Field(default=None, max_length=80)
+
+
+class ClockRequest(BaseModel):
+    seconds: float = Field(gt=0, le=strat_rules.MAX_CLOCK_STEP, allow_inf_nan=False, description="Real seconds the session was open since the last report")
 
 
 class ZoneCreate(BaseModel):
@@ -615,6 +634,40 @@ def delete_fib(session_id: str, fib_id: int) -> None:
 @app.post("/api/sessions/{session_id}/view")
 def view(session_id: str, req: ViewRequest) -> dict:
     return _view(session_id, req)
+
+
+# ----------------------------------------------------------- strategy sessions
+# A strategy session IS a day session (every /api/day/sessions/{id}/... route works on it); these
+# routes add its setup, its Stop button and Manual mode's real-time clock.
+@app.get("/api/strategy/setup")
+def strategy_setup() -> dict:
+    """The modes, the registered strategies (name, version, timeframe, rules) and the defaults."""
+    return strat.setup_options()
+
+
+@app.post("/api/strategy/sessions", status_code=201)
+def strategy_create_session(req: StrategySessionCreate, background: BackgroundTasks) -> dict:
+    s = strat.create(
+        symbol=req.symbol,
+        start_ms=_parse_date_ms(req.start, "start"),
+        end_ms=_parse_date_ms(req.end, "end") if req.end else None,
+        run_mode=req.run_mode, strategy=req.strategy, max_trades=req.max_trades,
+        time_limit_hours=req.time_limit_hours, pictures=req.pictures, name=req.name,
+    )
+    _start_prepare(s["id"], background)
+    return s
+
+
+@app.post("/api/strategy/sessions/{session_id}/stop")
+def strategy_stop(session_id: str) -> dict:
+    """End the session now (ENDED_BY_USER); an open trade is closed at the current candle's close."""
+    return strat.stop(session_id)
+
+
+@app.post("/api/strategy/sessions/{session_id}/clock")
+def strategy_clock(session_id: str, req: ClockRequest) -> dict:
+    """Manual mode: add real time spent with the session open; the time limit ends the session."""
+    return strat.add_clock(session_id, req.seconds)
 
 
 # ---------------------------------------------------------------- day trading

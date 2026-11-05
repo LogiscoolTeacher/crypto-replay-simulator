@@ -3,7 +3,7 @@
 State of the project for the next Claude Code instance. Read this first, then the code it points
 to. Update the **History** and **Open / ideas** sections when you finish a change.
 
-Last updated: 2026-11-05 (strategy sessions, step 1 of 6: the strategy plug-ins).
+Last updated: 2026-11-05 (strategy sessions, step 2 of 6: session setup, storage and end flags).
 
 ## What the app is
 
@@ -42,6 +42,7 @@ backend/app/replay/engine.py        swing engine + shared session/cursor/view lo
 backend/app/replay/day_engine.py    day-trading engine (~1850 lines)
 backend/app/replay/day_store.py     day tables + additive MIGRATIONS dict
 backend/app/replay/autorun.py       autorun: a day session trades a jump strategy's signals by itself
+backend/app/replay/strat.py         strategy sessions: setup, limits and end flags of a day session with a run mode
 frontend/index.html                 the single page
 frontend/static/js/app.js           app state, replay controls, swing trading, keys
 frontend/static/js/day.js           day-trading side panel, dialogs, Trades/Days tabs, pictures
@@ -249,9 +250,12 @@ Agreed with the user (by question, before any code):
 - **Screenshots** on = trade pictures only (no day pictures).
 - **Report tab**: new sessions and old day sessions; fields old trades never stored stay empty.
 - Long only. The setup keeps a start date.
+- **Stop by the user** with a trade open: closed at market too (exit type "session stopped").
+- **The replay reaching its last candle** before another limit is `ENDED_BY_TIMEOUT` in both modes
+  (detail "end of the replay"); no fourth flag.
 
-Build steps, each with the user's go-ahead: **1 strategy plug-ins (done)**, 2 session setup +
-storage + end flags, 3 Automatic with a Start button, 4 Manual, 5 Report tab + CSV, 6 docs.
+Build steps, each with the user's go-ahead: **1 strategy plug-ins (done)**, **2 session setup +
+storage + end flags (done)**, 3 Automatic with a Start button, 4 Manual, 5 Report tab + CSV, 6 docs.
 
 **Step 1: the plug-ins** (`strategies/plugin.py`, `strategies/plugins/`). Nothing calls them yet;
 the autorun still runs on `AutorunRules`. A strategy is one file in `plugins/` defining
@@ -276,6 +280,55 @@ Registered:
 Both wrap `rline.py` through `get_jump_strategy("rline_retest")`; `_rline_retest.py` holds what
 they share. Tests: `tests/test_strategy_plugins.py` (the confirmed entry is compared with the
 autorun's `confirmation`, the settings with `AutorunRules()`).
+
+**Step 2: setup, storage, end flags** (`replay/strat.py`, class `StrategySessions`; its module
+docstring has the rules). A strategy session IS a day session (`sessions.mode` stays "day", every
+`/api/day/sessions/{id}/...` route works on it) whose `day_sessions` row has a `run_mode`. Nothing
+trades by itself yet: until steps 3 and 4 such a session is traded like plain day trading (New
+trade), which is what the tests do.
+- **Setup** (`create`, `POST /api/strategy/sessions`; `GET /api/strategy/setup` lists modes and
+  strategies): `run_mode` automatic / manual, the strategy (name, version, timeframe and
+  `settings()` are copied into the session), `max_trades`, `time_limit_hours` (Manual only; an
+  Automatic session refuses hours, its end date is the limit), `pictures`. Fixed like day trading:
+  15m candles, 100 000 USDT, risk 100 USDT, fee 0.1 %.
+- **End** (`settle`, called from `DayEngine.state` through `day.strat`, so every action checks the
+  limits; `stop` = `POST /api/strategy/sessions/{id}/stop`): `ENDED_BY_TRADE_LIMIT` once N trades
+  were taken and the last one closed, `ENDED_BY_TIMEOUT` at the replay's last candle or when the
+  Manual clock (`add_clock`, `POST …/clock`, at most 120 s per call) reaches the hours,
+  `ENDED_BY_USER` for Stop. `_end` closes an open trade at market (exit types `session timeout` /
+  `session stopped`, note "Session ended: …"), stores `end_flag`, `end_detail`, `ended_at`,
+  `ended_ms`, then settles the twins and the after-exit windows up to the END OF THE DATA: after
+  the end nothing decides anything, so reading past the cursor is fine there (and only there).
+  An ended session takes no more trades (`_entry_gate`); stepping still works. Reset keeps the
+  setup and clears the end and the clock. `state["day"]["session"]` is the public block (None for
+  plain day sessions).
+- **Per trade, at the buy** (`DayEngine._stamp`, every day trade): `fee_rate`, `slippage` (0),
+  `fill_model` ("exact level"), `price_source`; in a strategy session also `run_mode`,
+  `strategy_key` / `_name` / `_version`, `timeframe`, `timeout_rule`.
+- **Per trade, at the exit** (`_result_fields`, `_excursion`): `outcome` (`outcome_of`: after fees,
+  ±0.05 R = BREAKEVEN), `result_price` (exit − entry per coin), `gross_pnl` / `gross_pnl_pct` /
+  `gross_r` (before fees = pnl + fees, quarter steps included), `high_price` / `high_ms` /
+  `low_price` / `low_ms` (entry to exit; MAE / MFE in R were there already).
+- **The 24 hours after the exit** (`_fill_after`): `after_high` / `after_low` with their candles'
+  times and the percent from the exit price, `after_until_ms`, `after_complete`. Filled by
+  `_backfill` (the trades listing) once the replay has PASSED the whole window; at a session's end
+  to the end of the data (`after_complete` 0 when the data ends inside the window).
+- Old closed trades get outcome, gross results and high / low on the next trades listing
+  (`_backfill`); the reproducibility fields and the strategy stay NULL for them.
+- **UI**: the New session dialog has a third mode "Strategy session" (run mode, strategy, read-only
+  timeframe, screenshots, maximum trades, hours for Manual; the note lists the strategy's rules).
+  The side panel shows a "Strategy session" card above Day trading (mode, strategy, trades n / N,
+  time limit, screenshots, running / ended with the flag, End session button); `day.js
+  renderSession` / `stopSession`.
+- Tests: `tests/test_strat.py` (engine and API). Checked in the browser on a data copy.
+
+Left for the next steps on purpose:
+- Step 3 / 4: the Start button and the engines; the Manual clock's heartbeat from the browser
+  (only the backend route exists); the picture of the LAST trade when a session ends (trade pictures
+  are due at 24:00 of the exit day, which an ended session never reaches by itself); "pictures off"
+  is stored but nothing reads it yet; no day pictures in a strategy session.
+- The session list still says "Day" for a strategy session (the default name starts with
+  Automatic / Manual).
 
 ## RLine_Retest (`backend/app/strategies/rline.py`)
 
@@ -319,6 +372,11 @@ needs no network at all, not even the server time, so preparing works offline.
   Playwright is installed there, so the UI tests run: 2 of `test_ui_day.py` fail, also on `main`
   (see Open, item 8). The user often has the app running on port 8000 against the real `data/`:
   leave that process alone and use another port with a data copy.
+- **Trying things in the browser on this PC**: `.claude/launch.json` (local, listed in
+  `.git/info/exclude`) starts a scratch launcher that copies `data/replay.db` with sqlite's backup
+  API and serves the app on port 8011 with `REPLAY_DATA_DIR` set to the copy. The scratch folder
+  is per session, so write the launcher again: ~20 lines (backup, set the env var, `uvicorn.run`).
+  Old pictures 404 there (the copy has no `snapshots/`).
 - **The CTest sessions are not in this PC's `data/replay.db`** (no session has an autorun there,
   and no other copy of the database was found). Their numbers exist only in this file.
 - **Data and worktrees**: `DATA_DIR` is `<checkout>/data`, so a git worktree starts with an empty
@@ -338,6 +396,11 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-05 Strategy sessions, step 2: `replay/strat.py` (setup, trade limit, Manual clock, the three
+  end flags, Stop; an open trade is closed at market at a timeout or a stop), `/api/strategy/...`
+  routes, the per-trade fields (mode, strategy, fee / slippage / fill model / price source, outcome,
+  results before fees, high / low with times, the 24 hours after the exit), the New session dialog's
+  third mode and the Strategy session card.
 - 2026-11-05 Strategy sessions, step 1: trading-strategy plug-ins (`strategies/plugin.py`: interface
   and a registry that finds the files in `strategies/plugins/` by itself) with `rline_retest_confirmed`
   v1 and `rline_retest_signal` v1; `is_hammer` / `is_bullish_engulfing` moved to
@@ -410,7 +473,7 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## Open / ideas
 
-**In progress: strategy sessions** (see the section above), steps 2 to 6. Step 5 (Report tab) was
+**In progress: strategy sessions** (see the section above), steps 3 to 6. Step 5 (Report tab) was
 agreed to show CTest__01 / __02 as Automatic sessions, but they are not in this PC's database: ask
 the user where that database is before building the import of old runs.
 

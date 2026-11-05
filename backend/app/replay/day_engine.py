@@ -223,6 +223,25 @@ def scaled_result(t: dict, exit_price: float, fee_rate: float) -> dict:
 
 MAX_PRICE = 1e12
 EXIT_STOP, EXIT_TP, EXIT_EARLY = "stop", "take-profit", "early exit"
+# strategy sessions (strat.py): an open trade closed at market because the session's time ran out,
+# or because the user stopped the session
+EXIT_TIMEOUT, EXIT_STOPPED = "session timeout", "session stopped"
+# What a result depends on beside the candles, stored with every trade (see day_store MIGRATIONS):
+# stops and targets fill exactly at their level (no gap model, so no slippage), entries and early
+# exits at the close of the cursor's candle; the candles are Binance spot klines.
+FILL_MODEL = "exact level"
+SLIPPAGE = 0.0
+PRICE_SOURCE = f"Binance spot candles ({BASE_INTERVAL})"
+BREAKEVEN_R = 0.05                 # a result within +/- this many R (after fees) counts as BREAKEVEN
+AFTER_HOURS = 24                   # the window after an exit whose high and low are recorded
+OUTCOMES = ("WIN", "LOSS", "BREAKEVEN")
+
+
+def outcome_of(r: float | None) -> str | None:
+    """WIN / LOSS / BREAKEVEN from the result after fees in R: within +/- BREAKEVEN_R is BREAKEVEN."""
+    if r is None:
+        return None
+    return "BREAKEVEN" if abs(r) <= BREAKEVEN_R else "WIN" if r > 0 else "LOSS"
 # how the alternative trades end when neither level is hit: the close of the 24:00 candle, or of the
 # last candle there is; Alt 2 takes its target at ALT_RATIO times the risk above the entry
 EXIT_EOD, EXIT_DATA_END = "end of day", "end of data"
@@ -420,6 +439,9 @@ class DayEngine:
         self.sessions = replay.sessions
         self._lock = replay._lock  # one lock for both engines: they write the same session rows
         self._signals: dict[tuple, list[dict]] = {}   # jump-strategy signals per session, strategy and params
+        # strategy sessions (strat.py: StrategySessions sets itself here): the limits and end flags of a
+        # day session with a `run_mode`. None = no such sessions (the tests of plain day trading).
+        self.strat: Any = None
         with store.tx() as conn:
             store.upgrade_risk(conn, RISK_PCT)   # sessions made under an older risk rule keep their risk amount
 
@@ -481,8 +503,10 @@ class DayEngine:
                 self.store.delete_checks(conn, session_id)
                 self.store.delete_zones(conn, session_id)
                 self.store.delete_signals(conn, session_id)   # an autorun's signal log goes with its trades
+                # a strategy session keeps its setup; how it ended and its clock start over
                 self.store.update_day_session(conn, session_id, phase="trading", last_exit_id=None, back_floor_ms=None,
-                                              autorun=None, updated_at=now)
+                                              autorun=None, end_flag=None, end_detail=None, ended_at=None, ended_ms=None,
+                                              clock_seconds=None, updated_at=now)
             cursor = ds["start_cursor_ms"]
             if cursor is None or not (s["data_start_ms"] <= cursor <= s["data_end_ms"]):
                 cursor = self._first_day_cursor(s, s["data_start_ms"])
@@ -494,6 +518,10 @@ class DayEngine:
         ds = self._day_row(session_id)
         st = self.replay.state(session_id)
         if st["status"] == "ready":
+            if self.strat is not None and ds.get("run_mode") and self.strat.settle(st, ds):
+                # a limit was reached: the session ended (and an open trade was closed), so read it again
+                ds = self._day_row(session_id)
+                st = self.replay.state(session_id)
             self._settle_auto(st)   # the twins catch up with the candles up to the cursor
         st["day"] = self._day_block(st, ds)
         st["account"] = self._account(st, st["day"])
@@ -506,6 +534,8 @@ class DayEngine:
             "stop_atr_mult": STOP_ATR_MULT, "atr_period": ATR_PERIOD, "rr_warn_below": RR_WARN_BELOW, "rsi_dip_max": RSI_DIP_MAX,
             "exit_reasons": [{"key": k, "label": v} for k, v in EXIT_REASONS],
             "date": None, "trade": None, "last_exit": None, "entries_allowed": False, "block_reason": None,
+            # the setup, limits and end of a strategy session (None for plain day trading)
+            "session": self.strat.block(st, ds) if self.strat is not None and ds.get("run_mode") else None,
         }
         if st["status"] != "ready":
             return out
@@ -564,6 +594,8 @@ class DayEngine:
 
     @staticmethod
     def _entry_gate(st: dict, ds: dict, close: int, end: int, trade: dict | None, traded: int) -> tuple[bool, str | None]:
+        if ds.get("end_flag"):   # a strategy session that has ended takes no more trades
+            return False, f"The session has ended ({ds.get('end_detail') or ds['end_flag']})."
         if st["finished"]:
             return False, "The replay has reached its end."
         if trade is not None:
@@ -867,6 +899,7 @@ class DayEngine:
                 raise Invalid("Confidence must be a whole number from 0 to 10.")
         with self._lock:
             s = self._ready(session_id)
+            ds = self._day_row(session_id)
             p = self.plan(session_id, zone_id, stop, take_profit, ratio)
             if p["blocked"]:
                 raise Conflict(p["blocked"])
@@ -896,6 +929,7 @@ class DayEngine:
                     coins=p["coins"], position_value=p["position_value"], risk_usdt=p["risk_usdt"], risk_amount=p["risk_amount"],
                     capped=int(bool(p["capped"])), buy_fee=p["buy_fee"], cash_after_entry=cash_after, overnight=0,
                     notes=notes, confidence=confidence, created_at=now, updated_at=now,
+                    **self._stamp(s, ds),
                 )
                 # the automatic-exit twin: same entry and size, the original stop and target, hands off
                 self.store.add_auto_trade(
@@ -1076,6 +1110,7 @@ class DayEngine:
             "r_multiple": res["r_multiple"], "cash_after_exit": cash_after, "review_due": 1,
             **self._what_if(s, trade, exit_ms, exit_price),
             **self._excursion(s, trade, exit_ms),
+            **self._result_fields(trade, exit_price, res["pnl"], res["fees"], res["r_multiple"]),
             "updated_at": now,
         }
         with self.store.tx() as conn:
@@ -1134,11 +1169,13 @@ class DayEngine:
         """MAE / MFE: the lowest low and the highest high of the 15-minute candles after the entry
         candle up to and including the exit candle, against the entry price (percent of the entry,
         and in R = multiples of the risk taken). The adverse side is at most 0, the favourable at
-        least 0. All zero when the exit is in the entry candle itself."""
+        least 0. All zero when the exit is in the entry candle itself. With them the two prices and
+        the open times of their candles (the first candle that reached each; None without candles)."""
         entry = float(trade["entry_price"])
         df = self.candles.get_candles(s["symbol"], BASE_INTERVAL, trade["entry_ms"] + self._base_ms, exit_ms)
         if len(df) == 0:
-            return {"mae_pct": 0.0, "mfe_pct": 0.0, "mae_r": 0.0, "mfe_r": 0.0}
+            return {"mae_pct": 0.0, "mfe_pct": 0.0, "mae_r": 0.0, "mfe_r": 0.0,
+                    "high_price": None, "high_ms": None, "low_price": None, "low_ms": None}
         hi, lo = float(df["high"].max()), float(df["low"].min())
         risk = trade.get("risk_usdt")
         coins = float(trade["coins"])
@@ -1146,7 +1183,64 @@ class DayEngine:
         return {
             "mae_pct": min(0.0, (lo / entry - 1.0) * 100.0), "mfe_pct": max(0.0, (hi / entry - 1.0) * 100.0),
             "mae_r": None if not risk else min(0.0, to_r(lo - entry)), "mfe_r": None if not risk else max(0.0, to_r(hi - entry)),
+            **self._extremes(df, "high"), **self._extremes(df, "low"),
         }
+
+    @staticmethod
+    def _extremes(df: pd.DataFrame, side: str, prefix: str = "") -> dict:
+        """The highest high (`side` "high") or lowest low ("low") of `df` and the open time (ms) of the
+        first candle that reached it, as `<prefix>high_price` / `<prefix>high_ms` (or low_...)."""
+        i = df[side].idxmax() if side == "high" else df[side].idxmin()
+        name = f"{prefix}{side}" if prefix else f"{side}_price"
+        return {name: float(df[side].loc[i]), f"{prefix}{side}_ms": int(df["time"].loc[i]) * 1000}
+
+    @staticmethod
+    def _stamp(s: dict, ds: dict) -> dict:
+        """What is stored with a trade at the buy so its result can be reproduced, plus the mode and
+        the strategy of a strategy session (None for plain day trading)."""
+        return {
+            "fee_rate": float(s["fee_rate"]), "slippage": SLIPPAGE, "fill_model": FILL_MODEL, "price_source": PRICE_SOURCE,
+            "run_mode": ds.get("run_mode"), "strategy_key": ds.get("strategy_key"), "strategy_name": ds.get("strategy_name"),
+            "strategy_version": ds.get("strategy_version"), "timeframe": ds.get("strategy_timeframe"),
+            "timeout_rule": ds.get("timeout_rule"),
+        }
+
+    @staticmethod
+    def _result_fields(trade: dict, exit_price: float, pnl: float, fees: float, r_multiple: float | None) -> dict:
+        """The outcome and the result before fees of a closed trade. `pnl` is after every fee (also
+        those of quarter steps), so pnl + fees is what the prices alone made."""
+        gross = pnl + fees
+        return {
+            "outcome": outcome_of(r_multiple),
+            "result_price": exit_price - float(trade["entry_price"]),
+            "gross_pnl": gross,
+            "gross_pnl_pct": gross / trade["position_value"] * 100.0 if trade["position_value"] else None,
+            "gross_r": gross / trade["risk_amount"] if trade["risk_amount"] else None,
+        }
+
+    def _fill_after(self, st: dict, conn: sqlite3.Connection, t: dict, limit_ms: int | None = None) -> None:
+        """The 24 hours after a closed trade's exit: the highest high and the lowest low of the
+        15-minute candles after the exit candle, their open times and their distance from the exit
+        price. Filled once the replay has passed the whole window, so it never shows the future
+        while the session runs. `limit_ms` (a session that has ended) reads up to there instead of
+        the cursor and stores what there is, marked incomplete when the data ends inside the window."""
+        if t["status"] != "closed" or t["exit_ms"] is None or t.get("after_complete") is not None:
+            return
+        base = self._base_ms
+        first, last = t["exit_ms"] + base, t["exit_ms"] + AFTER_HOURS * HOUR_MS   # open times of the window's candles
+        final = limit_ms is not None
+        limit = limit_ms if final else st["cursor_ms"]
+        if limit < last and not final:
+            return   # the replay has not passed the window yet
+        df = self.candles.get_candles(st["symbol"], BASE_INTERVAL, first, min(last, limit)) if limit >= first else None
+        f: dict[str, Any] = {"after_until_ms": last, "after_complete": int(limit >= last)}
+        if df is not None and len(df):
+            f.update(self._extremes(df, "high", "after_"))
+            f.update(self._extremes(df, "low", "after_"))
+            f["after_high_pct"] = (f["after_high"] / t["exit_price"] - 1.0) * 100.0
+            f["after_low_pct"] = (f["after_low"] / t["exit_price"] - 1.0) * 100.0
+        self.store.update_trade(conn, t["id"], **f)
+        t.update(f)
 
     def _alternatives(self, s: dict, trade: dict) -> dict | None:
         """The two hands-off alternatives of a trade, both closed at the latest with the 24:00 candle
@@ -1202,11 +1296,20 @@ class DayEngine:
         """Numbers added after a trade was made: MAE / MFE of closed trades, the alternatives of
         every trade whose 24:00 the replay has passed."""
         for t in rows:
-            if t["status"] == "closed" and t["exit_ms"] is not None and t.get("mae_pct") is None:
-                f = self._excursion(st, t, t["exit_ms"])
+            closed = t["status"] == "closed" and t["exit_ms"] is not None
+            if closed and (t.get("mae_pct") is None or (t.get("high_ms") is None and t["exit_ms"] > t["entry_ms"])):
+                f = self._excursion(st, t, t["exit_ms"])   # also the high / low of trades from before they were stored
+                self.store.update_trade(conn, t["id"], **f)
+                t.update(f)
+            if closed and t.get("outcome") is None and t.get("pnl") is not None:
+                fees = t["fees"] if t.get("fees") is not None else t["buy_fee"] + (t.get("sell_fee") or 0.0)
+                f = self._result_fields(t, t["exit_price"], t["pnl"], fees, t.get("r_multiple"))
                 self.store.update_trade(conn, t["id"], **f)
                 t.update(f)
             self._fill_alternatives(st, conn, t)
+            # the 24 hours after the exit; a session that has ended reads them to the end of its data
+            ended = bool(((st.get("day") or {}).get("session") or {}).get("ended"))
+            self._fill_after(st, conn, t, st["data_end_ms"] if ended else None)
 
     def _what_if(self, s: dict, trade: dict, exit_ms: int, exit_price: float) -> dict:
         """Highest high and lowest low of the 15-minute candles after the exit candle until 24:00 of
@@ -1961,6 +2064,14 @@ class DayEngine:
         }
         out["alts"] = alts_public(t)
         out["exits_ac"] = ac_public(t)
+        # the extremes between the entry and the exit, and of the 24 hours after it (None until filled)
+        out["extremes"] = None if t.get("high_ms") is None else {
+            "high": t["high_price"], "high_iso": _iso(t["high_ms"]), "low": t["low_price"], "low_iso": _iso(t["low_ms"])}
+        out["after"] = None if t.get("after_complete") is None else {
+            "hours": AFTER_HOURS, "complete": bool(t["after_complete"]),
+            "high": t.get("after_high"), "high_iso": _iso(t["after_high_ms"]) if t.get("after_high_ms") is not None else None,
+            "low": t.get("after_low"), "low_iso": _iso(t["after_low_ms"]) if t.get("after_low_ms") is not None else None,
+            "high_pct": t.get("after_high_pct"), "low_pct": t.get("after_low_pct")}
         if t["status"] == "open" and price is not None:
             mv = coins_open(t) * price
             unrealized = scaled_result(t, price, fee_rate)["pnl"]   # the whole trade if the rest were sold now, after fees

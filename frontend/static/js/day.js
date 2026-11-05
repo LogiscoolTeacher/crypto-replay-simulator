@@ -281,6 +281,7 @@ export class DayMode {
     else if (d.trade) { phase.textContent = 'in a trade'; phase.classList.add('good'); }
     else phase.textContent = 'no trade';
     this.renderProgress(ok ? s : null);
+    this.renderSession();
 
     const chk = ok ? d.check : null;
     if (chk) {
@@ -899,6 +900,60 @@ export class DayMode {
     const s = this.strategies.find(x => x.key === this.$('day-strategy').value);
     this.$('day-strategy-note').textContent = s ? s.description : 'No strategies available.';
   }
+  // ------------------------------------------------------- strategy session
+  // The card of a strategy session (a day session with a setup): mode, strategy, the two limits, and
+  // how it ended. Plain day sessions have no `day.session`, so the card stays hidden for them.
+  renderSession() {
+    const $ = this.$;
+    const b = this.day ? this.day.session : null;
+    $('strat-card').classList.toggle('hidden', !b);
+    if (!b) return;
+    const set = (id, text) => { $(id).textContent = text; };
+    set('strat-mode', b.run_mode_label);
+    set('strat-strategy', b.strategy.label);
+    set('strat-tf', b.strategy.timeframe);
+    $('strat-strategy').title = (b.strategy.rules || []).join('\n');
+    set('strat-trades', `${b.trades_taken} / ${b.max_trades}`);
+    const manual = b.run_mode === 'manual';
+    set('strat-time-label', manual ? 'Time limit (real time)' : 'Time limit');
+    set('strat-time', manual
+      ? (b.time_limit_hours > 0 ? `${this.clockText(b.clock_seconds)} / ${this.clockText(b.time_limit_hours * 3600)}` : 'none')
+      : `end date ${this.localDate(this.session.end_ms || this.session.data_end_ms) || '–'}`);
+    set('strat-pics', b.pictures ? 'on' : 'off');
+    const status = $('strat-status');
+    status.className = `badge ${b.ended ? 'warn' : 'good'}`;
+    status.textContent = b.ended ? 'ended' : 'running';
+    status.title = b.ended ? b.end_flag : '';
+    const end = $('strat-end');
+    end.textContent = b.ended ? `${b.end_flag}: ${b.end_detail}${b.ended_local ? `, at ${b.ended_local} UTC of the replay` : ''}.` : '';
+    end.classList.toggle('hidden', !b.ended);
+    $('btn-strat-stop').disabled = !this.ready() || this.busy || !b.can_stop;
+    this.c.renderCardSums();
+  }
+  clockText(sec) {
+    const s = Math.max(0, Math.round(sec));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return `${h}:${String(m).padStart(2, '0')} h`;
+  }
+  async stopSession() {
+    const b = this.day ? this.day.session : null;
+    if (!this.ready() || this.busy || !b || !b.can_stop) return;
+    const open = this.day.trade ? ' The open trade is closed at the close of the current candle.' : '';
+    if (!confirm(`End this session now? It is flagged ENDED_BY_USER and takes no more trades.${open}`)) return;
+    this.c.pause();
+    this.busy = true;
+    this.render();
+    const t = this.c.token();
+    try {
+      const st = await this.c.api.strategyStop(this.session.id);
+      if (!this.c.fresh(t)) return;
+      this.c.applyState(st);
+      await this.refresh();
+      this.c.toast('Session ended (ENDED_BY_USER).');
+    } catch (e) { if (this.c.fresh(t)) this.c.toast(e.message, true); }
+    finally { this.busy = false; this.render(); }
+  }
+
   // After an exit: "End the day" jumps to 24:00 of the exit's day, which is 00:00 of the next: the day
   // is left (its picture first) and the trade's picture is taken there; "Keep trading" goes on from the exit candle.
   async endDay() {
@@ -1674,6 +1729,7 @@ export class DayMode {
     $('btn-dt-sell-q').addEventListener('click', () => this.openExit(true));
     $('btn-dt-add-q').addEventListener('click', () => this.addQuarter());
     $('btn-day-skip').addEventListener('click', () => this.skipDay());
+    $('btn-strat-stop').addEventListener('click', () => this.stopSession());
     $('btn-day-ema').addEventListener('click', () => this.nextEmaDay());
     $('btn-day-signal').addEventListener('click', () => this.nextSignal());
     $('day-strategy').addEventListener('change', () => { this.renderStrategyNote(); this.render(); });

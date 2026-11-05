@@ -1680,6 +1680,51 @@ function openSessionDialog() {
   renderSessionMode();
   applySessionLength();
   dlg.showModal();
+  loadStrategySetup();
+}
+// Strategy sessions: the modes and the registered strategies come from the server (asked once).
+async function loadStrategySetup() {
+  if (state.strategySetup) return;
+  try {
+    const o = await api.strategySetup();
+    state.strategySetup = o;
+    const fill = (id, rows, text) => {
+      const sel = $(id);
+      sel.innerHTML = '';
+      for (const r of rows) { const op = document.createElement('option'); op.value = r.key; op.textContent = text(r); sel.appendChild(op); }
+    };
+    fill('f-run-mode', o.modes, m => m.label);
+    fill('f-strategy', o.strategies, s => s.label);
+    $('f-run-mode').value = o.defaults.run_mode;
+    $('f-max-trades').value = o.defaults.max_trades;
+    $('f-max-trades').max = o.max_trades_limit;
+    $('f-hours').value = o.defaults.time_limit_hours;
+    $('f-hours').max = o.max_hours;
+    $('f-pictures').value = o.defaults.pictures ? 'on' : 'off';
+    renderSessionMode();
+  } catch (e) { toast(e.message, true); }
+}
+// The chosen strategy's timeframe and rules, and what ends the session in the chosen run mode.
+function renderStrategySetup() {
+  const o = state.strategySetup;
+  const note = $('f-note-strat');
+  note.textContent = '';
+  if (!o) { $('f-strategy-tf').value = ''; return; }
+  const st = o.strategies.find(x => x.key === $('f-strategy').value);
+  const manual = $('f-run-mode').value === 'manual';
+  $('f-strategy-tf').value = st ? st.timeframe : '';
+  $('f-hours-wrap').classList.toggle('hidden', !manual);
+  const p = (text) => { const el = document.createElement('p'); el.textContent = text; note.appendChild(el); };
+  p(manual
+    ? 'Manual: the replay jumps to the strategy\'s next entry and proposes entry, stop and target; you take or skip it and may move stop and target. The session ends after the maximum number of trades, after the time limit (real time with the session open) or at the end date.'
+    : 'Automatic: the strategy places entry, stop and target, and the trade runs until one of them is hit. The session ends after the maximum number of trades or at the end date, which is its time limit.');
+  p('A trade still open when the time runs out is closed at the close of the current candle. 15-minute candles, start balance 100 000 USDT, risk 100 USDT per trade, fee 0.1 % per side.');
+  if (st) {
+    p(`${st.label}: ${st.description}`);
+    const ul = document.createElement('ul');
+    for (const line of st.rules) { const li = document.createElement('li'); li.textContent = line; ul.appendChild(li); }
+    note.appendChild(ul);
+  }
 }
 // The Length choice fills the end date: 1 / 2 / 5 years after the start (capped at today),
 // "Until now" clears it (the replay then runs to the latest closed candle). Typing an end
@@ -1698,14 +1743,20 @@ function applySessionLength() {
   end.value = iso > today ? today : iso;
   $('f-end-note').textContent = iso > today ? '(capped at today)' : `(${choice} year${choice === '1' ? '' : 's'})`;
 }
-// Day trading fixes the base timeframe (15m) and the fee (0.1 %): those fields disappear.
+// Day trading fixes the base timeframe (15m) and the fee (0.1 %): those fields disappear. A strategy
+// session is a day session with a setup: its own fields appear, and the balance is fixed too.
 function renderSessionMode() {
-  const dayMode = $('f-mode').value === 'day';
+  const strat = $('f-mode').value === 'strategy';
+  const dayMode = $('f-mode').value === 'day' || strat;
   $('f-base-wrap').classList.toggle('hidden', dayMode);
   $('f-fee-wrap').classList.toggle('hidden', dayMode);
+  $('f-balance-wrap').classList.toggle('hidden', strat);
   $('f-note-swing').classList.toggle('hidden', dayMode);
-  $('f-note-day').classList.toggle('hidden', !dayMode);
-  $('f-name').placeholder = dayMode ? 'e.g. BTC day trading May' : 'e.g. BTC summer 2025';
+  $('f-note-day').classList.toggle('hidden', !dayMode || strat);
+  $('f-note-strat').classList.toggle('hidden', !strat);
+  for (const el of document.querySelectorAll('#form-session .strat-only')) el.classList.toggle('hidden', !strat);
+  if (strat) renderStrategySetup();
+  $('f-name').placeholder = strat ? 'e.g. BTC confirmed, manual' : dayMode ? 'e.g. BTC day trading May' : 'e.g. BTC summer 2025';
   // each mode's default balance, unless the user typed another one
   const bal = $('f-balance');
   if (bal.value === (dayMode ? SWING_START_BALANCE : DAY_START_BALANCE)) bal.value = dayMode ? DAY_START_BALANCE : SWING_START_BALANCE;
@@ -1726,9 +1777,18 @@ async function submitSessionDialog(e) {
   const btn = $('btn-create-session');
   btn.disabled = true;
   try {
-    const s = await (f.mode.value === 'day'
-      ? api.createDaySession({ symbol: body.symbol, start: body.start, end: body.end, start_balance: body.start_balance, name: body.name })
-      : api.createSession(body));
+    const manual = $('f-run-mode').value === 'manual';
+    const s = await (f.mode.value === 'strategy'
+      ? api.createStrategySession({
+        symbol: body.symbol, start: body.start, end: body.end, name: body.name,
+        run_mode: $('f-run-mode').value, strategy: $('f-strategy').value,
+        max_trades: parseInt($('f-max-trades').value, 10),
+        time_limit_hours: manual ? parseFloat($('f-hours').value || '0') : 0,   // Automatic: the end date is the limit
+        pictures: $('f-pictures').value === 'on',
+      })
+      : f.mode.value === 'day'
+        ? api.createDaySession({ symbol: body.symbol, start: body.start, end: body.end, start_balance: body.start_balance, name: body.name })
+        : api.createSession(body));
     $('dlg-session').close();
     await refreshSessions();
     await loadSession(s.id);
@@ -1800,6 +1860,7 @@ const FOLDED_BY_DEFAULT = { day: ['extremes-card', 'account-card'], swing: [] };
 const foldKey = (el) => `replay.ui.fold.${isDay() ? 'day' : 'swing'}.${el.id}`;
 const txt = (id) => ($(id).textContent || '').trim();
 const CARD_SUMS = {
+  'strat-card': () => [txt('strat-mode'), txt('strat-trades'), txt('strat-status')],
   'day-card': () => [txt('day-date'), txt('day-time'), txt('day-phase'), $('day-trade').classList.contains('hidden') ? '' : txt('dt-pnl')],
   'day-signal-card': () => [$('day-strategy').selectedOptions[0] ? $('day-strategy').selectedOptions[0].textContent : ''],
   'strategy-card': () => [$('strategy-key').selectedOptions[0] ? $('strategy-key').selectedOptions[0].textContent : ''],
@@ -2305,6 +2366,8 @@ async function init() {
   try { chart.setMinPanes(JSON.parse(localStorage.getItem('replay.ui.minPanes') || '[]')); } catch { /* no storage or bad value */ }
   chart.onPaneFold = (keys) => { try { localStorage.setItem('replay.ui.minPanes', JSON.stringify(keys)); } catch { /* no storage */ } };
   $('f-mode').addEventListener('change', renderSessionMode);
+  $('f-run-mode').addEventListener('change', renderStrategySetup);
+  $('f-strategy').addEventListener('change', renderStrategySetup);
   $('f-length').addEventListener('change', applySessionLength);
   $('f-start').addEventListener('change', applySessionLength);
   $('f-end').addEventListener('input', () => { $('f-length').value = 'custom'; $('f-end-note').textContent = '(optional)'; });

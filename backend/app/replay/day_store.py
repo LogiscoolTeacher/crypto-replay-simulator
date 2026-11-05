@@ -219,11 +219,39 @@ MIGRATIONS = {
         # scaling in quarters of the original size: how many are still held (NULL = 4) and the steps
         # (JSON list: at_ms, side sell/add, coins, price, value, fee, reason, note), see DayEngine.scale_trade
         "quarters_open": "INTEGER", "scales": "TEXT",
+        # strategy sessions (2026-11-05). What the trade belongs to: the session's mode ("automatic" /
+        # "manual"; NULL = plain day trading), the strategy's key, name and version, and its timeframe
+        "run_mode": "TEXT", "strategy_key": "TEXT", "strategy_name": "TEXT", "strategy_version": "TEXT", "timeframe": "TEXT",
+        # everything a result depends on, so it can be reproduced: the fee per side, the slippage (0 with
+        # the exact-level fill model), the fill model's name, where the prices come from, and what a
+        # timeout does to an open trade
+        "fee_rate": "REAL", "slippage": "REAL", "fill_model": "TEXT", "price_source": "TEXT", "timeout_rule": "TEXT",
+        # the result at the exit: WIN / LOSS / BREAKEVEN (after fees, see day_engine.outcome_of), the price
+        # move per coin (exit - entry), and the result before fees in USDT, percent and R
+        "outcome": "TEXT", "result_price": "REAL", "gross_pnl": "REAL", "gross_pnl_pct": "REAL", "gross_r": "REAL",
+        # the highest high and lowest low between the entry and the exit, with their candles' open times
+        "high_price": "REAL", "high_ms": "INTEGER", "low_price": "REAL", "low_ms": "INTEGER",
+        # the 24 hours after the exit: highest high / lowest low, their candles and the distance from the
+        # exit price in percent. after_until_ms = the last candle of the window; after_complete = 1 once
+        # the whole window was read, 0 when the data ended inside it (NULL = not filled yet)
+        "after_until_ms": "INTEGER", "after_complete": "INTEGER", "after_high": "REAL", "after_high_ms": "INTEGER",
+        "after_low": "REAL", "after_low_ms": "INTEGER", "after_high_pct": "REAL", "after_low_pct": "REAL",
     },
     # the earliest candle "Step back" may return to, set by every jump (the candles jumped over were never seen)
     # autorun: the automatic run of a jump strategy's signals (JSON: rules, phase, current signal,
     # counters; NULL = no run), see autorun.py
-    "day_sessions": {"back_floor_ms": "INTEGER", "autorun": "TEXT"},
+    "day_sessions": {
+        "back_floor_ms": "INTEGER", "autorun": "TEXT",
+        # strategy sessions (strat.py): the setup chosen before the start. run_mode NULL = plain day trading.
+        "run_mode": "TEXT", "strategy_key": "TEXT", "strategy_name": "TEXT", "strategy_version": "TEXT",
+        "strategy_timeframe": "TEXT", "strategy_settings": "TEXT",          # settings: JSON of TradingStrategy.settings()
+        "max_trades": "INTEGER", "time_limit_hours": "REAL",                # the two limits (hours: Manual, real time; 0 = none)
+        "pictures": "INTEGER", "timeout_rule": "TEXT",
+        # how the session ended (ENDED_BY_TRADE_LIMIT / ENDED_BY_TIMEOUT / ENDED_BY_USER; NULL = running),
+        # a plain sentence about it, when (real time) and where (the cursor) it ended
+        "end_flag": "TEXT", "end_detail": "TEXT", "ended_at": "TEXT", "ended_ms": "INTEGER",
+        "clock_seconds": "REAL",                                            # Manual: real time spent with the session open
+    },
     # the daily journal: notes, the end-of-day picture and how / when the day was left
     # who made a zone: "signal" = the "Next signal" button (removed again while no trade uses it), NULL = drawn by hand
     "day_zones": {"source": "TEXT"},

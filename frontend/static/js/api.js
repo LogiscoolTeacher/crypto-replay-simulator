@@ -52,6 +52,10 @@ export const api = {
   trades: (id) => request('GET', `/api/sessions/${id}/trades`),
   view: (id, body) => request('POST', `/api/sessions/${id}/view`, body),
   context: (id, body) => request('POST', `/api/sessions/${id}/context`, body),
+  // Strategy sessions: day sessions with a mode (automatic / manual), a strategy, limits and an end flag
+  strategySetup: () => request('GET', '/api/strategy/setup'),
+  createStrategySession: (body) => request('POST', '/api/strategy/sessions', body),
+  strategyStop: (id) => request('POST', `/api/strategy/sessions/${id}/stop`),
   // Day-trading mode (sessions with mode "day")
   createDaySession: (body) => request('POST', '/api/day/sessions', body),
   daySession: (id) => request('GET', `/api/day/sessions/${id}`),
