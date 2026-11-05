@@ -3,7 +3,7 @@
 State of the project for the next Claude Code instance. Read this first, then the code it points
 to. Update the **History** and **Open / ideas** sections when you finish a change.
 
-Last updated: 2026-11-04 (autorun: automatic RLine_Retest runs for data collection).
+Last updated: 2026-11-05 (strategy sessions, step 1 of 6: the strategy plug-ins).
 
 ## What the app is
 
@@ -35,6 +35,9 @@ backend/app/data/candle_store.py    SQLite candle cache with coverage tracking
 backend/app/indicators/             RSI, MACD, EMA/SMA, Bollinger, ATR ...
 backend/app/strategies/builtin.py   the swing-mode strategy lights
 backend/app/strategies/rline.py     RLine_Retest jump strategy (day mode "Next signal")
+backend/app/strategies/plugin.py    trading-strategy plug-in interface + registry (strategy sessions)
+backend/app/strategies/plugins/     one file per trading strategy (found by the registry itself)
+backend/app/strategies/patterns.py  hammer / bullish engulfing (autorun and the plug-ins)
 backend/app/replay/engine.py        swing engine + shared session/cursor/view logic
 backend/app/replay/day_engine.py    day-trading engine (~1850 lines)
 backend/app/replay/day_store.py     day tables + additive MIGRATIONS dict
@@ -218,6 +221,62 @@ A reset clears the run and its log.
   trend, 43 by fees. Entering at the signal candle is clearly worse than CTest__01's uptrend hammer
   trades.
 
+## Strategy sessions: Automatic and Manual (in progress, branch `strategy-sessions`)
+
+The user's spec (2026-11-05): a session with a chosen coin, strategy, trade limit, time limit and
+screenshots on / off, run in one of two modes. It is built as an extension of day-trading mode
+(the autorun and "Next signal"), not as a new program. Swing and Day trading stay as they are; the
+New session dialog gets a third mode. **`strategies/rline.py` is the entry-signal module and must
+not be edited for this.**
+
+Agreed with the user (by question, before any code):
+- **Automatic**: the strategy places entry, stop and target; the trade runs to one of them.
+- **Manual**: the replay jumps to the strategy's next entry point and PROPOSES entry, stop and
+  target; Take or Skip (a skip is logged and does not count as a trade); then stop / target can be
+  dragged (every move logged). When the trade closes, it jumps to the next entry point. Kept tools:
+  Sell ¼ / Add ¼ and the confidence score. Not in Manual: exits A / C, the review marks.
+- **Same entry points in both modes**: the confirmation, the fee filter and the trend filter belong
+  to the strategy. The confirmed strategy's entry point is the confirming candle.
+- **Stop conditions**: a trade limit N, and a time limit. Manual: H hours of REAL time, counted only
+  while the session is open in the browser (0 = none). Automatic: a replay end date instead.
+- **End flags**: `ENDED_BY_TRADE_LIMIT`, `ENDED_BY_TIMEOUT`, `ENDED_BY_USER`. A trade still open at
+  a timeout is closed at market (exit reason "session timeout"); its hands-off twin shows what
+  letting it run would have made. The rule is stored per trade.
+- **Outcome**: after fees; −0.05 R to +0.05 R is BREAKEVEN. The result before fees is stored too.
+- **Break exit** of the signal-candle strategy: automatic in Automatic, only a notice in Manual.
+- **Fills** stay exactly at the level (comparable with the CTest runs); every trade stores slippage
+  0, the fee rate, the fill model's name and the price source. Gap fills: maybe later (Open, item 5).
+- **Screenshots** on = trade pictures only (no day pictures).
+- **Report tab**: new sessions and old day sessions; fields old trades never stored stay empty.
+- Long only. The setup keeps a start date.
+
+Build steps, each with the user's go-ahead: **1 strategy plug-ins (done)**, 2 session setup +
+storage + end flags, 3 Automatic with a Start button, 4 Manual, 5 Report tab + CSV, 6 docs.
+
+**Step 1: the plug-ins** (`strategies/plugin.py`, `strategies/plugins/`). Nothing calls them yet;
+the autorun still runs on `AutorunRules`. A strategy is one file in `plugins/` defining
+`STRATEGY`, an instance of a `TradingStrategy` subclass with `key`, `name`, `version`,
+`description`, `timeframe`. The registry (`discover`, `trading_strategies`,
+`get_trading_strategy`, `describe_trading_strategies`) imports every file of the package whose
+name doesn't start with "_", so a new strategy needs no engine change. What the engine will ask
+(the module docstring has the contract): `find_signals`, `locate`, `pre_filter`, `entry` (per
+closed candle: enter / wait / cancel), `levels` (stop + target; `kind` fixed / percent / atr),
+`accept` (after sizing), `exit_signal`. `Market` is what a strategy may read (closed candles, ATR,
+the daily trend); the engine implements it in step 3. A version's rules are class attributes and
+never change: another target is a new version. `settings()` returns every rule value for storage.
+
+Registered:
+- `rline_retest_confirmed` v1 = the CTest__01 rules (the `AutorunRules` defaults): hammer or
+  bullish engulfing within 10 candles, stop = zone bottom − 0.25 × ATR 14 (1h), 2 R, fee filter
+  20 %, all trends.
+- `rline_retest_signal` v1 = the CTest__02 rules: entry at the signal candle's close, uptrend only,
+  2.5 R, break exit. **Its stop multiple (0.25) and fee filter (20 %) are assumed to be the
+  defaults**: the saved rules of CTest__02 could not be checked (see the gotcha below).
+
+Both wrap `rline.py` through `get_jump_strategy("rline_retest")`; `_rline_retest.py` holds what
+they share. Tests: `tests/test_strategy_plugins.py` (the confirmed entry is compared with the
+autorun's `confirmation`, the settings with `AutorunRules()`).
+
 ## RLine_Retest (`backend/app/strategies/rline.py`)
 
 1h, strictly causal single pass (`detect_rline`).
@@ -254,6 +313,14 @@ needs no network at all, not even the server time, so preparing works offline.
 - **Python**: the dependencies live in the user site-packages of `/usr/bin/python3`, so don't use
   `python -I`. Tests: `cd backend && python3 -m pytest -q` (~45 s, ~190 tests). `test_ui.py` is
   skipped (Playwright not installed).
+- **On the user's Windows PC** (2026-11-05): `python` on the PATH is the Store Python without
+  fastapi / pytest. The app and the tests run with `C:\Users\logis\miniconda3\python.exe`
+  (`cd backend; C:\Users\logis\miniconda3\python.exe -m pytest -q`, ~4 minutes, 250 tests).
+  Playwright is installed there, so the UI tests run: 2 of `test_ui_day.py` fail, also on `main`
+  (see Open, item 8). The user often has the app running on port 8000 against the real `data/`:
+  leave that process alone and use another port with a data copy.
+- **The CTest sessions are not in this PC's `data/replay.db`** (no session has an autorun there,
+  and no other copy of the database was found). Their numbers exist only in this file.
 - **Data and worktrees**: `DATA_DIR` is `<checkout>/data`, so a git worktree starts with an empty
   database and would re-download. To try things against real data, copy the main checkout's
   `data/replay.db` with sqlite's backup API into a scratch folder and run with
@@ -271,6 +338,10 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## History (newest first)
 
+- 2026-11-05 Strategy sessions, step 1: trading-strategy plug-ins (`strategies/plugin.py`: interface
+  and a registry that finds the files in `strategies/plugins/` by itself) with `rline_retest_confirmed`
+  v1 and `rline_retest_signal` v1; `is_hammer` / `is_bullish_engulfing` moved to
+  `strategies/patterns.py` (the autorun imports them). Nothing uses the plug-ins yet.
 - 2026-11-04 Autorun variants for CTest__02: trend filter, entry at the signal candle, break exit,
   closed trades' zones deleted, what-ifs per target; `next_signal(after_ms)`.
 - 2026-11-04 Autorun fix: a missing trade picture holds the run (`need: "trade_picture"`), the frontend
@@ -339,7 +410,11 @@ needs no network at all, not even the server time, so preparing works offline.
 
 ## Open / ideas
 
-None of these are started. Roughly in order of usefulness:
+**In progress: strategy sessions** (see the section above), steps 2 to 6. Step 5 (Report tab) was
+agreed to show CTest__01 / __02 as Automatic sessions, but they are not in this PC's database: ask
+the user where that database is before building the import of old runs.
+
+None of the following are started. Roughly in order of usefulness:
 
 00. **Autorun follow-ups**: a button / progress card in the day panel instead of the console; a
    rule to skip the day pictures (a long run takes hundreds); compare runs (CTest__01 vs __02) in
@@ -361,6 +436,8 @@ None of these are started. Roughly in order of usefulness:
 6. **Split `day_engine.py`** into reviews / jumps & signals / journal modules.
 7. **`has_image` vs. missing files**: a row can say it has a picture whose file is gone (404s).
    Check that the file exists, or hide the broken image.
-8. **Run the UI smoke tests**: install Playwright so `test_ui.py` and `test_ui_day.py` run (neither
-   has run yet in this environment); extend the day path (exit → choice → picture, Sell ¼ / Add ¼,
-   step back).
+8. **UI smoke tests**: they run on the user's PC (miniconda Python). `test_ui_day.py` fails twice
+   there, also on `main`: it creates its session with `ADAUSDT`, which is no longer in
+   `config.COINS` (422), so `test_unanswered_review_blocks_nothing` and
+   `test_indicator_pane_can_be_minimized` break. Pick a listed coin no other module uses. Then
+   extend the day path (exit → choice → picture, Sell ¼ / Add ¼, step back).
